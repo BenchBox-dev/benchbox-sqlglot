@@ -1,11 +1,84 @@
+import sqlite3
+
 from tests.dialects.test_dialect import Validator
 
-from sqlglot import exp
+from sqlglot import exp, parse_one
+from sqlglot.errors import ErrorLevel, UnsupportedError
 from sqlglot.helper import logger as helper_logger
 
 
 class TestSQLite(Validator):
     dialect = "sqlite"
+
+    def test_date_extraction(self):
+        for part, fmt in (("YEAR", "%Y"), ("MONTH", "%m"), ("DAY", "%d")):
+            self.validate_all(
+                f"SELECT CAST(STRFTIME('{fmt}', DATE('2020-06-01')) AS INTEGER)",
+                read={
+                    dialect: f"SELECT EXTRACT({part} FROM DATE '2020-06-01')"
+                    for dialect in ("postgres", "duckdb")
+                },
+            )
+        self.validate_all(
+            "SELECT CAST(CAST(STRFTIME('%Y', DATE('2020-06-01')) AS INTEGER) AS REAL) / 3 > 673",
+            read={
+                dialect: "SELECT EXTRACT(YEAR FROM DATE '2020-06-01') / 3 > 673"
+                for dialect in ("postgres", "duckdb")
+            },
+        )
+        for source in (
+            "EXTRACT(YEAR FROM TIMESTAMP '2020-06-01 12:00:00')",
+            "EXTRACT(HOUR FROM DATE '2020-06-01')",
+            "EXTRACT(YEAR FROM INTERVAL '1' YEAR)",
+            "EXTRACT(YEAR FROM d)",
+            "DATE_PART('year', DATE '2020-06-01')",
+        ):
+            with self.subTest(source=source), self.assertRaises(UnsupportedError):
+                parse_one(source, read="postgres").sql("sqlite", unsupported_level=ErrorLevel.RAISE)
+
+    def test_date_extraction_execution(self):
+        connection = sqlite3.connect(":memory:")
+        try:
+            for dialect in ("postgres", "duckdb"):
+                for value in ("2000-02-29", "1900-03-01", "2024-12-31", None):
+                    source_value = "NULL" if value is None else f"'{value}'"
+                    fields = tuple(map(int, value.split("-"))) if value else (None, None, None)
+                    query = "SELECT " + ", ".join(
+                        f"EXTRACT({part} FROM CAST({source_value} AS DATE))"
+                        for part in ("YEAR", "MONTH", "DAY")
+                    )
+                    sql = parse_one(query, read=dialect).sql("sqlite")
+                    self.assertEqual(connection.execute(sql).fetchone(), fields)
+
+                for query, expected in (
+                    (
+                        "WITH dates(d) AS (VALUES ('2020-06-01')) "
+                        "SELECT EXTRACT(YEAR FROM CAST(d AS DATE)) / 3 > 673 FROM dates",
+                        (1,),
+                    ),
+                    (
+                        "WITH t AS (SELECT EXTRACT(YEAR FROM DATE '2020-06-01') AS y) "
+                        "SELECT CAST(y AS TEXT), y / 3 > 673, COALESCE(y, 0) / 3 > 673 FROM t",
+                        ("2020", 1, 1),
+                    ),
+                    (
+                        "SELECT EXTRACT(YEAR FROM COALESCE(CAST(NULL AS DATE), DATE '2020-06-01'))",
+                        (2020,),
+                    ),
+                    (
+                        "SELECT CAST(EXTRACT(YEAR FROM DATE '2020-06-01') AS INTEGER) / 3 > 673",
+                        (0 if dialect == "postgres" else 1,),
+                    ),
+                    (
+                        "SELECT (EXTRACT(YEAR FROM DATE '2020-06-01') / 3) / 2 > 336.5",
+                        (1,),
+                    ),
+                ):
+                    with self.subTest(dialect=dialect, query=query):
+                        sql = parse_one(query, read=dialect).sql("sqlite")
+                        self.assertEqual(connection.execute(sql).fetchone(), expected)
+        finally:
+            connection.close()
 
     def test_sqlite(self):
         # Range operators (IN/LIKE) are left-associative and can be chained.

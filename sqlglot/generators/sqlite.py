@@ -16,6 +16,7 @@ from sqlglot.dialects.dialect import (
     strposition_sql,
 )
 from sqlglot.generator import unsupported_args
+from sqlglot.errors import OptimizeError
 from sqlglot.optimizer.scope import find_in_scope
 from sqlglot.tokens import TokenType
 
@@ -206,6 +207,99 @@ class SQLiteGenerator(generator.Generator):
     }
 
     LIMIT_FETCH = "LIMIT"
+
+    _extraction_division_casts: dict[int, bool | None] | None = None
+
+    def preprocess(self, expression: exp.Expr) -> exp.Expr:
+        self._extraction_division_casts = None
+        return super().preprocess(expression)
+
+    def _resolve_extraction_divisions(self, expression: exp.Expr) -> dict[int, bool | None]:
+        root = expression.root()
+        if not any(
+            extract.args.get("return_type")
+            and extract.args["return_type"].is_type(exp.DType.DECIMAL)
+            for extract in root.find_all(exp.Extract)
+        ):
+            return {}
+
+        from sqlglot.optimizer.annotate_types import annotate_types
+        from sqlglot.optimizer.qualify_columns import qualify_columns
+
+        # Whole date parts fit SQLite INTEGER, but PostgreSQL's decimal EXTRACT
+        # still requires fractional division, including through CTE aliases.
+        # Resolve on a copy so qualification cannot alter emitted column names.
+        annotated = root.copy()
+        divisions = {
+            id(original): copied
+            for original, copied in zip(root.find_all(exp.Div), annotated.find_all(exp.Div))
+        }
+        try:
+            if annotated.find(exp.Column):
+                qualify_columns(annotated, schema={}, expand_stars=False, dialect=self.dialect)
+            annotate_types(annotated, dialect=self.dialect, overwrite_types=False)
+        except OptimizeError as error:
+            self.unsupported(f"Cannot resolve SQLite extraction division types: {error}")
+            return {}
+
+        casts: dict[int, bool | None] = {}
+        for key, division in divisions.items():
+            left, right = division.this, division.expression
+            if left.is_type(exp.DType.DECIMAL) or right.is_type(exp.DType.DECIMAL):
+                casts[key] = True
+            elif (
+                not left.type
+                or not right.type
+                or left.is_type(exp.DType.UNKNOWN)
+                or right.is_type(exp.DType.UNKNOWN)
+            ):
+                casts[key] = None
+            else:
+                casts[key] = False
+        return casts
+
+    def div_sql(self, expression: exp.Div) -> str:
+        if expression.args.get("typed"):
+            if self._extraction_division_casts is None:
+                self._extraction_division_casts = self._resolve_extraction_divisions(expression)
+            if self._extraction_division_casts:
+                needs_cast = self._extraction_division_casts.get(id(expression))
+                if needs_cast:
+                    expression.set(
+                        "this",
+                        exp.Cast(this=expression.this, to=exp.DataType.build(exp.DType.DOUBLE)),
+                    )
+                elif needs_cast is None:
+                    self.unsupported("SQLite extraction division requires known operand types")
+        return super().div_sql(expression)
+
+    def extract_sql(self, expression: exp.Extract) -> str:
+        formats = {"YEAR": "%Y", "MONTH": "%m", "DAY": "%d"}
+        format_string = formats.get(expression.name.upper())
+        value = expression.expression
+        return_type = expression.args.get("return_type")
+        if format_string and not value.type:
+            from sqlglot.optimizer.annotate_types import annotate_types
+
+            value = annotate_types(value.copy(), dialect=self.dialect, overwrite_types=False)
+        if (
+            format_string
+            and value.is_type(exp.DType.DATE)
+            and (
+                not return_type
+                or return_type.is_type(exp.DType.DECIMAL, *exp.DataType.INTEGER_TYPES)
+            )
+        ):
+            return self.sql(
+                exp.cast(
+                    exp.TimeToStr(this=value.copy(), format=exp.Literal.string(format_string)),
+                    exp.DType.INT,
+                )
+            )
+        self.unsupported(
+            "SQLite EXTRACT requires YEAR/MONTH/DAY from DATE with integer or decimal return semantics"
+        )
+        return super().extract_sql(expression)
 
     def insert_sql(self, expression: exp.Insert) -> str:
         if expression.args.get("ignore"):
