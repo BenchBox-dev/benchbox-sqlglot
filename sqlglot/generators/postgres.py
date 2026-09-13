@@ -430,6 +430,15 @@ class PostgresGenerator(generator.Generator):
         exp.VolatileProperty: exp.Properties.Location.UNSUPPORTED,
     }
 
+    def extract_sql(self, expression: exp.Extract) -> str:
+        return_type = expression.args.get("return_type")
+        if return_type and return_type.is_type(exp.DType.DOUBLE):
+            part = expression.this
+            if isinstance(part, exp.Var):
+                part = exp.Literal.string(part.name.lower())
+            return self.func("DATE_PART", part, expression.expression)
+        return super().extract_sql(expression)
+
     def schemacommentproperty_sql(self, expression: exp.SchemaCommentProperty) -> str:
         self.unsupported("Table comments are not supported in the CREATE statement")
         return ""

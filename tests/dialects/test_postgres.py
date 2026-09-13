@@ -8,6 +8,27 @@ class TestPostgres(Validator):
     maxDiff = None
     dialect = "postgres"
 
+    def test_extract_return_types(self):
+        for dialect in ("postgres", "materialize", "risingwave"):
+            for source, expected in (
+                ("EXTRACT(YEAR FROM DATE '2020-06-01')", exp.DType.DECIMAL),
+                ("EXTRACT(SECOND FROM TIMESTAMP '2020-06-01 12:34:56.123456')", exp.DType.DECIMAL),
+                ("DATE_PART('year', DATE '2020-06-01')", exp.DType.DOUBLE),
+            ):
+                with self.subTest(dialect=dialect, source=source):
+                    expression = parse_one(source, read=dialect)
+                    self.assertTrue(expression.args["return_type"].is_type(expected))
+                    self.assertTrue(annotate_types(expression, dialect=dialect).is_type(expected))
+                    roundtrip = parse_one(expression.sql(dialect), read=dialect)
+                    self.assertEqual(expression.args["return_type"], roundtrip.args["return_type"])
+                    restored = exp.Expression.load(expression.dump())
+                    self.assertEqual(restored.args["return_type"], expression.args["return_type"])
+
+        self.assertNotEqual(
+            parse_one("EXTRACT(YEAR FROM d)", read="postgres"),
+            parse_one("DATE_PART('year', d)", read="postgres"),
+        )
+
     def test_postgres(self):
         expr = self.parse_one("SELECT * FROM r CROSS JOIN LATERAL UNNEST(ARRAY[1]) AS s(location)")
         unnest = expr.args["joins"][0].this.this
@@ -231,11 +252,11 @@ class TestPostgres(Validator):
         )
         self.validate_identity(
             "SELECT DATE_PART('isodow'::varchar(6), current_date)",
-            "SELECT EXTRACT(CAST('isodow' AS VARCHAR(6)) FROM CURRENT_DATE)",
+            "SELECT DATE_PART(CAST('isodow' AS VARCHAR(6)), CURRENT_DATE)",
         )
         self.validate_identity(
             "SELECT DATE_PART('isoyear', ts)",
-            "SELECT EXTRACT(ISOYEAR FROM ts)",
+            "SELECT DATE_PART('isoyear', ts)",
         )
         self.validate_identity(
             "END WORK AND NO CHAIN",
@@ -702,16 +723,16 @@ FROM json_data, field_ids""",
         self.validate_all(
             "SELECT DATE_PART('minute', timestamp '2023-01-04 04:05:06.789')",
             write={
-                "postgres": "SELECT EXTRACT(MINUTE FROM CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
-                "redshift": "SELECT EXTRACT(MINUTE FROM CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
+                "postgres": "SELECT DATE_PART('minute', CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
+                "redshift": "SELECT DATE_PART('minute', CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
                 "snowflake": "SELECT DATE_PART(MINUTE, CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
             },
         )
         self.validate_all(
             "SELECT DATE_PART('month', date '20220502')",
             write={
-                "postgres": "SELECT EXTRACT(MONTH FROM CAST('20220502' AS DATE))",
-                "redshift": "SELECT EXTRACT(MONTH FROM CAST('20220502' AS DATE))",
+                "postgres": "SELECT DATE_PART('month', CAST('20220502' AS DATE))",
+                "redshift": "SELECT DATE_PART('month', CAST('20220502' AS DATE))",
                 "snowflake": "SELECT DATE_PART(MONTH, CAST('20220502' AS DATE))",
             },
         )

@@ -1081,7 +1081,9 @@ class TypeAnnotator:
 
     def _annotate_extract(self, expression: exp.Extract) -> exp.Extract:
         part = expression.name
-        if part == "TIME":
+        if expression.args.get("return_type"):
+            self._set_type(expression, expression.args["return_type"])
+        elif part == "TIME":
             self._set_type(expression, exp.DType.TIME)
         elif part == "DATE":
             self._set_type(expression, exp.DType.DATE)

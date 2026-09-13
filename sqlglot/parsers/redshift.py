@@ -31,6 +31,8 @@ def _build_date_delta(expr_type: Type[E]) -> t.Callable[[list], E]:
 
 
 class RedshiftParser(PostgresParser):
+    # Unlike PostgreSQL, EXTRACT's return type depends on the input type.
+    EXTRACT_RETURN_TYPE = None
     ID_VAR_TOKENS = {*PostgresParser.ID_VAR_TOKENS, TokenType.QUALIFY}
 
     FUNCTIONS = {

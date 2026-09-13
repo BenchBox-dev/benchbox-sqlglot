@@ -85,6 +85,7 @@ def _build_levenshtein_less_equal(args: list) -> exp.Levenshtein:
 
 class PostgresParser(parser.Parser):
     SUPPORTS_OMITTED_INTERVAL_SPAN_UNIT = True
+    EXTRACT_RETURN_TYPE: t.ClassVar[exp.DType | None] = exp.DType.DECIMAL
 
     # The one-byte "char" type is distinct from CHAR, and it can only be referenced by
     # quoting it: https://www.postgresql.org/docs/current/datatype-character.html
@@ -320,6 +321,12 @@ class PostgresParser(parser.Parser):
         self._match_text_seq("S")
         return self.expression(exp.Placeholder(this=this))
 
+    def _parse_extract(self) -> exp.Extract | exp.Anonymous:
+        expression = super()._parse_extract()
+        if isinstance(expression, exp.Extract) and self.EXTRACT_RETURN_TYPE:
+            expression.set("return_type", exp.DataType.build(self.EXTRACT_RETURN_TYPE))
+        return expression
+
     def _parse_date_part(self) -> exp.Expr:
         part = self._parse_type()
         self._match(TokenType.COMMA)
@@ -328,7 +335,11 @@ class PostgresParser(parser.Parser):
         if part and isinstance(part, (exp.Column, exp.Literal)):
             part = exp.var(part.name.upper())
 
-        return self.expression(exp.Extract(this=part, expression=value))
+        return self.expression(
+            exp.Extract(
+                this=part, expression=value, return_type=exp.DataType.build(exp.DType.DOUBLE)
+            )
+        )
 
     def _parse_unique_key(self) -> exp.Expr | None:
         return None
