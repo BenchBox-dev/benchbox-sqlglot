@@ -16,6 +16,7 @@ from sqlglot.dialects.dialect import (
     strposition_sql,
 )
 from sqlglot.generator import unsupported_args
+from sqlglot.helper import is_int
 from sqlglot.optimizer.scope import find_in_scope
 from sqlglot.tokens import TokenType
 
@@ -249,6 +250,35 @@ class SQLiteGenerator(generator.Generator):
         modifier = modifier.name if modifier.is_string else self.sql(modifier)
         modifier = f"'{modifier} {unit.name}'" if unit else f"'{modifier}'"
         return self.func("DATE", expression.this, modifier)
+
+    def _date_interval_sql(self, expression: exp.Add | exp.Sub) -> str | None:
+        date, interval = expression.this, expression.expression
+        if isinstance(expression, exp.Add) and isinstance(date, exp.Interval):
+            date, interval = interval, date
+        if (
+            date.is_type(exp.DType.DATE)
+            and isinstance(interval, exp.Interval)
+            and interval.unit
+            and interval.unit.name.upper() in ("DAY", "HOUR", "MINUTE", "SECOND")
+            and isinstance(interval.this, exp.Literal)
+            and is_int(interval.this.name)
+        ):
+            amount = int(interval.this.name)
+            if isinstance(expression, exp.Sub):
+                amount = -amount
+            modifier = exp.Literal.string(f"{amount} {interval.unit.name}")
+            return self.func("DATETIME", date, modifier)
+        return None
+
+    def add_sql(self, expression: exp.Add) -> str:
+        return self._date_interval_sql(expression) or super().add_sql(expression)
+
+    def sub_sql(self, expression: exp.Sub) -> str:
+        return self._date_interval_sql(expression) or super().sub_sql(expression)
+
+    def interval_sql(self, expression: exp.Interval) -> str:
+        self.unsupported("SQLite does not support this INTERVAL expression")
+        return super().interval_sql(expression)
 
     def cast_sql(self, expression: exp.Cast, safe_prefix: str | None = None) -> str:
         if expression.is_type("date"):

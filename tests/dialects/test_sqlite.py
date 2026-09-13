@@ -1,11 +1,44 @@
 from tests.dialects.test_dialect import Validator
 
 from sqlglot import exp
+from sqlglot.errors import ErrorLevel, UnsupportedError
 from sqlglot.helper import logger as helper_logger
 
 
 class TestSQLite(Validator):
     dialect = "sqlite"
+
+    def test_date_interval_arithmetic(self):
+        for operator, amount in (("+", "5"), ("-", "-5")):
+            for unit in ("DAY", "HOUR", "MINUTE", "SECOND"):
+                self.validate_all(
+                    f"SELECT DATETIME(DATE('2025-01-01'), '{amount} {unit}')",
+                    read={
+                        "duckdb": f"SELECT DATE '2025-01-01' {operator} INTERVAL '5' {unit}",
+                        "postgres": f"SELECT DATE '2025-01-01' {operator} INTERVAL '5' {unit}",
+                    },
+                )
+        self.validate_all(
+            "SELECT DATETIME(DATE(d), '-1 DAY') FROM t",
+            read={"postgres": "SELECT INTERVAL '-1' DAY + CAST(d AS DATE) FROM t"},
+        )
+        self.validate_all(
+            "SELECT DATETIME(DATE(d), '1 DAY') FROM t",
+            read={"postgres": "SELECT CAST(d AS DATE) - INTERVAL '-1' DAY FROM t"},
+        )
+        for source in (
+            "DATE '2024-01-31' + INTERVAL '1' MONTH",
+            "DATE '2024-02-29' + INTERVAL '1' YEAR",
+            "DATE '2024-01-01' + INTERVAL '0.1' SECOND",
+            "TIMESTAMP '2024-01-01 12:30:00.123456' + INTERVAL '1' DAY",
+            "d + INTERVAL '1' DAY",
+            "INTERVAL '1' DAY",
+        ):
+            with self.subTest(source=source), self.assertRaises(UnsupportedError):
+                self.parse_one(source, dialect="postgres").sql(
+                    "sqlite", unsupported_level=ErrorLevel.RAISE
+                )
+        self.validate_identity("SELECT a + 1, b - 2 FROM t")
 
     def test_sqlite(self):
         # Range operators (IN/LIKE) are left-associative and can be chained.
