@@ -56,6 +56,13 @@ def _build_timestamp_trunc(unit: str) -> t.Callable[[list], exp.TimestampTrunc]:
     )
 
 
+def _build_without_extra_args(expr_type: type[exp.Func], name: str) -> t.Callable[[list], exp.Func]:
+    # The optional mode / timezone arguments have no counterpart in expr_type
+    return lambda args: (
+        expr_type(this=args[0]) if len(args) == 1 else exp.Anonymous(this=name, expressions=args)
+    )
+
+
 def _build_split_by_char(args: list) -> exp.Split | exp.Anonymous:
     sep = seq_get(args, 0)
     if isinstance(sep, exp.Literal):
@@ -290,6 +297,7 @@ class ClickHouseParser(parser.Parser):
         "CURRENTDATABASE": exp.CurrentDatabase.from_arg_list,
         "CURRENTSCHEMAS": exp.CurrentSchemas.from_arg_list,
         "COUNTIF": _build_count_if,
+        "COUNTMATCHES": exp.RegexpCount.from_arg_list,
         "CITYHASH64": exp.CityHash64.from_arg_list,
         "COSINEDISTANCE": exp.CosineDistance.from_arg_list,
         "VERSION": exp.CurrentVersion.from_arg_list,
@@ -302,10 +310,17 @@ class ClickHouseParser(parser.Parser):
         "DATESUB": build_date_delta(exp.DateSub, default_unit=None),
         "DATETRUNC": exp.DateTrunc.from_arg_list,
         "FORMATDATETIME": _build_datetime_format(exp.TimeToStr),
+        "GROUPBITAND": exp.BitwiseAndAgg.from_arg_list,
+        "GROUPBITOR": exp.BitwiseOrAgg.from_arg_list,
+        "GROUPBITXOR": exp.BitwiseXorAgg.from_arg_list,
         "HAS": exp.ArrayContains.from_arg_list,
         "ILIKE": build_like(exp.ILike),
+        "ISINFINITE": exp.IsInf.from_arg_list,
+        "JSONEXTRACTRAW": build_json_extract_path(
+            exp.JSONExtract, zero_based_indexing=False, arrow_req_json_type=True
+        ),
         "JSONEXTRACTSTRING": build_json_extract_path(
-            exp.JSONExtractScalar, zero_based_indexing=False
+            exp.JSONExtractScalar, zero_based_indexing=False, arrow_req_json_type=True
         ),
         "LENGTH": lambda args: exp.Length(this=seq_get(args, 0), binary=True),
         "LIKE": build_like(exp.Like),
@@ -320,6 +335,9 @@ class ClickHouseParser(parser.Parser):
         "TIMESTAMPSUB": build_date_delta(exp.TimestampSub, default_unit=None),
         "TIMESTAMP_ADD": build_date_delta(exp.TimestampAdd, default_unit=None),
         "TIMESTAMPADD": build_date_delta(exp.TimestampAdd, default_unit=None),
+        "TODAYOFWEEK": _build_without_extra_args(exp.DayOfWeekIso, "toDayOfWeek"),
+        "TOISOWEEK": _build_without_extra_args(exp.WeekOfYear, "toISOWeek"),
+        "TOISOYEAR": _build_without_extra_args(exp.YearOfWeekIso, "toISOYear"),
         "TOMONDAY": _build_timestamp_trunc("WEEK"),
         "UNIQ": exp.ApproxDistinct.from_arg_list,
         "MD5": exp.MD5Digest.from_arg_list,
@@ -633,13 +651,16 @@ class ClickHouseParser(parser.Parser):
 
         return bracket
 
-    def _parse_global_in(self, this: exp.Expr | None) -> exp.Not | exp.In:
+    def _parse_global_in(self, this: exp.Expr | None) -> exp.Not | exp.In | None:
+        index = self._index - 1
         is_negated = self._match(TokenType.NOT)
-        in_expr: exp.In | None = None
-        if self._match(TokenType.IN):
-            in_expr = self._parse_in(this)
-            in_expr.set("is_global", True)
-        return self.expression(exp.Not(this=in_expr)) if is_negated else t.cast(exp.In, in_expr)
+        if not self._match(TokenType.IN):
+            self._retreat(index)
+            return None
+
+        in_expr = self._parse_in(this)
+        in_expr.set("is_global", True)
+        return self.expression(exp.Not(this=in_expr)) if is_negated else in_expr
 
     def _parse_table(
         self,

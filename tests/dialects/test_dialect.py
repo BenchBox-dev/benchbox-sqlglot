@@ -17,10 +17,11 @@ from sqlglot.dialects.duckdb import WS_CONTROL_CHARS_TO_DUCK
 from sqlglot.generator import logger as generator_logger
 from sqlglot.parser import logger as parser_logger
 from sqlglot.parsers.snowflake import SnowflakeParser
+from tests.helpers import is_compiled
 from collections.abc import Iterable
 import sqlglot.parsers.base as _base_module
 
-_PARSER_IS_COMPILED = getattr(_base_module, "__file__", "").endswith(".so")
+_PARSER_IS_COMPILED = is_compiled(_base_module)
 
 
 class Validator(unittest.TestCase):
@@ -117,6 +118,20 @@ class Validator(unittest.TestCase):
 
 class TestDialect(Validator):
     maxDiff = None
+
+    def test_preserve_original_names(self):
+        expression = exp.select(
+            parse_one("abs(1)", read="clickhouse"),
+            parse_one("abs(2)", read="bigquery"),
+            parse_one("abs(3)", read="drill"),
+        )
+        for dialect, sql in (
+            ("clickhouse", "SELECT abs(1), ABS(2), ABS(3)"),
+            ("bigquery", "SELECT ABS(1), abs(2), ABS(3)"),
+            ("drill", "SELECT ABS(1), ABS(2), abs(3)"),
+        ):
+            with self.subTest(dialect=dialect):
+                self.assertEqual(expression.sql(dialect), sql)
 
     def test_enum(self):
         dialect_by_key = Dialect.classes
@@ -228,6 +243,60 @@ class TestDialect(Validator):
 
         self.assertTrue(ddb_v1.version == ddb_v1_2.version)
         self.assertTrue(ddb_latest.version == Dialect.get_or_raise("duckdb").version)
+
+    def test_decimal_literals(self):
+        for dialect in ("hive", "spark2", "spark", "databricks"):
+            for literal, hive_type, spark_type in (
+                ("10.50", "DECIMAL(3, 1)", "DECIMAL(4, 2)"),
+                ("0", "DECIMAL(1, 0)", "DECIMAL(1, 0)"),
+                ("0.00", "DECIMAL(1, 0)", "DECIMAL(2, 2)"),
+                ("0.01", "DECIMAL(2, 2)", "DECIMAL(2, 2)"),
+                ("0001.50", "DECIMAL(2, 1)", "DECIMAL(3, 2)"),
+                ("1E-18", "DECIMAL(18, 18)", "DECIMAL(18, 18)"),
+                ("1.234567890123456789E2", "DECIMAL(19, 16)", "DECIMAL(19, 16)"),
+                ("12345678901234567890.123456789012345678", "DECIMAL(38, 18)", "DECIMAL(38, 18)"),
+                ("12345678901234567890.123456789012345670", "DECIMAL(37, 17)", "DECIMAL(38, 18)"),
+            ):
+                data_type = hive_type if dialect == "hive" else spark_type
+                for sign in ("", "-", "+"):
+                    with self.subTest(dialect=dialect, literal=literal, sign=sign):
+                        prefix = "-" if sign == "-" else ""
+                        self.assertEqual(
+                            parse_one(f"{sign}{literal}bd", read=dialect).sql(dialect),
+                            f"{prefix}CAST('{literal}' AS {data_type})",
+                        )
+
+            if dialect != "spark2":
+                for literal, precision in (("1E3", 4), ("0E3", 1 if dialect == "hive" else 4)):
+                    with self.subTest(dialect=dialect, literal=literal):
+                        self.assertEqual(
+                            parse_one(f"{literal}BD", read=dialect).sql(dialect),
+                            f"CAST('{literal}' AS DECIMAL({precision}, 0))",
+                        )
+
+            data_type = "DECIMAL(3, 1)" if dialect == "hive" else "DECIMAL(4, 2)"
+            for sql, expected in (
+                ("CAST(10.50 AS DECIMAL)", "CAST(10.50 AS DECIMAL)"),
+                ("10.50::DECIMAL", "CAST(10.50 AS DECIMAL)"),
+                ("CAST(10.50BD AS DECIMAL)", f"CAST(CAST('10.50' AS {data_type}) AS DECIMAL)"),
+            ):
+                with self.subTest(dialect=dialect, sql=sql):
+                    self.assertEqual(parse_one(sql, read=dialect).sql(dialect), expected)
+
+    def test_spark2_negative_scale_decimal_literals(self):
+        for literal, precision, scale in (
+            ("1E3", 1, -3),
+            ("0E3", 1, -3),
+            ("1.20E3", 3, -1),
+            ("1E38", 1, -38),
+        ):
+            with self.subTest(literal=literal):
+                expression = parse_one(f"{literal}BD", read="spark2")
+                self.assertEqual(expression.sql("spark2"), f"{literal}BD")
+                self.assertEqual(
+                    [parameter.this.to_py() for parameter in expression.to.expressions],
+                    [precision, scale],
+                )
 
     def test_cast(self):
         self.validate_all(
@@ -1827,7 +1896,7 @@ class TestDialect(Validator):
             write={
                 "": """JSON_EXTRACT(x, '$["a b"]')""",
                 "bigquery": """JSON_EXTRACT(x, '$[\\'a b\\']')""",
-                "clickhouse": "JSONExtractString(x, 'a b')",
+                "clickhouse": "JSONExtractRaw(x, 'a b')",
                 "duckdb": """x -> '$."a b"'""",
                 "mysql": """JSON_EXTRACT(x, '$."a b"')""",
                 "postgres": "JSON_EXTRACT_PATH(x, 'a b')",
@@ -1844,6 +1913,7 @@ class TestDialect(Validator):
             "JSON_EXTRACT(x, '$.y')",
             read={
                 "bigquery": "JSON_EXTRACT(x, '$.y')",
+                "clickhouse": "JSONExtractRaw(x, 'y')",
                 "duckdb": "x -> 'y'",
                 "doris": "JSON_EXTRACT(x, '$.y')",
                 "mysql": "JSON_EXTRACT(x, '$.y')",
@@ -1855,7 +1925,7 @@ class TestDialect(Validator):
             },
             write={
                 "bigquery": "JSON_EXTRACT(x, '$.y')",
-                "clickhouse": "JSONExtractString(x, 'y')",
+                "clickhouse": "JSONExtractRaw(x, 'y')",
                 "doris": "JSON_EXTRACT(x, '$.y')",
                 "duckdb": "x -> '$.y'",
                 "mysql": "JSON_EXTRACT(x, '$.y')",
@@ -1899,6 +1969,7 @@ class TestDialect(Validator):
             "JSON_EXTRACT(x, '$.y[0].z')",
             read={
                 "bigquery": "JSON_EXTRACT(x, '$.y[0].z')",
+                "clickhouse": "JSONExtractRaw(x, 'y', 1, 'z')",
                 "duckdb": "x -> '$.y[0].z'",
                 "doris": "JSON_EXTRACT(x, '$.y[0].z')",
                 "mysql": "JSON_EXTRACT(x, '$.y[0].z')",
@@ -1909,7 +1980,7 @@ class TestDialect(Validator):
             },
             write={
                 "bigquery": "JSON_EXTRACT(x, '$.y[0].z')",
-                "clickhouse": "JSONExtractString(x, 'y', 1, 'z')",
+                "clickhouse": "JSONExtractRaw(x, 'y', 1, 'z')",
                 "doris": "JSON_EXTRACT(x, '$.y[0].z')",
                 "duckdb": "x -> '$.y[0].z'",
                 "mysql": "JSON_EXTRACT(x, '$.y[0].z')",
@@ -1968,7 +2039,7 @@ class TestDialect(Validator):
             "JSON_EXTRACT(x, '$.y[*]')",
             write={
                 "bigquery": "JSON_EXTRACT(x, '$.y')",
-                "clickhouse": "JSONExtractString(x, 'y')",
+                "clickhouse": "JSONExtractRaw(x, 'y')",
                 "postgres": "JSON_EXTRACT_PATH(x, 'y')",
                 "redshift": "JSON_EXTRACT_PATH_TEXT(x, 'y')",
                 "snowflake": "GET_PATH(PARSE_JSON(x), 'y')",
@@ -2086,6 +2157,29 @@ class TestDialect(Validator):
         )
 
     def test_set_operators(self):
+        self.validate_all(
+            "SELECT * FROM a UNION SELECT * FROM b OFFSET 1",
+            write={
+                "": "SELECT * FROM a UNION SELECT * FROM b OFFSET 1",
+                "clickhouse": "SELECT * FROM (SELECT * FROM a UNION DISTINCT SELECT * FROM b) AS _l_0 OFFSET 1",
+                "tsql": "SELECT * FROM (SELECT * FROM a UNION SELECT * FROM b) AS _l_0 ORDER BY (SELECT NULL) OFFSET 1 ROWS",
+            },
+        )
+        self.validate_all(
+            "SELECT * FROM a UNION SELECT * FROM b ORDER BY x LIMIT 1 OFFSET 1",
+            write={
+                "": "SELECT * FROM a UNION SELECT * FROM b ORDER BY x LIMIT 1 OFFSET 1",
+                "clickhouse": "SELECT * FROM (SELECT * FROM a UNION DISTINCT SELECT * FROM b) AS _l_0 ORDER BY x NULLS FIRST LIMIT 1 OFFSET 1",
+                "tsql": "SELECT * FROM a UNION SELECT * FROM b ORDER BY x OFFSET 1 ROWS FETCH FIRST 1 ROWS ONLY",
+            },
+        )
+        self.validate_all(
+            "SELECT a FROM x UNION SELECT a FROM y FETCH FIRST 2 ROWS ONLY",
+            write={
+                "clickhouse": "SELECT * FROM (SELECT a FROM x UNION DISTINCT SELECT a FROM y) AS _l_0 LIMIT 2",
+                "tsql": "SELECT * FROM (SELECT a FROM x UNION SELECT a FROM y) AS _l_0 ORDER BY (SELECT NULL) OFFSET 0 ROWS FETCH FIRST 2 ROWS ONLY",
+            },
+        )
         self.validate_all(
             "SELECT * FROM a UNION SELECT * FROM b ORDER BY x LIMIT 1",
             write={
@@ -2808,16 +2902,6 @@ class TestDialect(Validator):
 
     def test_limit(self):
         self.validate_identity("WITH t AS (SELECT 1 AS all) SELECT 1 FROM t LIMIT all")
-        self.validate_all(
-            "WITH t AS (SELECT 1 AS all) SELECT 1 FROM t",
-            read={
-                "databricks": "WITH t AS (SELECT 1 AS all) SELECT 1 FROM t LIMIT all",
-                "duckdb": "WITH t AS (SELECT 1 AS all) SELECT 1 FROM t LIMIT all",
-                "presto": "WITH t AS (SELECT 1 AS all) SELECT 1 FROM t LIMIT all",
-                "postgres": "WITH t AS (SELECT 1 AS all) SELECT 1 FROM t LIMIT all",
-                "spark": "WITH t AS (SELECT 1 AS all) SELECT 1 FROM t LIMIT all",
-            },
-        )
 
         self.validate_all(
             "SELECT * FROM data LIMIT 10, 20",
@@ -3106,7 +3190,27 @@ SELECT
             write={"sqlite": "BEGIN IMMEDIATE TRANSACTION"},
         )
 
+    def test_update(self):
+        for sql in (
+            "UPDATE t SET a = x OR y",
+            "UPDATE t SET a = b AND c WHERE id = 1",
+            "UPDATE t SET a = x OR y AND z, b = x = y WHERE id = 1",
+            "UPDATE t SET flag = COALESCE(id IN (SELECT id FROM s), FALSE) OR COALESCE(sid IN (SELECT sid FROM u), FALSE)",
+        ):
+            with self.subTest(sql=sql):
+                self.validate_all(
+                    sql,
+                    read={dialect: sql for dialect in ("postgres", "duckdb", "trino", "mysql")},
+                    write={dialect: sql for dialect in ("postgres", "duckdb", "trino", "mysql")},
+                )
+
     def test_merge(self):
+        sql = "MERGE INTO target AS t USING source AS s ON t.id = s.id WHEN MATCHED THEN UPDATE SET a = s.x OR s.y, b = s.x AND s.y WHEN NOT MATCHED THEN INSERT (id) VALUES (s.id)"
+        self.validate_all(
+            sql,
+            read={dialect: sql for dialect in ("postgres", "duckdb", "trino")},
+            write={dialect: sql for dialect in ("postgres", "duckdb", "trino")},
+        )
         self.validate_all(
             """
             MERGE INTO target USING source ON target.id = source.id
@@ -3299,7 +3403,7 @@ SELECT
                 "presto": "SELECT COUNT_IF(col % 2 = 0) FROM foo",
                 "snowflake": "SELECT COUNT_IF(col % 2 = 0) FROM foo",
                 "sqlite": "SELECT SUM(IIF(col % 2 = 0, 1, 0)) FROM foo",
-                "tsql": "SELECT COUNT_IF(col % 2 = 0) FROM foo",
+                "tsql": "SELECT COUNT(IIF(col % 2 = 0, 1, NULL)) FROM foo",
                 "postgres": "SELECT SUM(CASE WHEN col % 2 = 0 THEN 1 ELSE 0 END) FROM foo",
                 "redshift": "SELECT SUM(CASE WHEN col % 2 = 0 THEN 1 ELSE 0 END) FROM foo",
             },
@@ -3316,7 +3420,7 @@ SELECT
                 "databricks": "SELECT COUNT_IF(col % 2 = 0) FILTER(WHERE col < 1000) FROM foo",
                 "presto": "SELECT COUNT_IF(col % 2 = 0) FILTER(WHERE col < 1000) FROM foo",
                 "sqlite": "SELECT SUM(IIF(col % 2 = 0, 1, 0)) FILTER(WHERE col < 1000) FROM foo",
-                "tsql": "SELECT COUNT_IF(col % 2 = 0) FILTER(WHERE col < 1000) FROM foo",
+                "tsql": "SELECT COUNT(IIF(col < 1000 AND col % 2 = 0, 1, NULL)) FROM foo",
             },
         )
 
@@ -4088,6 +4192,23 @@ FROM subquery2""",
                     "postgres": f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x){suffix}",
                 },
             )
+
+    def test_filter(self):
+        self.validate_all(
+            "SELECT SUM(x) FILTER(WHERE c = 'US'), COUNT(*) FILTER(WHERE c > 1), COUNT(DISTINCT x) FILTER(WHERE c > 1) FROM t",
+            write={
+                "bigquery": "SELECT SUM(IF(c = 'US', x, NULL)), COUNTIF(c > 1), COUNT(DISTINCT IF(c > 1, x, NULL)) FROM t",
+                "snowflake": "SELECT SUM(IFF(c = 'US', x, NULL)), COUNT_IF(c > 1), COUNT(DISTINCT IFF(c > 1, x, NULL)) FROM t",
+                "tsql": "SELECT SUM(IIF(c = 'US', x, NULL)), COUNT(IIF(c > 1, 1, NULL)), COUNT_BIG(DISTINCT IIF(c > 1, x, NULL)) FROM t",
+            },
+        )
+        self.validate_all(
+            "SELECT ARRAY_AGG(x ORDER BY y NULLS FIRST) FILTER(WHERE c > 1) FROM t",
+            write={
+                "bigquery": "SELECT ARRAY_AGG(IF(c > 1, x, NULL) IGNORE NULLS ORDER BY y) FROM t",
+                "snowflake": "SELECT ARRAY_AGG(IFF(c > 1, x, NULL)) WITHIN GROUP (ORDER BY y NULLS FIRST) FROM t",
+            },
+        )
 
     def test_filter_within_group(self):
         self.validate_all(
@@ -5357,6 +5478,10 @@ FROM subquery2""",
         self.validate_identity("SELECT 1 OPERATOR(+) 2")
         self.validate_identity("SELECT 1 OPERATOR(+) /* foo */ 2")
         self.validate_identity("SELECT 1 OPERATOR(pg_catalog.+) 2")
+        self.validate_identity("SELECT 1 operator", "SELECT 1 AS operator")
+        self.validate_identity(
+            "SELECT 1 OPERATOR(+) 2 operator", "SELECT 1 OPERATOR(+) 2 AS operator"
+        )
 
     def test_json_keys(self):
         self.validate_all(
@@ -5446,3 +5571,8 @@ FROM subquery2""",
         result = parse_one("SELECT DOUBLE_IT(5)", dialect=MyDialect)
         self.assertIsInstance(result.expressions[0], exp.Mul)
         self.assertEqual(result.sql(), "SELECT 2 * 5")
+
+    def test_agg(self):
+        expression = self.validate_identity("SELECT AGG(m), AGG(m) AS x, AGG(t.m) FROM t")
+        self.assertIsInstance(expression.selects[0], exp.Agg)
+        self.assertEqual([s.output_name for s in expression.selects], ["m", "x", "m"])

@@ -213,6 +213,13 @@ def eliminate_qualify(expression: exp.Expr) -> exp.Expr:
     corresponding expression to avoid creating invalid column references.
     """
     if isinstance(expression, exp.Select) and expression.args.get("qualify"):
+        parent = expression.parent
+        if isinstance(parent, exp.Insert) and isinstance(parent.parent, exp.MultitableInserts):
+            # A FROM-first multi-table INSERT branch shares its parent's FROM, so it can't be wrapped
+            raise UnsupportedError(
+                "QUALIFY is not supported in a FROM-first multi-table INSERT branch"
+            )
+
         taken = set(expression.named_selects)
         for select in expression.selects:
             if not select.alias_or_name:
@@ -252,7 +259,12 @@ def eliminate_qualify(expression: exp.Expr) -> exp.Expr:
                     qualify_filters = column
                 else:
                     select_candidate.replace(column)
-            elif select_candidate.name not in expression.named_selects:
+            elif select_candidate.name not in expression.named_selects and not (
+                select_candidate.find_ancestor(exp.Window)
+            ):
+                # A column that is only read by a window function is computed by the window
+                # itself, so projecting it in the subquery is redundant and can even produce
+                # invalid SQL, e.g. when the query is grouped
                 expression.select(select_candidate.copy(), copy=False)
 
         return outer_selects.from_(expression.subquery(alias="_t", copy=False), copy=False).where(
@@ -685,7 +697,6 @@ def eliminate_full_outer_join(expression: exp.Expr) -> exp.Expr:
 
         if len(full_outer_joins) == 1:
             expression_copy = expression.copy()
-            expression.set("limit", None)
             index, full_outer_join = full_outer_joins[0]
 
             tables = (expression.args["from_"].alias_or_name, full_outer_join.alias_or_name)
@@ -702,10 +713,15 @@ def eliminate_full_outer_join(expression: exp.Expr) -> exp.Expr:
             )
             expression_copy.args["joins"][index].set("side", "right")
             expression_copy = expression_copy.where(exp.Exists(this=anti_join_clause).not_())
-            expression_copy.set("with_", None)  # remove CTEs from RIGHT side
-            expression.set("order", None)  # remove order by from LEFT side
 
-            return exp.union(expression, expression_copy, copy=False, distinct=False)
+            union = exp.union(expression, expression_copy, copy=False, distinct=False)
+            for arg in ("with_", "order", "limit", "offset"):
+                value = expression.args.get(arg)
+                if value:
+                    expression.set(arg, None)
+                    expression_copy.set(arg, None)
+                    union.set(arg, value)
+            return union
 
     return expression
 

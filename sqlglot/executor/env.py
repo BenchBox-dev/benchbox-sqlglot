@@ -197,11 +197,24 @@ def _like(this, e, flags=0):
 
 
 @null_if_any
+def intdiv(this, e):
+    if not isinstance(this, int) or not isinstance(e, int):
+        return int(this / e)
+
+    quotient = abs(this) // abs(e)
+    return quotient if (this < 0) == (e < 0) else -quotient
+
+
+@null_if_any
 def interval(this, unit):
     plural = unit + "S"
     if plural in Generator.TIME_PART_SINGULARS:
         unit = plural
     return datetime.timedelta(**{unit.lower(): float(this)})
+
+
+def zip_not_null(*args):
+    return (row for row in zip(*args) if all(v is not None for v in row))
 
 
 @null_if_any
@@ -273,7 +286,7 @@ ENV = {
     "IF": lambda predicate, true, false: true if predicate else false,
     "IN": sql_in,
     "INT": null_if_any(int),
-    "INTDIV": null_if_any(lambda e, this: e // this),
+    "INTDIV": intdiv,
     "INTERVAL": interval,
     "JSONEXTRACT": jsonextract,
     "LEFT": null_if_any(lambda this, e: this[:e]),
@@ -300,6 +313,7 @@ ENV = {
     "SUBSTRING": substring,
     "TIMESTRTOTIME": null_if_any(lambda arg: datetime.datetime.fromisoformat(arg)),
     "UPPER": null_if_any(lambda arg: arg.upper()),
+    "ZIPNOTNULL": zip_not_null,
     "YEAR": null_if_any(lambda arg: arg.year),
     "MONTH": null_if_any(lambda arg: arg.month),
     "DAY": null_if_any(lambda arg: arg.day),

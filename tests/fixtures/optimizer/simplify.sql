@@ -145,6 +145,81 @@ NULL IS DISTINCT FROM NULL;
 NOT (NOT TRUE);
 TRUE;
 
+NOT (a = b);
+a <> b;
+
+# dialect: duckdb
+# execute: true
+SELECT c = NOT (a = b) AS result FROM comparisons ORDER BY a, b, c;
+SELECT c = (a <> b) AS result FROM comparisons ORDER BY a, b, c;
+
+# dialect: duckdb
+# execute: true
+SELECT c = NOT (a <> b) AS result FROM comparisons ORDER BY a, b, c;
+SELECT c = (a = b) AS result FROM comparisons ORDER BY a, b, c;
+
+# dialect: duckdb
+# execute: true
+SELECT c = NOT (a < b) AS result FROM comparisons ORDER BY a, b, c;
+SELECT c = (a >= b) AS result FROM comparisons ORDER BY a, b, c;
+
+# dialect: duckdb
+# execute: true
+SELECT c = NOT (a <= b) AS result FROM comparisons ORDER BY a, b, c;
+SELECT c = (a > b) AS result FROM comparisons ORDER BY a, b, c;
+
+# dialect: duckdb
+# execute: true
+SELECT c = NOT (a > b) AS result FROM comparisons ORDER BY a, b, c;
+SELECT c = (a <= b) AS result FROM comparisons ORDER BY a, b, c;
+
+# dialect: duckdb
+# execute: true
+SELECT c = NOT (a >= b) AS result FROM comparisons ORDER BY a, b, c;
+SELECT c = (a < b) AS result FROM comparisons ORDER BY a, b, c;
+
+# dialect: duckdb
+# execute: true
+SELECT c <> NOT (a = b) AS result FROM comparisons ORDER BY a, b, c;
+SELECT c <> (a <> b) AS result FROM comparisons ORDER BY a, b, c;
+
+# dialect: duckdb
+# execute: true
+SELECT c <> NOT (a <> b) AS result FROM comparisons ORDER BY a, b, c;
+SELECT c <> (a = b) AS result FROM comparisons ORDER BY a, b, c;
+
+# dialect: duckdb
+# execute: true
+SELECT c <> NOT (a < b) AS result FROM comparisons ORDER BY a, b, c;
+SELECT c <> (a >= b) AS result FROM comparisons ORDER BY a, b, c;
+
+# dialect: duckdb
+# execute: true
+SELECT c <> NOT (a <= b) AS result FROM comparisons ORDER BY a, b, c;
+SELECT c <> (a > b) AS result FROM comparisons ORDER BY a, b, c;
+
+# dialect: duckdb
+# execute: true
+SELECT c <> NOT (a > b) AS result FROM comparisons ORDER BY a, b, c;
+SELECT c <> (a <= b) AS result FROM comparisons ORDER BY a, b, c;
+
+# dialect: duckdb
+# execute: true
+SELECT c <> NOT (a >= b) AS result FROM comparisons ORDER BY a, b, c;
+SELECT c <> (a < b) AS result FROM comparisons ORDER BY a, b, c;
+
+1 - NOT (b = b);
+1 - (b <> b);
+
+2 || NOT (b = 2);
+2 || (b <> 2);
+
+SELECT c = NOT (a = ALL (SELECT b FROM t)) FROM t;
+SELECT c = (a <> ANY(SELECT b FROM t)) FROM t;
+
+SELECT c = NOT (a <> ANY (SELECT b FROM t)) FROM t;
+SELECT c = (a = ALL ((SELECT b FROM t))) FROM t;
+
 a AND (b OR b);
 a AND b;
 
@@ -311,9 +386,11 @@ SELECT t_bool.a FROM t_bool;
 SELECT t_bool.a AND t_bool.a FROM t_bool;
 SELECT t_bool.a FROM t_bool;
 
+# schema: {"t": {"x": "INT"}}
 SELECT SUM(t.x OR t.x) FROM t;
 SELECT SUM(t.x AND TRUE) FROM t;
 
+# schema: {"t": {"x": "INT"}}
 SELECT SUM(t.x AND t.x) FROM t;
 SELECT SUM(t.x AND TRUE) FROM t;
 
@@ -387,6 +464,41 @@ A AND B AND C;
 --------------------------------------
 SELECT x WHERE TRUE;
 SELECT x;
+
+# dialect: duckdb
+# execute: true
+SELECT COUNT(*) FILTER (WHERE TRUE) FROM x;
+SELECT COUNT(*) FILTER(WHERE TRUE) FROM x;
+
+# dialect: duckdb
+# execute: true
+COUNT(*) FILTER (WHERE 1 = 1);
+COUNT(*) FILTER(WHERE TRUE);
+
+# dialect: duckdb
+# execute: true
+SELECT COUNT(a) FILTER (WHERE TRUE) AS count_value, SUM(DISTINCT a) FILTER (WHERE 1 = 1) AS sum_value FROM x;
+SELECT COUNT(a) FILTER(WHERE TRUE) AS count_value, SUM(DISTINCT a) FILTER(WHERE TRUE) AS sum_value FROM x;
+
+# dialect: duckdb
+# execute: true
+SELECT COUNT(*) FILTER (WHERE TRUE), SUM(a) FILTER (WHERE TRUE) FROM x WHERE FALSE;
+SELECT COUNT(*) FILTER(WHERE TRUE), SUM(a) FILTER(WHERE TRUE) FROM x WHERE FALSE;
+
+# dialect: duckdb
+# execute: true
+SELECT COUNT(*) FILTER (WHERE FALSE) AS count_value, SUM(a) FILTER (WHERE NULL) AS null_sum, SUM(a) FILTER (WHERE a > 1 AND TRUE) AS sum_value FROM x;
+SELECT COUNT(*) FILTER(WHERE FALSE) AS count_value, SUM(a) FILTER(WHERE NULL) AS null_sum, SUM(a) FILTER(WHERE a > 1) AS sum_value FROM x;
+
+# dialect: duckdb
+# execute: true
+SELECT a, SUM(a) FILTER (WHERE TRUE) OVER () FROM x ORDER BY a;
+SELECT a, SUM(a) FILTER(WHERE TRUE) OVER () FROM x ORDER BY a;
+
+# dialect: duckdb
+# execute: true
+SELECT COUNT(*) FILTER (WHERE TRUE) FROM x WHERE TRUE;
+SELECT COUNT(*) FILTER(WHERE TRUE) FROM x;
 
 SELECT x FROM y JOIN z ON TRUE;
 SELECT x FROM y CROSS JOIN z;
@@ -1083,6 +1195,36 @@ CAST(x AS INT) < 0 AND CAST(x AS INT) >= -500;
 --------------------------------------
 -- COALESCE
 --------------------------------------
+# dialect: duckdb
+# execute: true
+SELECT COALESCE(a, NULL, 1) = 1 AS eq FROM x;
+SELECT COALESCE(a, NULL) = 1 OR COALESCE(a, NULL) IS NULL AS eq FROM x;
+
+# dialect: duckdb
+# execute: true
+SELECT 1 = COALESCE(a, NULL, 1) AS eq FROM x;
+SELECT COALESCE(a, NULL) = 1 OR COALESCE(a, NULL) IS NULL AS eq FROM x;
+
+# dialect: duckdb
+# execute: true
+SELECT 0 < COALESCE(a, NULL, -1) AS gt FROM x;
+SELECT COALESCE(a, NULL, -1) > 0 AS gt FROM x;
+
+# dialect: duckdb
+# execute: true
+SELECT COALESCE(a, NULL, b, 3) = 3 AS eq FROM x;
+SELECT COALESCE(a, NULL, b) = 3 OR COALESCE(a, NULL, b) IS NULL AS eq FROM x;
+
+# dialect: duckdb
+# execute: true
+SELECT COALESCE(a, NULL, NULL, 1) = 1 AS eq FROM x;
+SELECT COALESCE(a, NULL, NULL) = 1 OR COALESCE(a, NULL, NULL) IS NULL AS eq FROM x;
+
+# dialect: duckdb
+# execute: true
+SELECT COALESCE(a, NULL) = 1 AS eq FROM x;
+SELECT COALESCE(a, NULL) = 1 AS eq FROM x;
+
 COALESCE(x);
 x;
 
@@ -1141,6 +1283,7 @@ ROW() OVER () = 1 OR ROW() OVER () IS NULL;
 a AND b AND COALESCE(ROW() OVER (), 1) = 1;
 (ROW() OVER () = 1 OR ROW() OVER () IS NULL) AND a AND b;
 
+# execute: true
 COALESCE(1, 2);
 1;
 
@@ -1201,6 +1344,7 @@ CONCAT_WS(sep, 'a', 'b');
 'a' || 'b' || x;
 'ab' || x;
 
+# schema: {"foo": {"cond": "BOOLEAN"}}
 CONCAT(a, b) IN (SELECT * FROM foo WHERE cond);
 CONCAT(a, b) IN (SELECT * FROM foo WHERE cond);
 
@@ -1647,12 +1791,15 @@ x = 5 AND (x = y OR z = 1);
 x = 5 AND x + 3 = 8;
 x = 5;
 
+# schema: {"t": {"x": "INT", "y": "INT"}}
 x = 5 AND (SELECT x FROM t WHERE y = 1);
 (SELECT x FROM t WHERE y = 1) AND x = 5;
 
+# schema: {"t": {"y": "INT", "z": "INT"}}
 x = 1 AND y > 0 AND (SELECT z = 5 FROM t WHERE y = 1);
 (SELECT z = 5 FROM t WHERE y = 1) AND x = 1 AND y > 0;
 
+# schema: {"t": {"a": "BOOLEAN", "b": "BOOLEAN", "c": "BOOLEAN", "z": "INT"}}
 x = 1 AND x = y AND (SELECT z FROM t WHERE a AND (b OR c));
 (SELECT z FROM t WHERE a AND (b OR c)) AND x = 1 AND x = y;
 
@@ -1698,8 +1845,47 @@ x;
 CASE WHEN FALSE THEN x ELSE y END;
 y;
 
+CASE WHEN TRUE THEN (SELECT 1) ELSE (SELECT 2) END;
+(SELECT 1);
+
+CASE WHEN FALSE THEN (SELECT 1) ELSE (SELECT 2) END;
+(SELECT 2);
+
+IF(TRUE, (SELECT 1), (SELECT 2));
+(SELECT 1);
+
+IF(FALSE, (SELECT 1), (SELECT 2));
+(SELECT 2);
+
 CASE WHEN FALSE THEN x WHEN FALSE THEN y WHEN TRUE THEN z END;
 z;
+
+CASE WHEN cond THEN x WHEN TRUE THEN y END;
+CASE WHEN cond THEN x ELSE y END;
+
+CASE WHEN cond THEN x WHEN TRUE THEN y WHEN other_cond THEN z ELSE w END;
+CASE WHEN cond THEN x ELSE y END;
+
+CASE WHEN FALSE THEN w WHEN cond THEN x WHEN NULL THEN y WHEN other_cond THEN z WHEN TRUE THEN v ELSE u END;
+CASE WHEN cond THEN x WHEN other_cond THEN z ELSE v END;
+
+CASE WHEN cond THEN x WHEN 1 + 1 = 2 THEN y ELSE z END;
+CASE WHEN cond THEN x ELSE y END;
+
+CASE 1 WHEN x THEN y WHEN 1 THEN z ELSE w END;
+CASE WHEN x = 1 THEN y ELSE z END;
+
+# execute: true
+SELECT CASE WHEN a > 1 THEN b WHEN TRUE THEN 2 END AS result FROM comparisons;
+SELECT CASE WHEN a > 1 THEN b ELSE 2 END AS result FROM comparisons;
+
+# execute: true
+SELECT CASE WHEN c THEN a WHEN b = 1 THEN b WHEN TRUE THEN 2 WHEN a = 2 THEN 3 ELSE 4 END AS result FROM comparisons;
+SELECT CASE WHEN c THEN a WHEN b = 1 THEN b ELSE 2 END AS result FROM comparisons;
+
+# execute: true
+SELECT CASE 1 WHEN a THEN b WHEN 1 THEN 2 ELSE 3 END AS result FROM comparisons;
+SELECT CASE WHEN a = 1 THEN b ELSE 2 END AS result FROM comparisons;
 
 CASE NULL WHEN NULL THEN x ELSE y END;
 y;
@@ -1733,6 +1919,46 @@ CASE WHEN x = y THEN z END;
 
 CASE x1 + x2 WHEN x3 THEN x4 WHEN x5 + x6 THEN x7 ELSE x8 END;
 CASE WHEN x3 = (x1 + x2) THEN x4 WHEN (x1 + x2) = (x5 + x6) THEN x7 ELSE x8 END;
+
+-- collapsing a CASE under an operator must preserve the grouping of the branch
+x * CASE WHEN FALSE THEN NULL ELSE a - b END;
+x * (a - b);
+
+x * (CASE WHEN 1 IS NULL THEN NULL ELSE 1 - b END);
+x * (1 - b);
+
+x - CASE WHEN TRUE THEN a + b ELSE c END;
+x - (a + b);
+
+CASE WHEN FALSE THEN NULL ELSE a - b END * x;
+(a - b) * x;
+
+x / CASE WHEN FALSE THEN 1 ELSE a * b END;
+x / (a * b);
+
+x + CASE WHEN TRUE THEN a * b ELSE c END;
+x + a * b;
+
+x * IF(TRUE, a - b, c);
+x * (a - b);
+
+x * IF(FALSE, c, a - b);
+x * (a - b);
+
+x * CASE WHEN TRUE THEN IF(FALSE, c, a - b) ELSE c END;
+x * (a - b);
+
+CASE WHEN TRUE THEN NOT p ELSE FALSE END || 'x';
+(NOT p) || 'x';
+
+IF(FALSE, FALSE, NOT p) || 'x';
+(NOT p) || 'x';
+
+NOT CASE WHEN TRUE THEN a AND b ELSE c END;
+NOT a OR NOT b;
+
+-CASE WHEN TRUE THEN a + b ELSE c END;
+-(a + b);
 
 --------------------------------------
 -- Simplify STARTSWITH
@@ -1823,6 +2049,6 @@ SELECT IF(NULL = NULL, 1, 100);
 SELECT 100;
 
 # dialect: snowflake
+# schema: {"o": {"id": "INT", "observed_date": "DATE"}, "e": {"id": "INT", "metric_date": "DATE"}}
 SELECT * FROM o ASOF JOIN e MATCH_CONDITION (o.observed_date >= e.metric_date) ON o.id = e.id;
 SELECT * FROM o ASOF JOIN e MATCH_CONDITION (o.observed_date >= e.metric_date) ON e.id = o.id;
-

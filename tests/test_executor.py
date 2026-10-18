@@ -4,6 +4,7 @@ import datetime
 import unittest
 from datetime import date, time
 from concurrent.futures import ProcessPoolExecutor
+from multiprocessing import get_context
 from unittest import mock
 
 import duckdb
@@ -162,6 +163,7 @@ class TestExecutor(unittest.TestCase):
 
     def _mp_execute(self, schema, tables, sqls, tpch):
         with ProcessPoolExecutor(
+            mp_context=get_context("spawn"),
             initializer=initializer,
             initargs=(schema, tables),
         ) as pool:
@@ -442,6 +444,85 @@ class TestExecutor(unittest.TestCase):
         ):
             with self.subTest(sql):
                 self.assertEqual(execute(sql, schema, tables=tables).rows, expected)
+
+    def test_distinct_order_by(self):
+        schema = {"x": {"a": "int", "b": "int"}, "n": {"a": "int"}}
+        tables = {
+            "x": [{"a": 1, "b": 5}, {"a": 3, "b": 6}, {"a": 2, "b": 7}, {"a": 3, "b": 6}],
+            "n": [{"a": 1}, {"a": None}, {"a": 3}, {"a": None}],
+        }
+
+        for sql, expected in (
+            ("SELECT DISTINCT a FROM x ORDER BY a", [(1,), (2,), (3,)]),
+            ("SELECT DISTINCT a FROM x ORDER BY a DESC", [(3,), (2,), (1,)]),
+            ("SELECT DISTINCT a FROM x ORDER BY a DESC LIMIT 1", [(3,)]),
+            ("SELECT DISTINCT a FROM x ORDER BY a DESC LIMIT 1 OFFSET 1", [(2,)]),
+            ("SELECT DISTINCT a, b FROM x ORDER BY b DESC", [(2, 7), (3, 6), (1, 5)]),
+            ("SELECT DISTINCT a + 1 AS c FROM x ORDER BY c DESC", [(4,), (3,), (2,)]),
+            (
+                "SELECT DISTINCT a, SUM(b) AS s FROM x GROUP BY a ORDER BY a DESC",
+                [(3, 12), (2, 7), (1, 5)],
+            ),
+            ("SELECT DISTINCT a FROM n ORDER BY a NULLS FIRST", [(None,), (1,), (3,)]),
+            ("SELECT DISTINCT a FROM n ORDER BY a DESC NULLS LAST", [(3,), (1,), (None,)]),
+        ):
+            with self.subTest(sql):
+                self.assertEqual(execute(sql, schema, tables=tables).rows, expected)
+
+    def test_distinct_order_by_column_outside_select_list(self):
+        # duckdb/sqlite pick an arbitrary row's value here instead of rejecting like postgres
+        schema = {"x": {"a": "int", "b": "int"}}
+        tables = {"x": [{"a": 5, "b": 10}, {"a": 1, "b": 10}, {"a": 3, "b": 20}]}
+
+        for sql, expected in (
+            ("SELECT DISTINCT b FROM x ORDER BY a", [(20,), (10,)]),
+            ("SELECT DISTINCT b FROM x ORDER BY a DESC", [(10,), (20,)]),
+        ):
+            with self.subTest(sql):
+                self.assertEqual(execute(sql, schema, tables=tables).rows, expected)
+
+    def test_distinct_order_by_computed_expression(self):
+        tables = {"x": [{"a": 1}, {"a": 3}, {"a": 2}, {"a": 3}]}
+        sql = "SELECT DISTINCT a FROM x ORDER BY a + 1 DESC"
+        self.assertEqual(execute(sql, tables=tables).rows, [(3,), (2,), (1,)])
+
+    def test_distinct_group_by_order_by_aggregate(self):
+        tables = {
+            "x": [
+                {"a": 1, "b": 10},
+                {"a": 2, "b": 20},
+                {"a": 3, "b": 28},
+                {"a": 2, "b": 25},
+                {"a": 1, "b": 40},
+            ]
+        }
+        sql = "SELECT DISTINCT a FROM x GROUP BY a ORDER BY AVG(b)"
+        self.assertEqual(execute(sql, tables=tables).rows, [(2,), (1,), (3,)])
+
+    def test_distinct_order_by_column_from_different_table(self):
+        schema = {"x": {"a": "int", "id": "int"}, "y": {"a": "int", "id": "int"}}
+        tables = {
+            "x": [{"a": 1, "id": 1}, {"a": 2, "id": 2}],
+            "y": [{"a": 100, "id": 1}, {"a": 50, "id": 2}],
+        }
+        sql = "SELECT DISTINCT x.a FROM x JOIN y ON x.id = y.id ORDER BY y.a"
+        self.assertEqual(execute(sql, schema, tables=tables).rows, [(2,), (1,)])
+
+    def test_distinct_order_by_aliased_projection(self):
+        tables = {"x": [{"a": 1}, {"a": 3}, {"a": 2}, {"a": 3}]}
+
+        for sql, expected in (
+            ("SELECT DISTINCT a AS z FROM x ORDER BY a DESC", [(3,), (2,), (1,)]),
+            ("SELECT DISTINCT a AS z FROM x ORDER BY x.a DESC", [(3,), (2,), (1,)]),
+            ("SELECT DISTINCT a + 1 AS z FROM x ORDER BY a + 1 DESC", [(4,), (3,), (2,)]),
+        ):
+            with self.subTest(sql):
+                self.assertEqual(execute(sql, tables=tables).rows, expected)
+
+    def test_distinct_order_by_unaliased_projection(self):
+        tables = {"x": [{"c": "a"}, {"c": "c"}, {"c": "b"}, {"c": "c"}]}
+        sql = "SELECT DISTINCT UPPER(c) FROM x ORDER BY UPPER(c) DESC"
+        self.assertEqual(execute(sql, tables=tables).rows, [("C",), ("B",), ("A",)])
 
     def test_offset_order_by(self):
         schema = {"x": {"a": "int"}, "y": {"b": "int"}}
@@ -1173,6 +1254,36 @@ class TestExecutor(unittest.TestCase):
                     result = execute(sql, schema=schema, tables=tables, dialect=dialect)
                     self.assertEqual(result.rows, [(None,)])
 
+    def test_integer_division_truncates_towards_zero(self):
+        tables = {"t": [{"x": 7, "y": 2}]}
+
+        for sql, dialect in (
+            (
+                "SELECT DIV(x, y), DIV(-x, y), DIV(x, -y), DIV(-x, -y), DIV(NULL, y) FROM t",
+                "bigquery",
+            ),
+            ("SELECT x // y, -x // y, x // -y, -x // -y, NULL // y FROM t", "duckdb"),
+            ("SELECT x DIV y, -x DIV y, x DIV -y, -x DIV -y, NULL DIV y FROM t", "mysql"),
+        ):
+            with self.subTest(dialect):
+                result = execute(sql, tables=tables, dialect=dialect)
+                self.assertEqual(result.rows, [(3, -3, -3, 3, None)])
+
+    def test_integer_division_floating_point(self):
+        result = execute(
+            "SELECT x DIV y, -x DIV y, x DIV -y, -x DIV -y FROM t",
+            dialect="mysql",
+            tables={"t": [{"x": 1.0, "y": 0.1}, {"x": 7.0, "y": 2.0}]},
+        )
+        self.assertEqual(result.rows, [(10, -10, -10, 10), (3, -3, -3, 3)])
+
+        result = execute(
+            "SELECT x DIV y, -x DIV y FROM t",
+            dialect="mysql",
+            tables={"t": [{"x": 9223372036854775807, "y": 1}]},
+        )
+        self.assertEqual(result.rows, [(9223372036854775807, -9223372036854775807)])
+
     def test_null_ordering_honors_nulls_first_and_dialect_defaults(self):
         schema = {"t": {"a": "INT"}}
         tables = {"t": [{"a": 1}, {"a": None}, {"a": 3}, {"a": None}]}
@@ -1597,12 +1708,15 @@ class TestExecutor(unittest.TestCase):
 
     def test_agg_order(self):
         plan = Plan(
-            optimize("""
+            optimize(
+                """
             SELECT
               AVG(bill_length_mm) AS avg_bill_length,
               AVG(bill_depth_mm) AS avg_bill_depth
             FROM penguins
-            """)
+            """,
+                schema={"penguins": {"bill_length_mm": "DOUBLE", "bill_depth_mm": "DOUBLE"}},
+            )
         )
 
         assert [agg.alias for agg in plan.root.aggregations] == [
@@ -1619,3 +1733,33 @@ class TestExecutor(unittest.TestCase):
             {"id": 2, "product": "Shoes", "price": 60.0},
         ]
         self.assertEqual(table.to_pylist(), expected)
+
+    def test_count_distinct(self):
+        rows = [{"a": "x", "v": 1}, {"a": "x", "v": 1}, {"a": "x", "v": 2}, {"a": "y", "v": None}]
+        schema = {"t": {"a": "VARCHAR", "v": "INT"}}
+
+        for sql, expected in (
+            ("SELECT COUNT(DISTINCT v) AS c FROM t", [(2,)]),
+            ("SELECT COUNT(v) AS c FROM t", [(3,)]),
+            ("SELECT COUNT(*) AS c FROM t", [(4,)]),
+            ("SELECT SUM(DISTINCT v) AS c FROM t", [(3,)]),
+            ("SELECT a, COUNT(DISTINCT v) AS c FROM t GROUP BY a", [("x", 2), ("y", 0)]),
+        ):
+            with self.subTest(sql):
+                result = execute(sql, schema=schema, tables={"t": rows})
+                self.assertEqual(sorted(result.rows), sorted(expected))
+
+    def test_count_distinct_multiple_columns(self):
+        rows = [
+            {"a": "x", "b": 1},
+            {"a": "x", "b": 1},
+            {"a": "x", "b": 2},
+            {"a": None, "b": 1},
+            {"a": "y", "b": None},
+        ]
+        schema = {"t": {"a": "VARCHAR", "b": "INT"}}
+
+        result = execute(
+            "SELECT COUNT(DISTINCT a, b) AS c FROM t", schema=schema, tables={"t": rows}
+        )
+        self.assertEqual(result.rows, [(2,)])

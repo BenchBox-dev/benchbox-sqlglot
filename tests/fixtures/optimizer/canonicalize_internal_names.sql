@@ -191,7 +191,7 @@ SELECT DISTINCT ON ("a") "_t0"."a" AS "a", "_t0"."b" AS "b" FROM "c"."db"."x" AS
 
 # title: join using is expanded to on with coalesce
 SELECT * FROM x JOIN y USING (b);
-SELECT "_t0"."a" AS "a", COALESCE("_t0"."b", "_t1"."b") AS "b", "_t1"."c" AS "c" FROM "c"."db"."x" AS "_t0" JOIN "c"."db"."y" AS "_t1" ON "_t0"."b" = "_t1"."b";
+SELECT COALESCE("_t0"."b", "_t1"."b") AS "b", "_t0"."a" AS "a", "_t1"."c" AS "c" FROM "c"."db"."x" AS "_t0" JOIN "c"."db"."y" AS "_t1" ON "_t0"."b" = "_t1"."b";
 
 # title: chained union
 SELECT a FROM x UNION SELECT b FROM y UNION SELECT c FROM z;
@@ -221,9 +221,15 @@ WITH RECURSIVE "_t0" AS (SELECT 1 AS "_c0" UNION ALL SELECT "_t0"."_c0" + 1 AS "
 SELECT n, off FROM UNNEST([10, 20, 30]) AS n WITH OFFSET AS off;
 SELECT `_c0` AS `n`, `_c1` AS `off` FROM UNNEST([10, 20, 30]) AS `_c0` WITH OFFSET AS `_c1`;
 
+# title: lateral unnest ordinality is canonicalized after star expansion
+# dialect: postgres
+# execute: true
+SELECT * FROM LATERAL UNNEST(ARRAY[10, 20]) WITH ORDINALITY AS r(v, idx);
+SELECT "_t0"."_c0" AS "v", "_t0"."_c1" AS "idx" FROM LATERAL UNNEST(ARRAY[10, 20]) WITH ORDINALITY AS "_t0"("_c0", "_c1");
 
 # title: bigquery correlated unnest, outer table shared with unnest expression
 # dialect: bigquery
+# schema: {"t": {"id": "INT", "arr": "ARRAY<INT>"}}
 SELECT t.id, u FROM t CROSS JOIN UNNEST(t.arr) AS u;
 SELECT `_t0`.`id` AS `id`, `_c0` AS `u` FROM `c`.`db`.`t` AS `_t0` CROSS JOIN UNNEST(`_t0`.`arr`) AS `_c0`;
 
@@ -249,6 +255,7 @@ SELECT `_c0` AS `s` FROM UNNEST([STRUCT('a' AS `sid`)]) AS `_c0`;
 
 # title: bigquery whole-row struct selection — TableColumn follows the table's canonical name, output alias preserves the row-struct's contract name
 # dialect: bigquery
+# schema: {"t": {"id": "INT"}}
 SELECT t FROM t;
 SELECT `_t0` AS `t` FROM `c`.`db`.`t` AS `_t0`;
 

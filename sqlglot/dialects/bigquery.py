@@ -29,7 +29,7 @@ class BigQuery(Dialect):
     HEX_LOWERCASE = True
     FORCE_EARLY_ALIAS_REF_EXPANSION = True
     EXPAND_ONLY_GROUP_ALIAS_REF = True
-    PRESERVE_ORIGINAL_NAMES = True
+    ORIGINAL_NAME_META_KEY = "bigquery_name"
     HEX_STRING_IS_INTEGER_TYPE = True
     BYTE_STRING_IS_BYTES_TYPE = True
     UUID_IS_STRING_TYPE = True
@@ -168,6 +168,14 @@ class BigQuery(Dialect):
         }
 
     class Tokenizer(tokens.Tokenizer):
+        NUMERIC_ESCAPES = {
+            "x": (16, 2, 2, 0xFF),
+            "X": (16, 2, 2, 0xFF),
+            "u": (16, 4, 4, 0xFFFF),
+            "U": (16, 8, 8, 0x10FFFF),
+            "0": (8, 3, 3, 0xFF),
+        }
+        DROP_UNKNOWN_ESCAPES = True
         QUOTES = ["'", '"', '"""', "'''"]
         COMMENTS = ["--", "#", ("/*", "*/")]
         IDENTIFIERS = ["`"]

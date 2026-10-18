@@ -3,9 +3,10 @@ from __future__ import annotations
 import itertools
 import re
 import typing as t
+from collections import Counter
 
 from sqlglot import alias, exp
-from sqlglot.dialects.dialect import Dialect, DialectType
+from sqlglot.dialects.dialect import Dialect, DialectType, UsingColumnOrder
 from sqlglot.errors import OptimizeError, highlight_sql
 from sqlglot.optimizer.annotate_types import TypeAnnotator
 from sqlglot.optimizer.resolver import Resolver
@@ -30,7 +31,6 @@ def qualify_columns(
     schema: dict[str, object] | Schema,
     expand_alias_refs: bool = True,
     expand_stars: bool = True,
-    infer_schema: bool | None = None,
     allow_partial_qualification: bool = False,
     dialect: DialectType = None,
 ) -> E:
@@ -51,7 +51,6 @@ def qualify_columns(
         expand_stars: Whether to expand star queries. This is a necessary step
             for most of the optimizer's rules to work; do not set to False unless you
             know what you're doing!
-        infer_schema: Whether to infer the schema if missing.
         allow_partial_qualification: Whether to allow partial qualification.
 
     Returns:
@@ -63,7 +62,6 @@ def qualify_columns(
     """
     schema = ensure_schema(schema, dialect=dialect)
     annotator = TypeAnnotator(schema)
-    infer_schema = schema.empty if infer_schema is None else infer_schema
     dialect = schema.dialect or Dialect()
     pseudocolumns = dialect.PSEUDOCOLUMNS
 
@@ -76,12 +74,16 @@ def qualify_columns(
 
         _separate_pseudocolumns(scope, pseudocolumns)
 
-        resolver = Resolver(scope, schema, infer_schema=infer_schema)
+        resolver = Resolver(scope, schema)
+
+        _qualify_comprehensions(scope, resolver)
+
         _pop_table_column_aliases(scope.ctes)
         _pop_table_column_aliases(scope.derived_tables)
-        using_column_tables = _expand_using(scope, resolver)
 
-        if (schema.empty or dialect.FORCE_EARLY_ALIAS_REF_EXPANSION) and expand_alias_refs:
+        using_column_tables, using_columns = _expand_using(scope, resolver)
+
+        if dialect.FORCE_EARLY_ALIAS_REF_EXPANSION and expand_alias_refs:
             _expand_alias_refs(
                 scope,
                 resolver,
@@ -99,7 +101,7 @@ def qualify_columns(
         # Refresh classification caches: a column just qualified in place may have been cached as external
         scope.clear_column_cache()
 
-        if not schema.empty and expand_alias_refs:
+        if expand_alias_refs:
             _expand_alias_refs(scope, resolver, dialect)
 
         if is_select:
@@ -108,6 +110,7 @@ def qualify_columns(
                     scope,
                     resolver,
                     using_column_tables,
+                    using_columns,
                     pseudocolumns,
                     annotator,
                 )
@@ -206,7 +209,7 @@ def _pop_table_column_aliases(derived_tables: Iterable[exp.Expr]) -> None:
             table_alias.set("columns", None)
 
 
-def _expand_using(scope: Scope, resolver: Resolver) -> dict[str, t.Any]:
+def _expand_using(scope: Scope, resolver: Resolver) -> tuple[dict[str, t.Any], list[str]]:
     columns = {}
 
     def _update_source_columns(source_name: str) -> None:
@@ -216,7 +219,7 @@ def _expand_using(scope: Scope, resolver: Resolver) -> dict[str, t.Any]:
 
     joins = list(scope.find_all(exp.Join))
     if not joins:
-        return {}
+        return {}, []
 
     names = {join.alias_or_name for join in joins}
     ordered = [key for key in scope.selected_sources if key not in names]
@@ -227,11 +230,18 @@ def _expand_using(scope: Scope, resolver: Resolver) -> dict[str, t.Any]:
     # Mapping of automatically joined column names to an ordered set of source names (dict).
     column_tables: dict[str, dict[str, t.Any]] = {}
 
+    # USING columns to list first in star expansion, each join's columns preceding those of earlier
+    # joins; empty when they keep their position
+    using_columns: list[str] = []
+
     if not any(join.args.get("using") or join.method == "NATURAL" for join in joins):
-        return column_tables
+        return column_tables, using_columns
 
     for source_name in ordered:
         _update_source_columns(source_name)
+
+    column_order = resolver.dialect.USING_COLUMN_ORDER
+    move_using_columns = column_order is not UsingColumnOrder.IN_PLACE
 
     for i, join in enumerate(joins):
         source_table = ordered[-1]
@@ -244,13 +254,23 @@ def _expand_using(scope: Scope, resolver: Resolver) -> dict[str, t.Any]:
         join_columns = resolver.get_source_columns(join_table)
 
         using = join.args.get("using")
+        if not (using or join.args.get("on") or join.method or join.side or join.kind):
+            # `,` has lower precedence than JOIN, so `a, b JOIN c USING (k)` is `a, (b JOIN c USING (k))`
+            # and k should only move ahead of b's columns, not a's. That isn't modeled, so after a comma
+            # join the USING columns stay in place
+            move_using_columns = False
+
+        # The order in which the left side outputs its columns
+        left_columns = using_columns + [c for c in columns if c not in using_columns]
+
         if using is None and join.method == "NATURAL":
-            # A NATURAL JOIN is a USING join over the columns common to both sides; when
-            # those can't be determined (unknown schema, no common columns), NATURAL stays
+            # A NATURAL JOIN is a USING join over the columns common to both sides, in the
+            # order the left side outputs them; when those can't be determined (unknown schema,
+            # no common columns), NATURAL stays
             if columns and "*" not in columns and join_columns and "*" not in join_columns:
                 using = [
                     exp.to_identifier(column_name)
-                    for column_name in columns
+                    for column_name in left_columns
                     if column_name in join_columns
                 ]
                 if using:
@@ -261,6 +281,12 @@ def _expand_using(scope: Scope, resolver: Resolver) -> dict[str, t.Any]:
         conditions = []
         using_identifier_count = len(using)
         is_semi_or_anti_join = join.is_semi_or_anti_join
+
+        if move_using_columns:
+            join_keys = [identifier.name for identifier in using]
+            if column_order is UsingColumnOrder.LEFT_TABLE:
+                join_keys = [name for name in left_columns if name in join_keys]
+            using_columns = join_keys + [name for name in using_columns if name not in join_keys]
 
         for identifier in using:
             identifier = identifier.name
@@ -287,12 +313,12 @@ def _expand_using(scope: Scope, resolver: Resolver) -> dict[str, t.Any]:
 
             conditions.append(lhs.eq(exp.column(identifier, table=join_table)))
 
-            # Set all values in the dict to None, because we only care about the key ordering
-            tables = column_tables.setdefault(identifier, {})
-
             # Do not update the dict if this was a SEMI/ANTI join in
             # order to avoid generating COALESCE columns for this join pair
             if not is_semi_or_anti_join:
+                # Set all values in the dict to None, because we only
+                # care about the key ordering
+                tables = column_tables.setdefault(identifier, {})
                 if table not in tables:
                     tables[table] = None
                 if join_table not in tables:
@@ -319,7 +345,7 @@ def _expand_using(scope: Scope, resolver: Resolver) -> dict[str, t.Any]:
 
                 scope.replace(column, replacement)
 
-    return column_tables
+    return column_tables, using_columns
 
 
 def _expand_alias_refs(
@@ -406,8 +432,8 @@ def _expand_alias_refs(
                         column.replace(simplified)
                         column = simplified
 
-                    if resolve_table and resolver.schema.empty:
-                        # resolve alias spliced into QUALIFY/HAVING with unqualified columns
+                    if resolve_table:
+                        # Qualify any unqualified columns inside the spliced alias expression.
                         for inner in walk_in_scope(column):
                             if (
                                 isinstance(inner, exp.Column)
@@ -492,6 +518,8 @@ def _expand_order_by_and_distinct_on(scope: Scope, resolver: Resolver) -> None:
     if not isinstance(expression, exp.Selectable):
         return
 
+    alias_names = {name for name, count in Counter(expression.named_selects).items() if count == 1}
+
     # TODO (mypyc): rebind to exp.Expr to avoid Selectable trait vtable dispatch for .args
     expr: exp.Expr = expression
 
@@ -510,29 +538,35 @@ def _expand_order_by_and_distinct_on(scope: Scope, resolver: Resolver) -> None:
         for original, expanded in zip(
             modifier_expressions,
             _expand_positional_references(
-                scope, modifier_expressions, resolver.dialect, alias=True
+                scope, modifier_expressions, resolver.dialect, alias_names=alias_names
             ),
         ):
             for agg in original.find_all(exp.AggFunc):
                 for col in agg.find_all(exp.Column):
                     if not col.table:
-                        col.set("table", resolver.get_table(col.name))
+                        if table := resolver.get_table(col.name):
+                            col.set("table", table)
 
             original.replace(expanded)
 
         if expr.args.get("group"):
-            selects = {s.this: exp.column(s.alias_or_name) for s in expression.selects}
+            selects = {
+                s.this: exp.column(s.alias_or_name)
+                for s in expression.selects
+                if s.alias_or_name in alias_names
+            }
 
             for node in modifier_expressions:
-                node.replace(
-                    exp.to_identifier(_select_by_pos(expression, node).alias)
-                    if node.is_int
-                    else selects.get(node, node)
-                )
+                # Remaining ordinals reference duplicate aliases and must stay positional.
+                if not node.is_int:
+                    node.replace(selects.get(node, node))
 
 
 def _expand_positional_references(
-    scope: Scope, expressions: Iterable[exp.Expr], dialect: Dialect, alias: bool = False
+    scope: Scope,
+    expressions: Iterable[exp.Expr],
+    dialect: Dialect,
+    alias_names: set[str] | None = None,
 ) -> list[exp.Expr]:
     new_nodes: list[exp.Expr] = []
     ambiguous_projections = None
@@ -546,8 +580,10 @@ def _expand_positional_references(
         if node.is_int and isinstance(node, exp.Literal):
             select = _select_by_pos(expression, node)
 
-            if alias:
-                new_nodes.append(exp.column(select.args["alias"].copy()))
+            if alias_names is not None:
+                new_nodes.append(
+                    exp.column(select.args["alias"].copy()) if select.alias in alias_names else node
+                )
             else:
                 # TODO (mypyc): use a separate variable to avoid reusing `select` (Alias) with a different type
                 select_expr: exp.Expr = select.this
@@ -591,6 +627,39 @@ def _select_by_pos(expression: exp.Selectable, node: exp.Literal) -> exp.Alias:
         raise OptimizeError(f"Unknown output column: {node.name}")
 
 
+def _qualify_comprehensions(scope: Scope, resolver: Resolver) -> None:
+    converted = False
+    for comprehension in scope.comprehensions:
+        names = {
+            variable.name
+            for key in ("expression", "position")
+            if (variable := comprehension.args.get(key)) is not None
+        }
+        for key in ("this", "condition"):
+            body = comprehension.args.get(key)
+            if body is None:
+                continue
+
+            for column in find_all_in_scope(body, exp.Column):
+                parts = column.parts
+                if parts[0].name not in names:
+                    continue
+
+                # Local table-qualified columns take precedence over lambda struct fields.
+                if (
+                    len(parts) > 1
+                    and parts[0].name in scope.selected_sources
+                    and parts[1].name in resolver.get_source_columns(parts[0].name)
+                ):
+                    continue
+
+                column.replace(column.to_dot(include_dots=False))
+                converted = True
+
+    if converted:
+        scope.clear_cache()
+
+
 def _convert_columns_to_dots(scope: Scope, resolver: Resolver) -> None:
     """
     Converts `Column` instances that represent STRUCT or JSON field lookup into chained `Dots`.
@@ -606,11 +675,25 @@ def _convert_columns_to_dots(scope: Scope, resolver: Resolver) -> None:
         is_star = isinstance(column.this, exp.Star)
         column_table: str | exp.Identifier | None = column.table
         dot_parts = column.meta.pop("dot_parts", [])
+        root_resolver: Resolver | None = None
+        if not is_star and column.db and column_table in scope.selected_sources:
+            root, field = column.parts[:2]
+            for candidate_resolver in itertools.chain((resolver,), resolver.outer_resolvers()):
+                if root.name not in candidate_resolver.scope.selected_sources:
+                    continue
+                if field.name in candidate_resolver.get_source_columns(root.name):
+                    root_resolver = candidate_resolver
+                break
         if (
             column_table
-            and (column_table not in scope.selected_sources or (is_star and column.db))
             and (
-                is_star
+                column_table not in scope.selected_sources
+                or (is_star and column.db)
+                or root_resolver
+            )
+            and (
+                root_resolver
+                or is_star
                 or not scope.parent
                 or column_table not in scope.parent.sources
                 or not scope.is_correlated_subquery
@@ -619,10 +702,11 @@ def _convert_columns_to_dots(scope: Scope, resolver: Resolver) -> None:
             root, *parts = column.parts
             was_qualified = False
 
-            # Unlike columns, correlated stars can't be deferred to the outer scopes, since they
-            # must be expanded in this one, so they're resolved against those scopes as well
+            # Correlated stars cannot be deferred; qualified paths use their root source's resolver.
             resolvers: t.Iterable[Resolver] = (
-                itertools.chain((resolver,), resolver.outer_resolvers()) if is_star else (resolver,)
+                itertools.chain((resolver,), resolver.outer_resolvers())
+                if is_star
+                else (root_resolver or resolver,)
             )
             for source_resolver in resolvers:
                 selected_sources = source_resolver.scope.selected_sources
@@ -972,6 +1056,7 @@ def _expand_stars(
     scope: Scope,
     resolver: Resolver,
     using_column_tables: dict[str, t.Any],
+    using_columns: list[str],
     pseudocolumns: set[str],
     annotator: TypeAnnotator,
 ) -> None:
@@ -1047,6 +1132,12 @@ def _expand_stars(
         if not tables:
             new_selections.append(expression)
             continue
+
+        start = len(new_selections)
+        # The selections of the USING columns, which go first, in order
+        using_selections: dict[str, exp.Expr | None] = (
+            dict.fromkeys(using_columns) if isinstance(expression, exp.Star) else {}
+        )
 
         for table in tables:
             source = scope.sources.get(table)
@@ -1153,9 +1244,7 @@ def _expand_stars(
                     using_tables = using_column_tables[name]
                     coalesce_args = [exp.column(name, table=table) for table in using_tables]
 
-                    new_selections.append(
-                        alias(exp.func("coalesce", *coalesce_args), alias=name, copy=False)
-                    )
+                    selection = alias(exp.func("coalesce", *coalesce_args), alias=name, copy=False)
                 else:
                     alias_ = renamed_columns.get(name, name)
                     quoted = name in quoted_columns or (
@@ -1165,11 +1254,18 @@ def _expand_stars(
                     selection_expr = replaced_columns.get(name) or exp.column(
                         name, table=table, quoted=quoted
                     )
-                    new_selections.append(
+                    selection = (
                         alias(selection_expr, alias_, copy=False)
                         if alias_ != name
                         else selection_expr
                     )
+
+                if name in using_selections and using_selections[name] is None:
+                    using_selections[name] = selection
+                else:
+                    new_selections.append(selection)
+
+        new_selections[start:start] = [s for s in using_selections.values() if s is not None]
 
         if annotated_ahead:
             # The star projection was replaced by the expansions above

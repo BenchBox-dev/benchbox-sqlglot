@@ -1,7 +1,8 @@
 from __future__ import annotations
 from sqlglot import exp
 from sqlglot.helper import name_sequence
-from sqlglot.optimizer.scope import ScopeType, find_all_in_scope, find_in_scope, traverse_scope
+from sqlglot.optimizer.scope import ScopeType, find_in_scope, traverse_scope
+from sqlglot.optimizer.helpers import projection_has_aggregate
 from sqlglot._typing import E
 
 
@@ -336,9 +337,6 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
                 f"ARRAY_ANY({alias}, _x -> _x = {parent_predicate.this})",
             )
     else:
-        if is_subquery_projection and select.parent.alias:
-            alias = exp.alias_(alias, select.parent.alias)
-
         # COUNT always returns 0 on empty datasets, so we need take that into consideration here
         # by transforming all counts into 0 and using that as the coalesced value
         if find_in_scope(value, exp.Count):
@@ -351,6 +349,9 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
                 return node
 
             alias = exp.Coalesce(this=alias, expressions=[value.this.transform(remove_aggs)])
+
+        if is_subquery_projection and select.parent.alias:
+            alias = exp.alias_(alias, select.parent.alias)
 
         select.parent.replace(alias)
 
@@ -401,24 +402,6 @@ def _replace(expression: exp.Expr, condition: exp.ExpOrStr) -> exp.Expr:
     return expression.replace(exp.condition(condition))
 
 
-def _is_windowed(agg: exp.Expr) -> bool:
-    # a window applies to exactly one function, its `this`; an aggregate anywhere else groups
-    node = agg
-    parent = node.parent
-
-    # parens, FILTER and IGNORE NULLS wrap that function without changing which one it is
-    while parent is not None and parent.this is node:
-        if isinstance(parent, exp.Window):
-            return True
-
-        if isinstance(parent, exp.Func):
-            return False
-
-        node, parent = parent, parent.parent
-
-    return False
-
-
 def _is_plain_group(group: exp.Group) -> bool:
     # Grouping sets produce a row for the grand total even when no rows pass the WHERE
     return not any(
@@ -431,11 +414,9 @@ def _is_plain_group(group: exp.Group) -> bool:
 
 
 def _has_aggregate_projection(select: exp.Select) -> bool:
-    return any(
-        not _is_windowed(agg)
-        for projection in select.selects
-        for agg in find_all_in_scope(projection, exp.AggFunc)
-    )
+    windows = select.args.get("windows")
+
+    return any(projection_has_aggregate(projection, windows) for projection in select.selects)
 
 
 def _other_operand(expression: object) -> exp.Expr | None:

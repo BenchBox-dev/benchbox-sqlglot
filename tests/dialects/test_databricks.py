@@ -6,6 +6,29 @@ from tests.dialects.test_dialect import Validator
 class TestDatabricks(Validator):
     dialect = "databricks"
 
+    def test_match_recognize(self):
+        sql = (
+            "SELECT symbol, start_tstamp, end_tstamp, run_length FROM stock_ticker "
+            "MATCH_RECOGNIZE (PARTITION BY symbol ORDER BY tstamp "
+            "MEASURES FIRST(tstamp) AS start_tstamp, LAST(tstamp) AS end_tstamp, "
+            "COUNT(*) AS run_length ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW "
+            "PATTERN (strt up+) DEFINE up AS price > PREV(price))"
+        )
+        expression = self.validate_identity(f"{sql} AS T", f"{sql} T")
+        self.assertIsInstance(expression.args["match"], exp.MatchRecognize)
+        self.assertEqual(self.parse_one(expression.sql(self.dialect)), expression)
+
+        for rows in ("", "ALL ROWS PER MATCH ", "ALL ROWS PER MATCH SHOW EMPTY MATCHES "):
+            with self.subTest(rows=rows):
+                self.validate_identity(
+                    "SELECT * FROM stock_ticker MATCH_RECOGNIZE ("
+                    "PARTITION BY symbol ORDER BY tstamp "
+                    "MEASURES MATCH_NUMBER() AS match_no, CLASSIFIER() AS class, "
+                    "LAST(down.tstamp) AS bottom_tstamp "
+                    f"{rows}PATTERN (strt down+ up+) "
+                    "DEFINE down AS price < PREV(price), up AS price > PREV(price))"
+                )
+
     def test_insert_replace_using(self):
         self.validate_identity(
             "INSERT INTO target REPLACE USING (c1, c2) SELECT c1, c2 FROM source"
@@ -66,6 +89,12 @@ class TestDatabricks(Validator):
         self.validate_identity("CREATE TABLE target SHALLOW CLONE source")
         self.validate_identity("INSERT INTO a REPLACE WHERE cond VALUES (1), (2)")
         self.validate_identity("CREATE FUNCTION a.b(x INT) RETURNS INT RETURN x + 1")
+        self.validate_identity(
+            "CREATE FUNCTION f(col STRING) RETURNS STRING DETERMINISTIC RETURN col"
+        )
+        self.validate_identity(
+            "CREATE FUNCTION f(col STRING) RETURNS STRING NOT DETERMINISTIC RETURN col"
+        )
         self.validate_identity("CREATE FUNCTION a AS b")
         self.validate_identity("SELECT ${x} FROM ${y} WHERE ${z} > 1")
         self.validate_identity("CREATE TABLE foo (x DATE GENERATED ALWAYS AS (CAST(y AS DATE)))")
@@ -259,6 +288,7 @@ class TestDatabricks(Validator):
             write={
                 "snowflake": "UNIFORM(1, 10, RANDOM(5))",
                 "databricks": "UNIFORM(1, 10, 5)",
+                "duckdb": "CAST(FLOOR(1 + (ABS(HASH(5)) % 1000000) / 1000000.0 * (10 - 1 + 1)) AS BIGINT)",
             },
         )
         self.validate_all(
@@ -266,6 +296,7 @@ class TestDatabricks(Validator):
             write={
                 "databricks": "UNIFORM(1, 10)",
                 "snowflake": "UNIFORM(1, 10, RANDOM())",
+                "duckdb": "CAST(FLOOR(1 + RANDOM() * (10 - 1 + 1)) AS BIGINT)",
             },
         )
         self.validate_identity("SELECT ELT(2, 'foo', 'bar', 'baz') AS Result")

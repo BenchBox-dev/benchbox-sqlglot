@@ -98,10 +98,10 @@ def _coerce_date_literal(l: exp.Expr, unit: exp.Expr | None) -> exp.DType:
     return exp.DType.UNKNOWN
 
 
-def _coerce_date(l: exp.Expr, unit: exp.Expr | None) -> exp.DType:
-    if not is_date_unit(unit):
+def _coerce_date(l: exp.Expr, unit: exp.Expr | None) -> exp.DataType | exp.DType:
+    if l.is_type(exp.DType.DATE) and not is_date_unit(unit):
         return exp.DType.DATETIME
-    return l.type.this if l.type else exp.DType.UNKNOWN
+    return l.type or exp.DType.UNKNOWN
 
 
 def swap_args(func: BinaryCoercionFunc) -> BinaryCoercionFunc:
@@ -907,6 +907,7 @@ class TypeAnnotator:
     def _annotate_timeunit(
         self, expression: exp.TimeUnit | exp.DateTrunc
     ) -> exp.TimeUnit | exp.DateTrunc:
+        datatype: exp.DataType | exp.DType
         if expression.this.type.this in exp.DataType.TEXT_TYPES:
             datatype = _coerce_date_literal(expression.this, expression.unit)
         elif expression.this.type.this in exp.DataType.TEMPORAL_TYPES:
@@ -1081,7 +1082,9 @@ class TypeAnnotator:
 
     def _annotate_extract(self, expression: exp.Extract) -> exp.Extract:
         part = expression.name
-        if part == "TIME":
+        if expression.args.get("return_type"):
+            self._set_type(expression, expression.args["return_type"])
+        elif part == "TIME":
             self._set_type(expression, exp.DType.TIME)
         elif part == "DATE":
             self._set_type(expression, exp.DType.DATE)

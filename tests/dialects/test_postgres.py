@@ -8,6 +8,59 @@ class TestPostgres(Validator):
     maxDiff = None
     dialect = "postgres"
 
+    def test_json_value(self):
+        self.validate_identity("SELECT JSON_VALUE(j, '$.a' RETURNING BIGINT) FROM t")
+        self.validate_identity(
+            """SELECT JSON_VALUE('"2020-01-01T01:02:03"', '$' RETURNING TIMESTAMP WITH TIME ZONE)""",
+            """SELECT JSON_VALUE('"2020-01-01T01:02:03"', '$' RETURNING TIMESTAMPTZ)""",
+        )
+        self.validate_identity("SELECT JSON_VALUE('42', '$' RETURNING BIGINT)", identify=True)
+        self.validate_identity(
+            """SELECT JSON_VALUE(j, p) FROM (VALUES (CAST('{"a":42}' AS JSONB), CAST('$.a' AS JSONPATH))) AS t(j, p)"""
+        )
+        self.validate_identity("""SELECT JSON_VALUE('{"a":42}', '$' || '.a')""")
+        self.validate_identity(
+            """SELECT JSON_VALUE('{"a":42}', CASE WHEN TRUE THEN '$.a' ELSE '$.b' END)"""
+        )
+        for sql in (
+            """SELECT JSON_VALUE('{"a":42}', '$.a')""",
+            """SELECT JSON_VALUE('{"a":{"b":42}}', '$.a.b' RETURNING BIGINT)""",
+            """SELECT JSON_VALUE('{"my key":42}', '$."my key"' RETURNING BIGINT)""",
+            """SELECT JSON_VALUE('[1,2]', 'strict $[1]' RETURNING BIGINT)""",
+            """SELECT JSON_VALUE('[1,2]', 'strict $[*]' DEFAULT 9 ON ERROR)""",
+            """SELECT JSON_VALUE('{"a":[1,2,3]}', 'lax $.a[*] ? (@ > 2)' RETURNING BIGINT)""",
+            """SELECT JSON_VALUE('{}', '$.a' RETURNING BIGINT DEFAULT 7 ON EMPTY DEFAULT 9 ON ERROR)""",
+            """SELECT JSON_VALUE('{"a":"bad"}', '$.a' RETURNING BIGINT NULL ON EMPTY NULL ON ERROR)""",
+            """SELECT JSON_VALUE('{"a":42}', '$.a' RETURNING BIGINT ERROR ON EMPTY ERROR ON ERROR)""",
+            """SELECT JSON_VALUE('"123.45"', '$' RETURNING DECIMAL(5, 2))""",
+        ):
+            expression = self.validate_identity(sql).find(exp.JSONValue)
+            self.assertIsNotNone(expression)
+            self.assertIsInstance(expression.args["path"], exp.Literal)
+            if expression.args.get("returning"):
+                self.assertIsInstance(expression.args["returning"], exp.DataType)
+
+    def test_extract_return_types(self):
+        for dialect in ("postgres", "materialize", "risingwave"):
+            for source, expected in (
+                ("EXTRACT(YEAR FROM DATE '2020-06-01')", exp.DType.DECIMAL),
+                ("EXTRACT(SECOND FROM TIMESTAMP '2020-06-01 12:34:56.123456')", exp.DType.DECIMAL),
+                ("DATE_PART('year', DATE '2020-06-01')", exp.DType.DOUBLE),
+            ):
+                with self.subTest(dialect=dialect, source=source):
+                    expression = parse_one(source, read=dialect)
+                    self.assertTrue(expression.args["return_type"].is_type(expected))
+                    self.assertTrue(annotate_types(expression, dialect=dialect).is_type(expected))
+                    roundtrip = parse_one(expression.sql(dialect), read=dialect)
+                    self.assertEqual(expression.args["return_type"], roundtrip.args["return_type"])
+                    restored = exp.Expression.load(expression.dump())
+                    self.assertEqual(restored.args["return_type"], expression.args["return_type"])
+
+        self.assertNotEqual(
+            parse_one("EXTRACT(YEAR FROM d)", read="postgres"),
+            parse_one("DATE_PART('year', d)", read="postgres"),
+        )
+
     def test_postgres(self):
         expr = self.parse_one("SELECT * FROM r CROSS JOIN LATERAL UNNEST(ARRAY[1]) AS s(location)")
         unnest = expr.args["joins"][0].this.this
@@ -83,8 +136,8 @@ class TestPostgres(Validator):
         self.validate_identity("COMMENT ON MATERIALIZED VIEW foo.my_view IS 'x'")
         self.validate_identity("COMMENT ON SEQUENCE public.seq IS 'x'")
         self.validate_identity("COMMENT ON INDEX public.idx IS 'x'")
-        self.validate_identity("SELECT e'\\xDEADBEEF'")
-        self.validate_identity("SELECT CAST(e'\\176' AS BYTEA)")
+        self.validate_identity("SELECT e'\\x44EADBEEF'", "SELECT e'DEADBEEF'")
+        self.validate_identity("SELECT CAST(e'\\176' AS BYTEA)", "SELECT CAST(e'~' AS BYTEA)")
         self.validate_identity("SELECT * FROM x WHERE SUBSTRING('Thomas' FROM '...$') IN ('mas')")
         self.validate_identity("SELECT TRIM(' X' FROM ' XXX ')")
         self.validate_all(
@@ -231,11 +284,11 @@ class TestPostgres(Validator):
         )
         self.validate_identity(
             "SELECT DATE_PART('isodow'::varchar(6), current_date)",
-            "SELECT EXTRACT(CAST('isodow' AS VARCHAR(6)) FROM CURRENT_DATE)",
+            "SELECT DATE_PART(CAST('isodow' AS VARCHAR(6)), CURRENT_DATE)",
         )
         self.validate_identity(
             "SELECT DATE_PART('isoyear', ts)",
-            "SELECT EXTRACT(ISOYEAR FROM ts)",
+            "SELECT DATE_PART('isoyear', ts)",
         )
         self.validate_identity(
             "END WORK AND NO CHAIN",
@@ -702,16 +755,16 @@ FROM json_data, field_ids""",
         self.validate_all(
             "SELECT DATE_PART('minute', timestamp '2023-01-04 04:05:06.789')",
             write={
-                "postgres": "SELECT EXTRACT(MINUTE FROM CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
-                "redshift": "SELECT EXTRACT(MINUTE FROM CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
+                "postgres": "SELECT DATE_PART('minute', CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
+                "redshift": "SELECT DATE_PART('minute', CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
                 "snowflake": "SELECT DATE_PART(MINUTE, CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
             },
         )
         self.validate_all(
             "SELECT DATE_PART('month', date '20220502')",
             write={
-                "postgres": "SELECT EXTRACT(MONTH FROM CAST('20220502' AS DATE))",
-                "redshift": "SELECT EXTRACT(MONTH FROM CAST('20220502' AS DATE))",
+                "postgres": "SELECT DATE_PART('month', CAST('20220502' AS DATE))",
+                "redshift": "SELECT DATE_PART('month', CAST('20220502' AS DATE))",
                 "snowflake": "SELECT DATE_PART(MONTH, CAST('20220502' AS DATE))",
             },
         )
@@ -1124,6 +1177,8 @@ FROM json_data, field_ids""",
         # `@>` is polymorphic in Postgres (arrays, ranges, jsonb), so it parses to ArrayContainsAll
         self.validate_identity("a @> b").assert_is(exp.ArrayContainsAll)
 
+        self.validate_identity("a ^@ b", "STARTS_WITH(a, b)")
+
         self.validate_identity("a ?| b").assert_is(exp.JSONBContainsAnyTopKeys)
         self.validate_identity(
             """SELECT '{"a":1, "b":2, "c":3}'::jsonb ?| array['b', 'c']""",
@@ -1271,6 +1326,7 @@ FROM json_data, field_ids""",
         self.validate_identity("INSERT INTO x VALUES (1, 'a', 2.0) RETURNING a, b")
         self.validate_identity("INSERT INTO x VALUES (1, 'a', 2.0) RETURNING *")
         self.validate_identity("UPDATE tbl_name SET foo = 123 RETURNING a")
+        self.validate_identity("UPDATE t SET (b, c) = (3, 4), xs[1] = 7")
         self.validate_identity("CREATE TABLE cities_partdef PARTITION OF cities DEFAULT")
         self.validate_identity("CREATE TABLE t (c CHAR(2) UNIQUE NOT NULL) INHERITS (t1)")
         self.validate_identity("CREATE TABLE s.t (c CHAR(2) UNIQUE NOT NULL) INHERITS (s.t1, s.t2)")
@@ -1293,6 +1349,9 @@ FROM json_data, field_ids""",
         )
         self.validate_identity(
             "INSERT INTO newtable AS t(a, b, c) VALUES (1, 2, 3) ON CONFLICT(c) DO UPDATE SET a = t.a + 1 WHERE t.a < 1"
+        )
+        self.validate_identity(
+            "INSERT INTO t (id, a) VALUES (1, FALSE) ON CONFLICT(id) DO UPDATE SET a = t.x OR t.y, b = t.x AND t.y WHERE t.id = 1 RETURNING a"
         )
         self.validate_identity(
             "INSERT INTO tbl (a, b) VALUES (1, 'x') ON CONFLICT(a, LOWER(b)) DO UPDATE SET b = excluded.b"
@@ -1394,6 +1453,20 @@ FROM json_data, field_ids""",
         )
         self.validate_identity(
             "ALTER TABLE foo ADD COLUMN id BIGINT NOT NULL PRIMARY KEY DEFAULT 1, ADD CONSTRAINT fk_orders_user FOREIGN KEY (id) REFERENCES foo (id)"
+        )
+        (column,) = (
+            self.validate_identity("ALTER TABLE t ADD COLUMN if INT")
+            .assert_is(exp.Alter)
+            .args["actions"]
+        )
+        column.assert_is(exp.ColumnDef)
+        self.assertEqual(column.name, "if")
+        self.validate_identity("ALTER TABLE t ALTER COLUMN b RESTART", check_command_warning=True)
+        self.validate_identity(
+            "ALTER TABLE t ALTER COLUMN b SET STATISTICS 100", check_command_warning=True
+        )
+        self.validate_identity(
+            "ALTER TABLE t ALTER COLUMN b OPTIONS (ADD x 'a')", check_command_warning=True
         )
         self.validate_identity(
             "CREATE TABLE t (col integer ARRAY[3])",
@@ -1556,6 +1629,28 @@ FROM json_data, field_ids""",
                 read="postgres",
             )
 
+    def test_alter_mixed_actions(self):
+        for sql in (
+            "ALTER TABLE t ADD COLUMN a INT, DROP COLUMN b, ADD COLUMN c INT, DROP COLUMN d",
+            "ALTER TABLE t ADD CONSTRAINT c UNIQUE (a), DROP CONSTRAINT d",
+            "ALTER TABLE t ALTER COLUMN c SET DEFAULT 1, ADD COLUMN d INT",
+            "ALTER TABLE t ADD COLUMN a INT, DROP COLUMN if",
+            "ALTER TABLE t ADD COLUMN a INT, DROP COLUMN partitioned_by CASCADE",
+        ):
+            with self.subTest(sql):
+                alter = self.validate_identity(sql).assert_is(exp.Alter)
+                for action in alter.args["actions"]:
+                    self.assertNotIsInstance(action, exp.Command)
+
+        for sql in (
+            "ALTER TABLE t DROP COLUMN b, ADD index INT",
+            "ALTER TABLE t ADD COLUMN b INT, DROP partition",
+            "ALTER TABLE t ADD COLUMN a INT, ALTER COLUMN b RESTART",
+            "ALTER TABLE t ADD COLUMN a INT, ALTER COLUMN b SET STATISTICS 100",
+        ):
+            with self.subTest(sql):
+                self.validate_identity(sql, check_command_warning=True).assert_is(exp.Command)
+
     def test_called_on_null_input_malformed(self):
         # Regression test for a zero-progress parse loop: a malformed property suffix used to
         # retreat the cursor back onto the property keyword, making the function-property loop
@@ -1569,12 +1664,68 @@ FROM json_data, field_ids""",
             with self.assertRaises(ParseError):
                 self.parse_one(sql)
 
+    def test_alter_drop_column(self):
+        self.validate_identity("ALTER TABLE t DROP b", "ALTER TABLE t DROP COLUMN b")
+        self.validate_identity(
+            "ALTER TABLE t DROP b, DROP c", "ALTER TABLE t DROP COLUMN b, DROP COLUMN c"
+        )
+        self.validate_identity(
+            "ALTER TABLE t DROP b CASCADE", "ALTER TABLE t DROP COLUMN b CASCADE"
+        )
+        self.validate_identity(
+            "ALTER TABLE t DROP IF EXISTS b CASCADE",
+            "ALTER TABLE t DROP COLUMN IF EXISTS b CASCADE",
+        )
+        self.validate_identity("ALTER TABLE t DROP type", "ALTER TABLE t DROP COLUMN type")
+        self.validate_identity("ALTER TABLE t DROP if", "ALTER TABLE t DROP COLUMN if")
+        self.validate_identity(
+            "ALTER TABLE t DROP IF EXISTS if CASCADE",
+            "ALTER TABLE t DROP COLUMN IF EXISTS if CASCADE",
+        )
+        self.validate_identity(
+            "ALTER TABLE t DROP b, DROP view CASCADE",
+            "ALTER TABLE t DROP COLUMN b, DROP COLUMN view CASCADE",
+        )
+        self.validate_identity("ALTER TABLE t DROP COLUMN cascade").args["actions"][0].assert_is(
+            exp.Drop
+        )
+        self.validate_identity("ALTER TABLE t DROP COLUMN restrict").args["actions"][0].assert_is(
+            exp.Drop
+        )
+        self.validate_identity("ALTER TABLE t DROP CONSTRAINT restrict").args["actions"][
+            0
+        ].assert_is(exp.Drop)
+        self.validate_identity("ALTER TABLE t DROP COLUMN partitioned_by").args["actions"][
+            0
+        ].assert_is(exp.Drop)
+        self.validate_identity("ALTER TABLE t DROP COLUMN partitioned_by CASCADE")
+        drop_if, drop_b = self.validate_identity(
+            "ALTER TABLE t DROP COLUMN if CASCADE, DROP COLUMN b"
+        ).args["actions"]
+        drop_if.assert_is(exp.Drop)
+        drop_b.assert_is(exp.Drop)
+
     def test_unnest(self):
         self.validate_identity(
             "SELECT * FROM UNNEST(ARRAY[1, 2], ARRAY['foo', 'bar', 'baz']) AS x(a, b)"
         )
         self.validate_identity(
             "SELECT TRIM(ARRAY_TO_STRING(ARRAY(SELECT val FROM UNNEST(ARRAY['a', 'b']) WITH ORDINALITY AS u(val, rn)), ' '))"
+        )
+        self.validate_identity(
+            "SELECT r.v, r.idx FROM t CROSS JOIN LATERAL UNNEST(t.a) WITH ORDINALITY AS r(v, idx)"
+        )
+        self.validate_identity("SELECT * FROM t, LATERAL UNNEST(t.a) WITH ORDINALITY AS r")
+        self.validate_identity(
+            "SELECT * FROM t, LATERAL UNNEST(t.a, t.b) WITH ORDINALITY AS r(x, y, idx)"
+        )
+        self.validate_all(
+            "SELECT r.v, r.idx FROM t, LATERAL UNNEST(t.a) WITH ORDINALITY AS r(v, idx)",
+            write={
+                "postgres": "SELECT r.v, r.idx FROM t, LATERAL UNNEST(t.a) WITH ORDINALITY AS r(v, idx)",
+                "duckdb": "SELECT r.v, r.idx FROM t, LATERAL UNNEST(t.a) WITH ORDINALITY AS r(v, idx)",
+                "spark": "SELECT r.v, r.idx FROM t LATERAL VIEW POSEXPLODE(t.a) r AS idx, v",
+            },
         )
 
         self.validate_all(
@@ -1866,6 +2017,12 @@ CROSS JOIN JSON_ARRAY_ELEMENTS(CAST(JSON_EXTRACT_PATH(tbox, 'boxes') AS JSON)) A
         self.validate_identity(
             "WITH RECURSIVE search_graph(id, link, data, depth) AS (SELECT g.id, g.link, g.data, 1 FROM graph AS g UNION ALL SELECT g.id, g.link, g.data, sg.depth + 1 FROM graph AS g, search_graph AS sg WHERE g.id = sg.link) CYCLE id SET is_cycle USING path SELECT * FROM search_graph"
         )
+        self.validate_identity(
+            "WITH RECURSIVE search_graph(id, link, data, depth) AS (SELECT g.id, g.link, g.data, 1 FROM graph AS g UNION ALL SELECT g.id, g.link, g.data, sg.depth + 1 FROM graph AS g, search_graph AS sg WHERE g.id = sg.link) CYCLE id SET is_cycle TO 'Y' DEFAULT 'N' USING path SELECT * FROM search_graph"
+        )
+        self.validate_identity(
+            "WITH RECURSIVE search_graph(id, link, data, depth) AS (SELECT g.id, g.link, g.data, 1 FROM graph AS g UNION ALL SELECT g.id, g.link, g.data, sg.depth + 1 FROM graph AS g, search_graph AS sg WHERE g.id = sg.link) SEARCH DEPTH FIRST BY id SET ordercol CYCLE id SET is_cycle USING path SELECT * FROM search_graph ORDER BY ordercol"
+        )
 
     def test_json_extract(self):
         self.validate_all(
@@ -1885,7 +2042,7 @@ CROSS JOIN JSON_ARRAY_ELEMENTS(CAST(JSON_EXTRACT_PATH(tbox, 'boxes') AS JSON)) A
             read={"postgres": "SELECT JSONB_EXTRACT(a, n IN (1, 2))"},
         )
 
-        for arrow_op in ("->", "->>"):
+        for arrow_op, clickhouse_func in (("->", "JSONExtractRaw"), ("->>", "JSONExtractString")):
             with self.subTest(f"Ensure {arrow_op} operator roundtrips int values as subscripts"):
                 self.validate_all(
                     f"SELECT foo {arrow_op} 1",
@@ -1902,7 +2059,7 @@ CROSS JOIN JSON_ARRAY_ELEMENTS(CAST(JSON_EXTRACT_PATH(tbox, 'boxes') AS JSON)) A
                     f"SELECT foo {arrow_op} '12'",
                     write={
                         "postgres": f"SELECT foo {arrow_op} '12'",
-                        "clickhouse": "SELECT JSONExtractString(foo, '12')",
+                        "clickhouse": f"SELECT {clickhouse_func}(foo, '12')",
                     },
                 )
 

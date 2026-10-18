@@ -17,6 +17,7 @@ from sqlglot.dialects.dialect import (
     no_pivot_sql,
     no_tablesample_sql,
     no_trycast_sql,
+    if_sql,
     remove_ts_or_ds_to_date,
     rename_func,
     strposition_sql,
@@ -109,6 +110,7 @@ def _ts_or_ds_to_date_sql(self: MySQLGenerator, expression: exp.TsOrDsToDate) ->
 
 
 class MySQLGenerator(generator.Generator):
+    BYTE_STRING_FUNCTION = "UNHEX"
     SELECT_KINDS: tuple[str, ...] = ()
     TRY_SUPPORTED = False
     SUPPORTS_UESCAPE = False
@@ -121,6 +123,7 @@ class MySQLGenerator(generator.Generator):
 
     INTERVAL_ALLOWS_PLURAL_FORM = False
     LOCKING_READS_SUPPORTED = True
+    CAST_TO_INT_ROUNDS = True
     NULL_ORDERING_SUPPORTED: bool | None = None
     JOIN_HINTS = False
     TABLE_HINTS = True
@@ -140,6 +143,11 @@ class MySQLGenerator(generator.Generator):
     SUPPORTS_MEDIAN = False
     UPDATE_STATEMENT_SUPPORTS_FROM = False
 
+    ALTER_PARTITION_OPTIONS: t.ClassVar[tuple[type[exp.Expr], ...]] = (
+        exp.PartitionByListProperty,
+        exp.PartitionByRangeProperty,
+    )
+
     TRANSFORMS = {
         **generator.Generator.TRANSFORMS,
         exp.ArrayAgg: rename_func("GROUP_CONCAT"),
@@ -153,9 +161,9 @@ class MySQLGenerator(generator.Generator):
         exp.DateDiff: remove_ts_or_ds_to_date(
             lambda self, e: self.func("DATEDIFF", e.this, e.expression), ("this", "expression")
         ),
-        exp.DateAdd: remove_ts_or_ds_to_date(date_add_sql("ADD")),
+        exp.DateAdd: date_add_sql("ADD"),
         exp.DateStrToDate: datestrtodate_sql,
-        exp.DateSub: remove_ts_or_ds_to_date(date_add_sql("SUB")),
+        exp.DateSub: date_add_sql("SUB"),
         exp.DateTrunc: _date_trunc_sql,
         exp.Day: remove_ts_or_ds_to_date(),
         exp.DayOfMonth: remove_ts_or_ds_to_date(rename_func("DAYOFMONTH")),
@@ -165,6 +173,8 @@ class MySQLGenerator(generator.Generator):
             f"""GROUP_CONCAT({self.sql(e, "this")} SEPARATOR {self.sql(e, "separator") or "','"})"""
         ),
         exp.ILike: no_ilike_sql,
+        # https://dev.mysql.com/doc/refman/9.7/en/flow-control-functions.html#function_if
+        exp.If: if_sql(false_value="NULL"),
         exp.JSONExtractScalar: arrow_json_extract_sql,
         exp.Length: length_or_char_length_sql,
         exp.LogicalOr: rename_func("MAX"),
@@ -209,7 +219,9 @@ class MySQLGenerator(generator.Generator):
             lambda self, e: self.func("DATE_FORMAT", e.this, self.format_time(e))
         ),
         exp.Trim: trim_sql,
-        exp.Trunc: rename_func("TRUNCATE"),
+        exp.Trunc: lambda self, e: self.func(
+            "TRUNCATE", e.this, e.args.get("decimals") or exp.Literal.number(0)
+        ),
         exp.TryCast: no_trycast_sql,
         exp.TsOrDsAdd: date_add_sql("ADD"),
         exp.TsOrDsDiff: lambda self, e: self.func("DATEDIFF", e.this, e.expression),
@@ -269,6 +281,7 @@ class MySQLGenerator(generator.Generator):
         exp.PartitionedByProperty: exp.Properties.Location.UNSUPPORTED,
         exp.PartitionByRangeProperty: exp.Properties.Location.POST_SCHEMA,
         exp.PartitionByListProperty: exp.Properties.Location.POST_SCHEMA,
+        exp.Property: exp.Properties.Location.POST_SCHEMA,
     }
 
     LIMIT_FETCH = "LIMIT"
@@ -650,6 +663,20 @@ class MySQLGenerator(generator.Generator):
     def dpipe_sql(self, expression: exp.DPipe) -> str:
         return self.func("CONCAT", *expression.flatten())
 
+    def intdiv_sql(self, expression: exp.IntDiv) -> str:
+        this = self.sql(exp._wrap(expression.this, exp.Binary))
+        divisor = self.sql(exp._wrap(expression.expression, exp.Binary))
+        sql = f"{this} {self.maybe_comment('DIV', comments=expression.comments)} {divisor}"
+
+        parent = expression.parent
+        if isinstance(parent, (exp.Neg, exp.BitwiseNot)) or (
+            isinstance(parent, (exp.Mul, exp.Div, exp.IntDiv, exp.Mod))
+            and parent.expression is expression
+        ):
+            return f"({sql})"
+
+        return sql
+
     def extract_sql(self, expression: exp.Extract) -> str:
         unit = expression.name
         if unit and unit.lower() == "epoch":
@@ -692,6 +719,15 @@ class MySQLGenerator(generator.Generator):
         global_ = " GLOBAL" if expression.args.get("global_") else ""
 
         target = self.sql(expression, "target")
+
+        # SHOW CREATE ... takes a possibly qualified name, it has no FROM clause
+        # https://dev.mysql.com/doc/refman/8.4/en/show-create-table.html
+        if expression.name.startswith("CREATE") and (db_id := self.sql(expression, "db")):
+            target = f"{db_id}.{target}"
+            db = ""
+        else:
+            db = self._prefixed_sql("FROM", expression, "db")
+
         target = f" {target}" if target else ""
         if expression.name in ("COLUMNS", "INDEX"):
             target = f" FROM{target}"
@@ -701,8 +737,6 @@ class MySQLGenerator(generator.Generator):
             target = f" ON{target}" if target else ""
         elif expression.name == "PROJECTIONS":
             target = f" ON TABLE{target}" if target else ""
-
-        db = self._prefixed_sql("FROM", expression, "db")
 
         like = self._prefixed_sql("LIKE", expression, "like")
         where = self.sql(expression, "where")

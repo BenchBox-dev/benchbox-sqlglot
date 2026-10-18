@@ -6,8 +6,8 @@ from sqlglot import exp, generator, transforms
 from sqlglot.dialects.dialect import (
     any_value_to_max_sql,
     arrow_json_extract_sql,
-    concat_to_dpipe_sql,
     count_if_to_sum,
+    groupconcat_sql,
     no_ilike_sql,
     no_pivot_sql,
     no_tablesample_sql,
@@ -16,12 +16,13 @@ from sqlglot.dialects.dialect import (
     strposition_sql,
 )
 from sqlglot.generator import unsupported_args
-from sqlglot.optimizer.scope import find_in_scope
+from sqlglot.errors import OptimizeError
+from sqlglot.helper import is_int
 from sqlglot.tokens import TokenType
 
 
 def _transform_create(expression: exp.Expr) -> exp.Expr:
-    """Move primary key to a column and enforce auto_increment on primary keys."""
+    """Move primary key to a column and place auto_increment after it."""
     schema = expression.this
 
     if isinstance(expression, exp.Create) and isinstance(schema, exp.Schema):
@@ -53,12 +54,9 @@ def _transform_create(expression: exp.Expr) -> exp.Expr:
                     auto_increment = constraint
                     auto_increment_index = i
 
-            if auto_increment is not None and (
-                primary_key_index == -1 or auto_increment_index < primary_key_index
-            ):
+            if auto_increment is not None and 0 <= auto_increment_index < primary_key_index:
                 column.constraints.remove(auto_increment)
-                if primary_key_index != -1:
-                    column.constraints.insert(primary_key_index, auto_increment)
+                column.constraints.insert(primary_key_index, auto_increment)
 
     return expression
 
@@ -90,8 +88,9 @@ def _offset_to_limit(expression: exp.Expr) -> exp.Expr:
         return expression
 
     offset = expression.args.get("offset")
+    limit = expression.args.get("limit")
 
-    if offset and not expression.args.get("limit"):
+    if offset and (not limit or (isinstance(limit, exp.Limit) and limit.is_limit_all)):
         expression.limit(-1, copy=False)
 
     return expression
@@ -102,6 +101,7 @@ class SQLiteGenerator(generator.Generator):
     TRY_SUPPORTED = False
     SUPPORTS_UESCAPE = False
     SUPPORTS_DECODE_CASE = False
+    SET_OP_PARENTHESIZED_OPERANDS = False
 
     AFTER_HAVING_MODIFIER_TRANSFORMS = generator.AFTER_HAVING_MODIFIER_TRANSFORMS
 
@@ -151,7 +151,6 @@ class SQLiteGenerator(generator.Generator):
         **generator.Generator.TRANSFORMS,
         exp.AnyValue: any_value_to_max_sql,
         exp.Chr: rename_func("CHAR"),
-        exp.Concat: concat_to_dpipe_sql,
         exp.CountIf: count_if_to_sum,
         exp.Create: transforms.preprocess([_transform_create]),
         exp.CurrentDate: lambda *_: "CURRENT_DATE",
@@ -207,6 +206,109 @@ class SQLiteGenerator(generator.Generator):
 
     LIMIT_FETCH = "LIMIT"
 
+    def autoincrementcolumnconstraint_sql(
+        self, expression: exp.AutoIncrementColumnConstraint
+    ) -> str:
+        column = expression.find_ancestor(exp.ColumnDef)
+        if column and column.find(exp.PrimaryKeyColumnConstraint):
+            return super().autoincrementcolumnconstraint_sql(expression)
+
+        self.unsupported("SQLite AUTOINCREMENT requires an INTEGER PRIMARY KEY")
+        return ""
+
+    _extraction_division_casts: dict[int, bool | None] | None = None
+
+    def preprocess(self, expression: exp.Expr) -> exp.Expr:
+        self._extraction_division_casts = None
+        return super().preprocess(expression)
+
+    def _resolve_extraction_divisions(self, expression: exp.Expr) -> dict[int, bool | None]:
+        root = expression.root()
+        if not any(
+            extract.args.get("return_type")
+            and extract.args["return_type"].is_type(exp.DType.DECIMAL)
+            for extract in root.find_all(exp.Extract)
+        ):
+            return {}
+
+        from sqlglot.optimizer.annotate_types import annotate_types
+        from sqlglot.optimizer.qualify_columns import qualify_columns
+
+        # Whole date parts fit SQLite INTEGER, but PostgreSQL's decimal EXTRACT
+        # still requires fractional division, including through CTE aliases.
+        # Resolve on a copy so qualification cannot alter emitted column names.
+        annotated = root.copy()
+        divisions = {
+            id(original): copied
+            for original, copied in zip(root.find_all(exp.Div), annotated.find_all(exp.Div))
+        }
+        try:
+            if annotated.find(exp.Column):
+                qualify_columns(annotated, schema={}, expand_stars=False, dialect=self.dialect)
+            annotate_types(annotated, dialect=self.dialect, overwrite_types=False)
+        except OptimizeError as error:
+            self.unsupported(f"Cannot resolve SQLite extraction division types: {error}")
+            return {}
+
+        casts: dict[int, bool | None] = {}
+        for key, division in divisions.items():
+            left, right = division.this, division.expression
+            if left.is_type(exp.DType.DECIMAL) or right.is_type(exp.DType.DECIMAL):
+                casts[key] = True
+            elif (
+                not left.type
+                or not right.type
+                or left.is_type(exp.DType.UNKNOWN)
+                or right.is_type(exp.DType.UNKNOWN)
+            ):
+                casts[key] = None
+            else:
+                casts[key] = False
+        return casts
+
+    def div_sql(self, expression: exp.Div) -> str:
+        if expression.args.get("typed"):
+            if self._extraction_division_casts is None:
+                self._extraction_division_casts = self._resolve_extraction_divisions(expression)
+            if self._extraction_division_casts:
+                needs_cast = self._extraction_division_casts.get(id(expression))
+                if needs_cast:
+                    expression.set(
+                        "this",
+                        exp.Cast(this=expression.this, to=exp.DataType.build(exp.DType.DOUBLE)),
+                    )
+                elif needs_cast is None:
+                    self.unsupported("SQLite extraction division requires known operand types")
+        return super().div_sql(expression)
+
+    def extract_sql(self, expression: exp.Extract) -> str:
+        formats = {"YEAR": "%Y", "MONTH": "%m", "DAY": "%d"}
+        format_string = formats.get(expression.name.upper())
+        value = expression.expression
+        return_type = expression.args.get("return_type")
+        if format_string and not value.type:
+            from sqlglot.optimizer.annotate_types import annotate_types
+
+            value = annotate_types(value.copy(), dialect=self.dialect, overwrite_types=False)
+        if (
+            format_string
+            and value.is_type(exp.DType.DATE)
+            and (
+                not return_type
+                or return_type.is_type(exp.DType.DECIMAL, *exp.DataType.INTEGER_TYPES)
+            )
+        ):
+            return self.sql(
+                exp.cast(
+                    exp.TimeToStr(this=value.copy(), format=exp.Literal.string(format_string)),
+                    exp.DType.INT,
+                )
+            )
+        self.unsupported(
+            "SQLite EXTRACT requires YEAR/MONTH/DAY from DATE with integer or decimal return semantics"
+        )
+        return super().extract_sql(expression)
+
     def insert_sql(self, expression: exp.Insert) -> str:
         if expression.args.get("ignore"):
             expression.set("ignore", False)
@@ -246,9 +348,53 @@ class SQLiteGenerator(generator.Generator):
         if isinstance(modifier, exp.Interval):
             unit = unit or modifier.unit
             modifier = modifier.this
+
+        modifier = modifier.unnest()
+        if (
+            unit
+            and not isinstance(modifier, exp.Literal)
+            and not (isinstance(modifier, exp.Neg) and modifier.this.is_number)
+        ):
+            return self.func(
+                "DATE",
+                expression.this,
+                exp.DPipe(
+                    this=exp.paren(modifier),
+                    expression=exp.Literal.string(f" {unit.name}"),
+                ),
+            )
         modifier = modifier.name if modifier.is_string else self.sql(modifier)
         modifier = f"'{modifier} {unit.name}'" if unit else f"'{modifier}'"
         return self.func("DATE", expression.this, modifier)
+
+    def _date_interval_sql(self, expression: exp.Add | exp.Sub) -> str | None:
+        date, interval = expression.this, expression.expression
+        if isinstance(expression, exp.Add) and isinstance(date, exp.Interval):
+            date, interval = interval, date
+        if (
+            date.is_type(exp.DType.DATE)
+            and isinstance(interval, exp.Interval)
+            and interval.unit
+            and interval.unit.name.upper() in ("DAY", "HOUR", "MINUTE", "SECOND")
+            and isinstance(interval.this, exp.Literal)
+            and is_int(interval.this.name)
+        ):
+            amount = int(interval.this.name)
+            if isinstance(expression, exp.Sub):
+                amount = -amount
+            modifier = exp.Literal.string(f"{amount} {interval.unit.name}")
+            return self.func("DATETIME", date, modifier)
+        return None
+
+    def add_sql(self, expression: exp.Add) -> str:
+        return self._date_interval_sql(expression) or super().add_sql(expression)
+
+    def sub_sql(self, expression: exp.Sub) -> str:
+        return self._date_interval_sql(expression) or super().sub_sql(expression)
+
+    def interval_sql(self, expression: exp.Interval) -> str:
+        self.unsupported("SQLite does not support this INTERVAL expression")
+        return super().interval_sql(expression)
 
     def cast_sql(self, expression: exp.Cast, safe_prefix: str | None = None) -> str:
         if expression.is_type("date"):
@@ -313,30 +459,29 @@ class SQLiteGenerator(generator.Generator):
         elif unit == "MICROSECOND":
             sql = f"{sql} * 86400000000.0"
         elif unit == "NANOSECOND":
-            sql = f"{sql} * 8640000000000.0"
+            sql = f"{sql} * 86400000000000.0"
         else:
             self.unsupported(f"DATEDIFF unsupported for '{unit}'.")
 
         return f"CAST({sql} AS INTEGER)"
 
-    # https://www.sqlite.org/lang_aggfunc.html#group_concat
     def groupconcat_sql(self, expression: exp.GroupConcat) -> str:
-        this = expression.this
-        distinct = find_in_scope(expression, exp.Distinct)
+        node = expression.parent if isinstance(expression.parent, exp.Filter) else expression
+        window = node.parent
 
-        if distinct:
-            this = distinct.expressions[0]
-            distinct_sql = "DISTINCT "
-        else:
-            distinct_sql = ""
+        if (
+            isinstance(expression.this, exp.Order)
+            and isinstance(window, exp.Window)
+            and window.this is node
+        ):
+            self.unsupported(
+                "SQLite GROUP_CONCAT window functions do not support argument ORDER BY"
+            )
+            expression.set("this", expression.this.this)
 
-        if isinstance(expression.this, exp.Order):
-            self.unsupported("SQLite GROUP_CONCAT doesn't support ORDER BY.")
-            if expression.this.this and not distinct:
-                this = expression.this.this
-
-        separator = expression.args.get("separator")
-        return f"GROUP_CONCAT({distinct_sql}{self.format_args(this, separator)})"
+        return groupconcat_sql(
+            self, expression, func_name="GROUP_CONCAT", sep=None, within_group=False
+        )
 
     def _greatest_least_sql(self, expression: exp.Greatest | exp.Least) -> str:
         if not expression.expressions:

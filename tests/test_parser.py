@@ -117,6 +117,7 @@ class TestParser(unittest.TestCase):
         for dialect, sql, expected in [
             ("postgres", "SELECT TRIM($$leading$$)", "SELECT TRIM('leading')"),
             ("tsql", "SELECT TRIM(N'both')", "SELECT TRIM(N'both')"),
+            ("oracle", "SELECT TRIM(nq'[both]')", "SELECT TRIM(N'both')"),
             ("postgres", 'SELECT TRIM("leading" FROM x)', 'SELECT TRIM("leading" FROM x)'),
             ("mysql", "INSERT `local` (a) VALUES (1)", "INSERT INTO `local` (a) VALUES (1)"),
             (
@@ -568,6 +569,21 @@ class TestParser(unittest.TestCase):
         self.assertEqual(expression.comments, ["comment2"])
         self.assertEqual(expression.this.comments, ["comment3"])
         self.assertEqual(expression.args.get("with_").comments, ["comment1.1", "comment1.2"])
+
+    def test_update_assignment(self):
+        for sql in (
+            "UPDATE t SET a = t.b = t.c OR t.d AND t.e",
+            "MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE SET a = t.b = t.c OR t.d AND t.e",
+            "INSERT INTO t (id) VALUES (1) ON CONFLICT(id) DO UPDATE SET a = t.b = t.c OR t.d AND t.e",
+            "INSERT INTO t (id) VALUES (1) ON DUPLICATE KEY UPDATE a = t.b = t.c OR t.d AND t.e",
+        ):
+            with self.subTest(sql=sql):
+                update = parse_one(sql).find(exp.Update, exp.OnConflict)
+                self.assertIsNotNone(update)
+                assignment = update.expressions[0]
+                self.assertIsInstance(assignment, exp.EQ)
+                self.assertEqual(assignment.this, exp.column("a"))
+                self.assertEqual(assignment.expression, parse_one("t.b = t.c OR t.d AND t.e"))
 
     def test_comments_update(self):
         expression = parse_one(
@@ -1101,6 +1117,12 @@ class TestParser(unittest.TestCase):
                 with self.subTest(f"Testing query '{sql}' for dialect {dialect}"):
                     self.assertEqual(parse_one(sql, dialect=dialect).sql(dialect=dialect), sql)
 
+    def test_alter_mixed_actions(self):
+        with self.assertLogs(parser_logger):
+            alter = parse_one("ALTER TABLE t ADD COLUMN a INT, DROP COLUMN b")
+
+        self.assertIsInstance(alter, exp.Command)
+
     def test_distinct_from(self):
         self.assertIsInstance(parse_one("a IS DISTINCT FROM b OR c IS DISTINCT FROM d"), exp.Or)
 
@@ -1234,6 +1256,18 @@ class TestParser(unittest.TestCase):
             )
 
         self.assertIn("Found multiple 'START WITH' clauses. Line 1, Col: 65.", str(ctx.exception))
+
+        sql = "SELECT a FROM x OFFSET 1 LIMIT 2, 3"
+
+        with self.assertRaises(ParseError) as ctx:
+            parse_one(sql)
+
+        self.assertIn("Found multiple 'OFFSET' clauses. Line 1, Col: 30.", str(ctx.exception))
+
+        self.assertEqual(
+            parse_one(sql, error_level=ErrorLevel.IGNORE).sql(),
+            "SELECT a FROM x LIMIT 3 OFFSET 2",
+        )
 
     def test_window_clause_without_from(self):
         # https://github.com/tobymao/sqlglot/issues/7438

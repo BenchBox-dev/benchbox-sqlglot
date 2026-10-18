@@ -126,6 +126,34 @@ TIME;
 EXTRACT(day from x);
 INT;
 
+# dialect: postgres
+EXTRACT(YEAR FROM DATE '2020-06-01');
+DECIMAL;
+
+# dialect: postgres
+DATE_PART('year', DATE '2020-06-01');
+DOUBLE;
+
+# dialect: postgres
+EXTRACT(YEAR FROM DATE '2020-06-01') / 3;
+DECIMAL;
+
+# dialect: postgres
+DATE_PART('year', DATE '2020-06-01') / 3;
+DOUBLE;
+
+# dialect: redshift
+EXTRACT(YEAR FROM TIMESTAMP '2020-06-01 00:00:00');
+INT;
+
+# dialect: redshift
+DATE_PART('year', TIMESTAMP '2020-06-01 00:00:00');
+DOUBLE;
+
+# dialect: duckdb
+EXTRACT(YEAR FROM DATE '2020-06-01');
+BIGINT;
+
 CASE WHEN x THEN CAST(y AS DECIMAL(18, 2)) ELSE NULL END;
 DECIMAL(18,2);
 
@@ -250,3 +278,31 @@ FLOAT64;
 # dialect: bigquery
 IF(1 = 1, CAST(1 AS BIGNUMERIC) * 1.5, CAST(2 AS BIGNUMERIC));
 BIGNUMERIC;
+
+# dialect: duckdb
+CAST('2019-01-10' AS DATE) AT TIME ZONE 'UTC';
+TIMESTAMPTZ;
+
+# dialect: duckdb
+CAST('2019-01-10 02:03:04' AS TIMESTAMP) AT TIME ZONE 'UTC';
+TIMESTAMPTZ;
+
+# dialect: duckdb
+CAST('2019-01-10 02:03:04' AS TIMESTAMP_S) AT TIME ZONE 'UTC';
+TIMESTAMPTZ;
+
+# dialect: duckdb
+CAST('2019-01-10 02:03:04' AS TIMESTAMP_MS) AT TIME ZONE 'UTC';
+TIMESTAMPTZ;
+
+# dialect: duckdb
+CAST('2019-01-10 02:03:04' AS TIMESTAMP_NS) AT TIME ZONE 'UTC';
+TIMESTAMPTZ;
+
+# dialect: duckdb
+CAST('2019-01-10 02:03:04+00' AS TIMESTAMPTZ) AT TIME ZONE 'UTC';
+TIMESTAMP;
+
+# dialect: duckdb
+CAST('02:03:04+00' AS TIMETZ) AT TIME ZONE 'UTC';
+TIMETZ;

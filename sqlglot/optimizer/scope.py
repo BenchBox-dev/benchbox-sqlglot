@@ -33,6 +33,7 @@ COLLECTIBLE_TYPES = (
     exp.Star,
     exp.TableColumn,
     exp.JoinHint,
+    exp.Comprehension,
 )
 
 
@@ -86,9 +87,11 @@ class Scope:
     _derived_tables: list[exp.Subquery]
     _udtfs: list[exp.UDTF]
     _tables: list[exp.Table]
+    _ordered_sources: list[exp.Expr]
     _ctes: list[exp.CTE]
     _subqueries: list[exp.Select | exp.SetOperation]
     _join_hints: list[exp.JoinHint]
+    _comprehensions: list[exp.Comprehension]
     _semi_anti_join_tables: set[str]
     _column_index: set[int]
     _selected_sources: dict[str, tuple[exp.Selectable, exp.Table | Scope]] | None
@@ -142,9 +145,11 @@ class Scope:
         self._derived_tables = []
         self._udtfs = []
         self._tables = []
+        self._ordered_sources = []
         self._ctes = []
         self._subqueries = []
         self._join_hints = []
+        self._comprehensions = []
         self._semi_anti_join_tables = set()
         self._column_index = set()
         self._selected_sources = None
@@ -178,6 +183,7 @@ class Scope:
 
     def _collect(self) -> None:
         self._tables = []
+        self._ordered_sources = []
         self._ctes = []
         self._subqueries = []
         self._derived_tables = []
@@ -186,6 +192,7 @@ class Scope:
         self._table_columns = []
         self._stars = []
         self._join_hints = []
+        self._comprehensions = []
         self._semi_anti_join_tables = set()
         self._column_index = set()
 
@@ -216,16 +223,19 @@ class Scope:
                     self._semi_anti_join_tables.add(node.alias_or_name)
 
                 self._tables.append(node)
+                self._ordered_sources.append(node)
             elif isinstance(node, exp.JoinHint):
                 self._join_hints.append(node)
             elif type(node) is exp.Lateral or (
                 isinstance(node, exp.UDTF) and isinstance(node.parent, (exp.From, exp.Join))
             ):
                 self._udtfs.append(node)
+                self._ordered_sources.append(node)
             elif isinstance(node, exp.CTE):
                 self._ctes.append(node)
             elif _is_derived_table(node) and _is_from_or_join(node):
                 self._derived_tables.append(t.cast(exp.Subquery, node))
+                self._ordered_sources.append(node)
             elif (
                 isinstance(node, exp.UNWRAPPED_QUERIES)
                 and not _is_from_or_join(node)
@@ -234,6 +244,8 @@ class Scope:
                 self._subqueries.append(node)
             elif isinstance(node, exp.TableColumn):
                 self._table_columns.append(node)
+            elif isinstance(node, exp.Comprehension):
+                self._comprehensions.append(node)
             elif isinstance(node, exp.Star) and (
                 node.args.get("except_") or not isinstance(node.parent, ROW_LEVEL_AGG_FUNCS)
             ):
@@ -277,6 +289,12 @@ class Scope:
         """
         self._ensure_collected()
         return self._tables
+
+    @property
+    def comprehensions(self) -> list[exp.Comprehension]:
+        """List of comprehensions in this scope."""
+        self._ensure_collected()
+        return self._comprehensions
 
     @property
     def ctes(self) -> list[exp.CTE]:
@@ -443,21 +461,22 @@ class Scope:
     @property
     def references(self) -> list[tuple[str, exp.Selectable]]:
         if self._references is None:
+            self._ensure_collected()
             self._references = []
 
-            for table in self.tables:
-                self._references.append((table.alias_or_name, table))
-            for _expr in itertools.chain(self.derived_tables, self.udtfs):
-                # TODO (mypyc): rebind to exp.Expr to avoid DerivedTable trait vtable dispatch
-                expression: exp.Expr = _expr
-                self._references.append(
-                    (
-                        _get_source_alias(expression),
+            # Sources are kept in walk order, which star expansion relies on
+            for expression in self._ordered_sources:
+                if isinstance(expression, exp.Table):
+                    self._references.append((expression.alias_or_name, expression))
+                else:
+                    self._references.append(
                         (
-                            expression if expression.args.get("pivots") else expression.unnest()
-                        ).assert_is(exp.Selectable),
+                            _get_source_alias(expression),
+                            (
+                                expression if expression.args.get("pivots") else expression.unnest()
+                            ).assert_is(exp.Selectable),
+                        )
                     )
-                )
 
         return self._references
 
@@ -656,6 +675,11 @@ def traverse_scope(expression: exp.Expr) -> list[Scope]:
     names within a subquery. Returns a list because a generator could result in
     incomplete properties which is confusing.
 
+    Scopes are returned in depth-first post-order. For each scope, its descendants
+    occupy consecutive entries in the returned list immediately before it. A scope
+    is a descendant of another scope if following its `parent` links eventually
+    reaches that other scope.
+
     Examples:
         >>> import sqlglot
         >>> expression = sqlglot.parse_one("SELECT a FROM (SELECT a FROM x) AS y")
@@ -708,8 +732,7 @@ def _traverse_scope(scope: Scope) -> Iterator[Scope]:
     elif isinstance(expression, exp.UDTF):
         yield from _traverse_udtfs(scope)
     elif isinstance(expression, exp.DDL):
-        # TODO (mypyc): change to ddl_expression = expression.expression
-        ddl_expression = expression.args.get("expression")
+        ddl_expression = expression.expression
         if isinstance(ddl_expression, exp.Query):
             yield from _traverse_ctes(scope)
             yield from _traverse_scope(Scope(ddl_expression, cte_sources=scope.cte_sources))

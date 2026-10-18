@@ -31,6 +31,30 @@ class TestSingleStore(Validator):
         self.validate_identity("SELECT e'text'")
         self.validate_identity("SELECT E'text'", "SELECT e'text'")
 
+    def test_percentile_null_ordering(self):
+        for func in ("PERCENTILE_CONT", "PERCENTILE_DISC"):
+            self.validate_all(
+                f"SELECT {func}(0.75) WITHIN GROUP (ORDER BY x) FROM t",
+                read={
+                    "postgres": f"SELECT {func}(0.75) WITHIN GROUP (ORDER BY x) FROM t",
+                    "singlestore": f"SELECT {func}(0.75) WITHIN GROUP (ORDER BY x NULLS LAST) FROM t",
+                },
+            )
+            self.validate_all(
+                f"SELECT {func}(0.75) WITHIN GROUP (ORDER BY x DESC NULLS FIRST) OVER (PARTITION BY g) FROM t",
+                read={
+                    "postgres": f"SELECT {func}(0.75) WITHIN GROUP (ORDER BY x DESC) OVER (PARTITION BY g) FROM t",
+                    "singlestore": f"SELECT {func}(0.75) WITHIN GROUP (ORDER BY x DESC NULLS LAST) OVER (PARTITION BY g) FROM t",
+                },
+            )
+
+        self.validate_all(
+            "SELECT PERCENTILE_CONT(1) WITHIN GROUP (ORDER BY x) FROM t ORDER BY x NULLS LAST",
+            read={
+                "postgres": "SELECT PERCENTILE_CONT(1) WITHIN GROUP (ORDER BY x) FROM t ORDER BY x",
+            },
+        )
+
     def test_national_strings(self):
         self.validate_all(
             "SELECT 'text'", read={"": "SELECT N'text'", "singlestore": "SELECT 'text'"}
@@ -341,8 +365,11 @@ class TestSingleStore(Validator):
             "SELECT SUM(CASE WHEN age > 18 THEN 1 ELSE 0 END) FROM `users`",
             read={
                 "singlestore": "SELECT SUM(CASE WHEN age > 18 THEN 1 ELSE 0 END) FROM `users`",
-                "": "SELECT COUNT_IF(age > 18) FROM users",
             },
+        )
+        self.validate_all(
+            "SELECT SUM(IF(age > 18, 1, 0)) FROM `users`",
+            read={"": "SELECT COUNT_IF(age > 18) FROM users"},
         )
         self.validate_all(
             "SELECT MAX(ABS(age > 18)) FROM `users`",
@@ -409,6 +436,24 @@ class TestSingleStore(Validator):
             },
         )
 
+    def test_is_ascii(self):
+        self.validate_identity(
+            "SELECT ('a' RLIKE '^[\x00-\x7f]*$')",
+            "SELECT ('a' RLIKE '^[\\0-\x7f]*$')",
+        )
+        self.validate_all(
+            "SELECT ('a' RLIKE '^[\\0-\x7f]*$')",
+            read={"": "SELECT IS_ASCII('a')"},
+        )
+        self.validate_all(
+            "SELECT 1 + ('a' RLIKE '^[\\0-\x7f]*$')",
+            read={"": "SELECT 1 + IS_ASCII('a')"},
+        )
+        self.validate_all(
+            "SELECT NOT ('é' RLIKE '^[\\0-\x7f]*$')",
+            read={"": "SELECT NOT IS_ASCII('é')"},
+        )
+
     def test_string_functions(self):
         self.validate_all(
             "SELECT 'a' RLIKE 'b'",
@@ -432,10 +477,6 @@ class TestSingleStore(Validator):
                 "": "SELECT REGEXP_EXTRACT('adog', 'O', 1, 1, 'c', 'gr1')",
                 "singlestore": "SELECT REGEXP_SUBSTR('adog', 'O', 1, 1, 'c')",
             },
-        )
-        self.validate_all(
-            "SELECT ('a' RLIKE '^[\x00-\x7f]*$')",
-            read={"singlestore": "SELECT ('a' RLIKE '^[\x00-\x7f]*$')", "": "SELECT IS_ASCII('a')"},
         )
         self.validate_all(
             "SELECT UNHEX(MD5('data'))",
@@ -871,7 +912,6 @@ class TestSingleStore(Validator):
         )
         self.validate_identity(
             "SELECT name :> LONGTEXT COLLATE 'utf8mb4_bin' FROM `users`",
-            "SELECT name :> LONGTEXT :> LONGTEXT COLLATE 'utf8mb4_bin' FROM `users`",
         )
 
     def test_match_against(self):
@@ -960,6 +1000,7 @@ class TestSingleStore(Validator):
     def test_alter(self):
         self.validate_identity("ALTER TABLE t CHANGE middle_initial middle_name")
         self.validate_identity("ALTER TABLE t MODIFY COLUMN name TEXT COLLATE 'binary'")
+        self.validate_identity("ALTER TABLE t DROP b", "ALTER TABLE t DROP COLUMN b")
 
     def test_constraints(self):
         self.validate_all(

@@ -57,6 +57,10 @@ SELECT x.a AS a, y.c AS c FROM x AS x JOIN y AS y ON x.b = y.b;
 SELECT a, c FROM (SELECT q.a, q.b FROM x AS q) AS x JOIN y AS q ON x.b = q.b;
 SELECT q_2.a AS a, q.c AS c FROM x AS q_2 JOIN y AS q ON q_2.b = q.b;
 
+# title: Inner query has conflicting name in ANTI join source
+SELECT d2.c1 FROM (SELECT a AS c1 FROM x AS x) AS d2 ANTI JOIN x AS x ON c1 >= 0;
+SELECT x_2.a AS c1 FROM x AS x_2 ANTI JOIN x AS x ON x_2.a >= 0;
+
 # title: Inner query has conflicting name in joined source
 SELECT x.a, q.c FROM (SELECT a, x.b FROM x JOIN y AS q ON x.b = q.b) AS x JOIN y AS q ON x.b = q.b;
 SELECT x.a AS a, q.c AS c FROM x AS x JOIN y AS q_2 ON x.b = q_2.b JOIN y AS q ON x.b = q.b;
@@ -622,3 +626,7 @@ SELECT q.rn AS rn FROM (SELECT ROW_NUMBER() OVER (ORDER BY x.a) AS rn FROM x AS 
 # title: A CTE merge that reintroduces a name colliding with the outer join still renames correctly
 WITH c AS (SELECT q.a FROM (SELECT x.a FROM x AS x) AS q) SELECT c.a FROM c JOIN x ON c.a = x.a;
 SELECT x_2.a AS a FROM x AS x_2 JOIN x AS x ON x_2.a = x.a;
+
+# title: Each reference that needs wrapping gets a single pair of parentheses
+WITH q AS (SELECT a + b AS c FROM x) SELECT q.c * 1 AS c1, q.c * 2 AS c2, q.c * 3 AS c3 FROM q;
+SELECT (x.a + x.b) * 1 AS c1, (x.a + x.b) * 2 AS c2, (x.a + x.b) * 3 AS c3 FROM x AS x;

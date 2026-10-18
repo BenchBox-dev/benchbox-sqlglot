@@ -9,6 +9,16 @@ from tests.dialects.test_dialect import Validator
 class TestMySQL(Validator):
     dialect = "mysql"
 
+    def test_insert_value(self):
+        self.validate_identity("INSERT INTO t VALUE (1)", "INSERT INTO t VALUES (1)")
+        self.validate_identity(
+            "INSERT INTO t (a) value (1), (2)", "INSERT INTO t (a) VALUES (1), (2)"
+        )
+        self.validate_identity(
+            "INSERT INTO value (value) VALUE (1)", "INSERT INTO value (value) VALUES (1)"
+        )
+        self.validate_identity("SELECT value FROM value")
+
     def test_ddl(self):
         self.validate_identity("DROP TEMPORARY TABLE IF EXISTS db.t1, t2 CASCADE")
 
@@ -46,8 +56,42 @@ class TestMySQL(Validator):
         self.validate_identity("ALTER TABLE t1 ADD COLUMN x INT, ALGORITHM=INPLACE, LOCK=EXCLUSIVE")
         self.validate_identity("ALTER TABLE t ADD INDEX `i` (`c`)")
         self.validate_identity("ALTER TABLE t ADD UNIQUE `i` (`c`)")
-        self.validate_identity("ALTER TABLE t DROP PRIMARY KEY")
+        self.validate_identity("ALTER TABLE t ADD FOREIGN KEY fk (a) REFERENCES p (a)")
+        self.validate_identity(
+            "ALTER TABLE t ADD CONSTRAINT FOREIGN KEY fk (a) REFERENCES p (a)",
+            "ALTER TABLE t ADD FOREIGN KEY fk (a) REFERENCES p (a)",
+        )
+        self.validate_identity("ALTER TABLE t ADD CONSTRAINT c FOREIGN KEY fk (a) REFERENCES p (a)")
+        self.validate_identity("CREATE TABLE t (a INT, FOREIGN KEY fk (a) REFERENCES p (a))")
+        alter = self.validate_identity("ALTER TABLE t DROP PRIMARY KEY")
+        alter.args["actions"][0].assert_is(exp.DropPrimaryKey)
         self.validate_identity("ALTER TABLE t DROP COLUMN c, DROP PRIMARY KEY, DROP INDEX `i`")
+        self.validate_identity("ALTER TABLE t DROP KEY k", "ALTER TABLE t DROP INDEX k")
+        self.validate_identity("ALTER TABLE t DROP CHECK c").args["actions"][0].assert_is(exp.Drop)
+        self.validate_identity(
+            "ALTER TABLE t ADD CONSTRAINT UNIQUE uq_a (a)", "ALTER TABLE t ADD UNIQUE uq_a (a)"
+        )
+        self.validate_identity(
+            "CREATE TABLE t (a INT, CONSTRAINT PRIMARY KEY (a))",
+            "CREATE TABLE t (a INT, PRIMARY KEY (a))",
+        )
+        self.validate_identity(
+            "CREATE TABLE t (a INT CONSTRAINT CHECK (a > 0))",
+            "CREATE TABLE t (a INT CHECK (a > 0))",
+        )
+        self.validate_identity(
+            "ALTER TABLE t ADD CONSTRAINT FOREIGN KEY (a) REFERENCES p (a)",
+            "ALTER TABLE t ADD FOREIGN KEY (a) REFERENCES p (a)",
+        )
+        self.validate_identity(
+            "CREATE TABLE t (a BIGINT SIGNED, b DECIMAL(5, 2) SIGNED)",
+            "CREATE TABLE t (a BIGINT, b DECIMAL(5, 2))",
+        )
+        self.validate_identity(
+            "ALTER TABLE t ADD COLUMN a INT SIGNED NOT NULL",
+            "ALTER TABLE t ADD COLUMN a INT NOT NULL",
+        )
+        self.validate_identity("ALTER TABLE t DROP COLUMN a, ALGORITHM=INPLACE")
         self.validate_identity("ALTER TABLE test_table MODIFY COLUMN test_column LONGTEXT")
         self.validate_identity("ALTER TABLE t MODIFY COLUMN c INT NOT NULL")
         self.validate_identity("ALTER TABLE t MODIFY COLUMN c INT DEFAULT 5")
@@ -75,6 +119,22 @@ class TestMySQL(Validator):
         self.validate_identity("ALTER TABLE t AUTO_INCREMENT=3000000000")
         self.validate_identity("ALTER TABLE t COMMENT='hi'")
         self.validate_identity("ALTER TABLE t COMMENT 'hi'", "ALTER TABLE t COMMENT='hi'")
+        self.validate_identity("ALTER TABLE t FORCE").assert_is(exp.Alter)
+        self.validate_identity(
+            "ALTER TABLE t ENGINE=InnoDB PARTITION BY LIST (a) (PARTITION p0 VALUES IN (1))"
+        )
+        for sql in (
+            "ALTER TABLE t PARTITION BY RANGE (a) (PARTITION p0 VALUES LESS THAN (10), PARTITION p1 VALUES LESS THAN MAXVALUE)",
+            "ALTER TABLE t PARTITION BY RANGE COLUMNS (a, b) (PARTITION p0 VALUES LESS THAN (10, 20))",
+            "ALTER TABLE t PARTITION BY LIST COLUMNS (a) (PARTITION p0 VALUES IN (1, 2))",
+            "ALTER TABLE t PARTITION BY LIST (a) (PARTITION p0 VALUES IN (1) COMMENT = 'x')",
+            "ALTER TABLE t PARTITION BY RANGE (a) (PARTITION p0 VALUES LESS THAN (10) ENGINE = InnoDB)",
+        ):
+            self.validate_identity(sql, check_command_warning=True)
+        self.validate_identity(
+            "ALTER TABLE t ROW_FORMAT=COMPRESSED KEY_BLOCK_SIZE=8",
+            "ALTER TABLE t ROW_FORMAT=COMPRESSED, KEY_BLOCK_SIZE=8",
+        )
         self.validate_identity("ALTER VIEW v AS SELECT a, b, c, d FROM foo")
         self.validate_identity("ALTER VIEW v AS SELECT * FROM foo WHERE c > 100")
         self.validate_identity(
@@ -133,6 +193,9 @@ class TestMySQL(Validator):
             "INSERT INTO x VALUES (1, 'a', 2.0) ON DUPLICATE KEY UPDATE x.id = 1"
         )
         self.validate_identity(
+            "INSERT INTO t (id, a) VALUES (1, FALSE) ON DUPLICATE KEY UPDATE a = x OR y, b = x AND y"
+        )
+        self.validate_identity(
             "INSERT INTO `test_table` SET `test_col_1` = 123, `test_col_2` = '456'",
             "INSERT INTO `test_table` (`test_col_1`, `test_col_2`) VALUES (123, '456')",
         )
@@ -186,6 +249,12 @@ class TestMySQL(Validator):
             "ALTER TABLE t ADD UNIQUE KEY uq (a) USING BTREE COMMENT 'why' INVISIBLE",
             "ALTER TABLE t ADD UNIQUE uq (a) USING BTREE COMMENT 'why' INVISIBLE",
         )
+        self.validate_identity("ALTER TABLE t ADD FULLTEXT INDEX i (s)").args["actions"][
+            0
+        ].assert_is(exp.AddConstraint)
+        self.validate_identity("ALTER TABLE t ADD SPATIAL INDEX i (g)").args["actions"][
+            0
+        ].assert_is(exp.AddConstraint)
         self.validate_identity(
             "ALTER TABLE t ADD UNIQUE KEY u USING BTREE (c)",
             "ALTER TABLE t ADD UNIQUE u (c) USING BTREE",
@@ -239,6 +308,14 @@ class TestMySQL(Validator):
         self.validate_identity("ALTER TABLE t ADD INDEX k (c(20))")
         self.validate_identity("ALTER TABLE t ADD PRIMARY KEY (c(20))")
         self.validate_identity(
+            "ALTER TABLE t ADD PRIMARY KEY (a) KEY_BLOCK_SIZE=8",
+            "ALTER TABLE t ADD PRIMARY KEY (a) KEY_BLOCK_SIZE = 8",
+        )
+        self.validate_identity("ALTER TABLE t ADD PRIMARY KEY (a) COMMENT 'c'")
+        self.validate_identity(
+            "CREATE TABLE t (a INT, PRIMARY KEY (a) USING BTREE KEY_BLOCK_SIZE = 8 COMMENT 'c')"
+        )
+        self.validate_identity(
             "ALTER TABLE t ADD UNIQUE KEY u (c(20))",
             "ALTER TABLE t ADD UNIQUE u (c(20))",
         )
@@ -258,9 +335,61 @@ class TestMySQL(Validator):
             "ALTER TABLE test_table ALTER COLUMN test_column SET DATA TYPE LONGTEXT",
             "ALTER TABLE test_table MODIFY COLUMN test_column LONGTEXT",
         )
+        self.validate_identity("CREATE TABLE t (a INT) KEY_BLOCK_SIZE=8")
+        self.validate_identity("CREATE TABLE t (a INT) ENGINE=InnoDB KEY_BLOCK_SIZE=8 MAX_ROWS=100")
         self.validate_identity(
             "CREATE TABLE t (c DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) DEFAULT CHARSET=utf8 ROW_FORMAT=DYNAMIC",
             "CREATE TABLE t (c DATETIME DEFAULT CURRENT_TIMESTAMP() ON UPDATE CURRENT_TIMESTAMP()) DEFAULT CHARACTER SET=utf8 ROW_FORMAT=DYNAMIC",
+        )
+        self.validate_identity(
+            "ALTER TABLE t ADD COLUMN c VARCHAR(25) ASCII NULL, ADD COLUMN a BINARY(16) NULL",
+            "ALTER TABLE t ADD COLUMN c VARCHAR(25) CHARACTER SET latin1 NULL, ADD COLUMN a BINARY(16) NULL",
+        )
+        self.validate_identity(
+            "CREATE TABLE t (a VARCHAR(5) UNICODE BINARY, b VARCHAR(5) BINARY ASCII)",
+            "CREATE TABLE t (a VARCHAR(5) CHARACTER SET ucs2 BINARY, b VARCHAR(5) BINARY CHARACTER SET latin1)",
+        )
+        for sql, expected in (
+            (
+                "CREATE TABLE t (a VARCHAR(5) CHARSET utf8mb4 COLLATE utf8mb4_bin) CHARSET=utf8mb4 ENGINE=InnoDB",
+                "CREATE TABLE t (a VARCHAR(5) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin) CHARACTER SET=utf8mb4 ENGINE=InnoDB",
+            ),
+            (
+                "ALTER TABLE t ADD COLUMN a VARCHAR(5) CHARSET utf8mb4 COLLATE utf8mb4_bin, CHARSET=utf8mb4 ENGINE=InnoDB",
+                "ALTER TABLE t ADD COLUMN a VARCHAR(5) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin, CHARACTER SET=utf8mb4, ENGINE=InnoDB",
+            ),
+            (
+                "CREATE TABLE t (a VARCHAR(5) CHAR SET utf8mb4 COLLATE utf8mb4_bin) CHARSET=utf8mb4 ENGINE=InnoDB",
+                "CREATE TABLE t (a VARCHAR(5) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin) CHARACTER SET=utf8mb4 ENGINE=InnoDB",
+            ),
+            (
+                "ALTER TABLE t ADD COLUMN a VARCHAR(5) CHAR SET utf8mb4 COLLATE utf8mb4_bin, CHARSET=utf8mb4 ENGINE=InnoDB",
+                "ALTER TABLE t ADD COLUMN a VARCHAR(5) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin, CHARACTER SET=utf8mb4, ENGINE=InnoDB",
+            ),
+            (
+                "CREATE TABLE t (a VARCHAR(5) CHARSET utf8mb4) CHAR SET utf8mb4 ENGINE=InnoDB",
+                "CREATE TABLE t (a VARCHAR(5) CHARACTER SET utf8mb4) CHARACTER SET=utf8mb4 ENGINE=InnoDB",
+            ),
+            (
+                "ALTER TABLE t ADD COLUMN a VARCHAR(5) CHARSET utf8mb4, DEFAULT CHAR SET=utf8mb4 ENGINE=InnoDB",
+                "ALTER TABLE t ADD COLUMN a VARCHAR(5) CHARACTER SET utf8mb4, DEFAULT CHARACTER SET=utf8mb4, ENGINE=InnoDB",
+            ),
+        ):
+            with self.subTest(sql):
+                ast = self.validate_identity(sql, expected)
+                self.assertEqual(len(list(ast.find_all(exp.CharacterSetColumnConstraint))), 1)
+                self.assertEqual(len(list(ast.find_all(exp.CharacterSetProperty))), 1)
+        create = self.validate_identity(
+            "CREATE TABLE t (a INT) ENGINE=InnoDB, COMMENT='c' ROW_FORMAT=DYNAMIC",
+            "CREATE TABLE t (a INT) ENGINE=InnoDB COMMENT='c' ROW_FORMAT=DYNAMIC",
+        )
+        self.assertEqual(
+            [type(prop) for prop in create.args["properties"].expressions],
+            [exp.EngineProperty, exp.SchemaCommentProperty, exp.RowFormatProperty],
+        )
+        self.validate_identity(
+            "CREATE TABLE t (a INT) ENGINE=InnoDB, /* c */ ROW_FORMAT=DYNAMIC",
+            "CREATE TABLE t (a INT) ENGINE=InnoDB /* c */ ROW_FORMAT=DYNAMIC",
         )
         self.validate_identity(
             "CREATE TABLE `foo` (a VARCHAR(10), KEY idx_a (a DESC))",
@@ -306,6 +435,7 @@ class TestMySQL(Validator):
         self.validate_identity("ALTER TABLE t ALTER COLUMN c SET INVISIBLE")
         self.validate_identity("ALTER TABLE t ALTER COLUMN c SET VISIBLE")
         self.validate_identity("ALTER TABLE t RENAME INDEX a TO b")
+        self.validate_identity("ALTER TABLE t RENAME INDEX any TO b")
         self.validate_identity(
             "ALTER TABLE t RENAME KEY a TO b",
             "ALTER TABLE t RENAME INDEX a TO b",
@@ -350,6 +480,82 @@ class TestMySQL(Validator):
             "CREATE FUNCTION f() RETURNS TEXT LANGUAGE SQL SQL SECURITY INVOKER AS SELECT 'abc'",
         )
 
+    def test_alter_mixed_actions(self):
+        for sql in (
+            "ALTER TABLE t ADD COLUMN a INT, DROP COLUMN b, ADD COLUMN c INT, DROP COLUMN d",
+            "ALTER TABLE t ADD INDEX `i` (`a`), DROP INDEX `j`",
+            "ALTER TABLE t DROP INDEX i, ADD FULLTEXT INDEX i1 (s)",
+            "ALTER TABLE t ADD CONSTRAINT c UNIQUE (a), DROP CONSTRAINT d",
+            "ALTER TABLE t ALTER COLUMN c SET DEFAULT 1, ADD COLUMN d INT",
+            "ALTER TABLE t ADD COLUMN a INT, DROP INDEX concurrently",
+            "ALTER TABLE t ADD COLUMN a INT, DROP INDEX concurrently, DROP COLUMN b",
+            "ALTER TABLE t ADD COLUMN a INT, DROP COLUMN concurrently",
+            "ALTER TABLE t ADD COLUMN a INT, DROP COLUMN concurrently RESTRICT",
+            "ALTER TABLE t ADD COLUMN a INT, DROP COLUMN any RESTRICT",
+            "ALTER TABLE t ADD COLUMN a INT, RENAME INDEX any TO b",
+            "ALTER TABLE t ADD COLUMN a INT, DROP COLUMN charset",
+        ):
+            with self.subTest(sql):
+                alter = self.validate_identity(sql).assert_is(exp.Alter)
+                for action in alter.args["actions"]:
+                    self.assertNotIsInstance(action, exp.Command)
+
+        for sql, expected, num_actions, num_options in (
+            (
+                "ALTER TABLE t COMMENT='hi', ADD COLUMN c INT",
+                "ALTER TABLE t ADD COLUMN c INT, COMMENT='hi'",
+                1,
+                1,
+            ),
+            ("ALTER TABLE t COMMENT='hi', AUTO_INCREMENT=3000000000", None, 0, 2),
+            (
+                "ALTER TABLE t ADD c INT, AUTO_INCREMENT=5, ADD d INT",
+                "ALTER TABLE t ADD COLUMN c INT, ADD COLUMN d INT, AUTO_INCREMENT=5",
+                2,
+                1,
+            ),
+            ("ALTER TABLE t MODIFY COLUMN c INT COMMENT 'col', COMMENT='tbl'", None, 1, 1),
+            ("ALTER TABLE t CHANGE COLUMN c d INT, COMMENT='hi'", None, 1, 1),
+            ("ALTER TABLE t ADD COLUMN c INT, COMMENT='x', AUTO_INCREMENT=5", None, 1, 2),
+            (
+                "ALTER TABLE s.t COMMENT 'notes' AUTO_INCREMENT=5 COMPRESSION='zlib'",
+                "ALTER TABLE s.t COMMENT='notes', AUTO_INCREMENT=5, COMPRESSION='zlib'",
+                0,
+                3,
+            ),
+            (
+                "ALTER TABLE t COMMENT='x' AUTO_INCREMENT=5, ENGINE=InnoDB ROW_FORMAT=DYNAMIC",
+                "ALTER TABLE t COMMENT='x', AUTO_INCREMENT=5, ENGINE=InnoDB, ROW_FORMAT=DYNAMIC",
+                0,
+                4,
+            ),
+            (
+                "ALTER TABLE t ADD COLUMN x INT, ENGINE=InnoDB ROW_FORMAT=DYNAMIC",
+                "ALTER TABLE t ADD COLUMN x INT, ENGINE=InnoDB, ROW_FORMAT=DYNAMIC",
+                1,
+                2,
+            ),
+            (
+                "ALTER TABLE t ADD COLUMN x INT, LOCK=NONE, ENGINE=InnoDB ROW_FORMAT=DYNAMIC",
+                "ALTER TABLE t ADD COLUMN x INT, LOCK=NONE, ENGINE=InnoDB, ROW_FORMAT=DYNAMIC",
+                1,
+                3,
+            ),
+        ):
+            with self.subTest(sql):
+                alter = self.validate_identity(sql, expected).assert_is(exp.Alter)
+                self.assertEqual(len(alter.args["actions"]), num_actions)
+                self.assertEqual(len(alter.args["options"]), num_options)
+
+        self.validate_identity(
+            "ALTER TABLE t ADD COLUMN a INT, DROP b, ADD COLUMN c INT",
+            "ALTER TABLE t ADD COLUMN a INT, DROP COLUMN b, ADD COLUMN c INT",
+        ).assert_is(exp.Alter)
+        self.validate_identity(
+            "ALTER TABLE t ADD COLUMN c INT SECONDARY_ENGINE_ATTRIBUTE='{}', ADD COLUMN z INT",
+            check_command_warning=True,
+        )
+
     def test_column_key_constraint(self):
         self.validate_identity(
             "CREATE TABLE t1 (id INT KEY AUTO_INCREMENT)",
@@ -363,6 +569,64 @@ class TestMySQL(Validator):
             "CREATE TABLE t1 (id INT KEY)",
             "CREATE TABLE t1 (id INT PRIMARY KEY)",
         )
+
+    def test_alter_drop_column(self):
+        self.validate_identity("ALTER TABLE t DROP b", "ALTER TABLE t DROP COLUMN b")
+        self.validate_identity(
+            "ALTER TABLE t DROP b, DROP c", "ALTER TABLE t DROP COLUMN b, DROP COLUMN c"
+        )
+        self.validate_identity(
+            "ALTER TABLE t DROP b RESTRICT", "ALTER TABLE t DROP COLUMN b RESTRICT"
+        )
+        self.validate_identity(
+            "ALTER TABLE t DROP materialized", "ALTER TABLE t DROP COLUMN materialized"
+        )
+        self.validate_identity(
+            "ALTER TABLE t DROP temporary", "ALTER TABLE t DROP COLUMN temporary"
+        )
+        self.validate_identity("ALTER TABLE t DROP iceberg", "ALTER TABLE t DROP COLUMN iceberg")
+        self.validate_identity("ALTER TABLE t DROP date", "ALTER TABLE t DROP COLUMN date")
+        self.validate_identity(
+            "ALTER TABLE t DROP concurrently", "ALTER TABLE t DROP COLUMN concurrently"
+        )
+        self.validate_identity(
+            "ALTER TABLE t DROP INDEX concurrently, DROP b",
+            "ALTER TABLE t DROP INDEX concurrently, DROP COLUMN b",
+        )
+        self.validate_identity(
+            "ALTER TABLE t DROP concurrently RESTRICT",
+            "ALTER TABLE t DROP COLUMN concurrently RESTRICT",
+        )
+        self.validate_identity(
+            "ALTER TABLE t DROP b, DROP view RESTRICT",
+            "ALTER TABLE t DROP COLUMN b, DROP COLUMN view RESTRICT",
+        )
+        self.validate_identity(
+            "ALTER TABLE t DROP b, DROP COLUMN any RESTRICT",
+            "ALTER TABLE t DROP COLUMN b, DROP COLUMN any RESTRICT",
+        )
+        self.validate_identity("ALTER TABLE t DROP COLUMN `cascade`").args["actions"][0].assert_is(
+            exp.Drop
+        )
+        self.validate_identity("ALTER TABLE t DROP INDEX `restrict`").args["actions"][0].assert_is(
+            exp.Drop
+        )
+        self.validate_identity("ALTER TABLE t DROP COLUMN concurrently").args["actions"][
+            0
+        ].assert_is(exp.Drop)
+        self.validate_identity("ALTER TABLE t DROP COLUMN charset").args["actions"][0].assert_is(
+            exp.Drop
+        )
+        self.validate_identity("ALTER TABLE t DROP COLUMN charset RESTRICT")
+        drop = (
+            self.validate_identity("ALTER TABLE t DROP INDEX concurrently")
+            .args["actions"][0]
+            .assert_is(exp.Drop)
+        )
+        self.assertEqual(drop.args["tables"][0].name, "concurrently")
+        self.assertIs(drop.args["concurrently"], False)
+        self.validate_identity("DROP INDEX concurrently ON t")
+        self.validate_identity("DROP INDEX i ON db.t").assert_is(exp.Drop)
 
     def test_identity(self):
         self.validate_identity("SELECT a, SUM(b) FROM t GROUP BY a WITH ROLLUP LIMIT 2")
@@ -753,6 +1017,19 @@ class TestMySQL(Validator):
         self.validate_identity(
             "CONVERT('a' USING binary)", "CAST('a' AS CHAR CHARACTER SET binary)"
         )
+        self.validate_identity("SELECT CAST('ab' AS CHAR(4) CHARACTER SET utf8mb4)")
+        self.validate_identity(
+            "SELECT CAST('ab' AS CHAR(4) CHARSET binary)",
+            "SELECT CAST('ab' AS CHAR(4) CHARACTER SET binary)",
+        )
+        self.validate_identity(
+            "SELECT CONVERT('abc', CHAR(2) CHARACTER SET latin1)",
+            "SELECT CAST('abc' AS CHAR(2) CHARACTER SET latin1)",
+        )
+        self.validate_identity(
+            "SELECT CONVERT('abc', CHAR CHARACTER SET latin1)",
+            "SELECT CAST('abc' AS CHAR CHARACTER SET latin1)",
+        )
         self.validate_identity(
             "SELECT CONVERT(`col` USING `utf8mb4`)",
             "SELECT CAST(`col` AS CHAR CHARACTER SET utf8mb4)",
@@ -1115,6 +1392,12 @@ class TestMySQL(Validator):
             },
         )
         self.validate_all(
+            "WITH x AS (SELECT 1 AS id), y AS (SELECT 2 AS id) SELECT COALESCE(x.id, y.id) AS id FROM x LEFT JOIN y ON x.id = y.id UNION ALL SELECT COALESCE(x.id, y.id) AS id FROM x RIGHT JOIN y ON x.id = y.id WHERE NOT EXISTS(SELECT 1 FROM x WHERE x.id = y.id) ORDER BY 1 LIMIT 1 OFFSET 1",
+            read={
+                "postgres": "WITH x AS (SELECT 1 AS id), y AS (SELECT 2 AS id) SELECT COALESCE(x.id, y.id) AS id FROM x FULL JOIN y ON x.id = y.id ORDER BY 1 LIMIT 1 OFFSET 1",
+            },
+        )
+        self.validate_all(
             # MySQL doesn't support FULL OUTER joins
             "SELECT * FROM t1 LEFT OUTER JOIN t2 ON t1.x = t2.x UNION ALL SELECT * FROM t1 RIGHT OUTER JOIN t2 ON t1.x = t2.x WHERE NOT EXISTS(SELECT 1 FROM t1 WHERE t1.x = t2.x)",
             read={
@@ -1220,7 +1503,7 @@ class TestMySQL(Validator):
             "GROUP_CONCAT(DISTINCT x ORDER BY y DESC)",
             write={
                 "mysql": "GROUP_CONCAT(DISTINCT x ORDER BY y DESC SEPARATOR ',')",
-                "sqlite": "GROUP_CONCAT(DISTINCT x)",
+                "sqlite": "GROUP_CONCAT(DISTINCT x ORDER BY y DESC)",
                 "tsql": "STRING_AGG(x, ',') WITHIN GROUP (ORDER BY y DESC)",
                 "databricks": "LISTAGG(DISTINCT x, ',') WITHIN GROUP (ORDER BY y DESC)",
                 "postgres": "STRING_AGG(DISTINCT x, ',' ORDER BY y DESC NULLS LAST)",
@@ -1230,7 +1513,7 @@ class TestMySQL(Validator):
             "GROUP_CONCAT(x ORDER BY y SEPARATOR z)",
             write={
                 "mysql": "GROUP_CONCAT(x ORDER BY y SEPARATOR z)",
-                "sqlite": "GROUP_CONCAT(x, z)",
+                "sqlite": "GROUP_CONCAT(x, z ORDER BY y)",
                 "tsql": "STRING_AGG(x, z) WITHIN GROUP (ORDER BY y)",
                 "databricks": "LISTAGG(x, z) WITHIN GROUP (ORDER BY y)",
                 "postgres": "STRING_AGG(x, z ORDER BY y NULLS FIRST)",
@@ -1240,7 +1523,7 @@ class TestMySQL(Validator):
             "GROUP_CONCAT(DISTINCT x ORDER BY y DESC SEPARATOR '')",
             write={
                 "mysql": "GROUP_CONCAT(DISTINCT x ORDER BY y DESC SEPARATOR '')",
-                "sqlite": "GROUP_CONCAT(DISTINCT x, '')",
+                "sqlite": "GROUP_CONCAT(DISTINCT x, '' ORDER BY y DESC)",
                 "tsql": "STRING_AGG(x, '') WITHIN GROUP (ORDER BY y DESC)",
                 "databricks": "LISTAGG(DISTINCT x, '') WITHIN GROUP (ORDER BY y DESC)",
                 "postgres": "STRING_AGG(DISTINCT x, '' ORDER BY y DESC NULLS LAST)",
@@ -1281,7 +1564,7 @@ class TestMySQL(Validator):
             "GROUP_CONCAT(a, b, c ORDER BY d SEPARATOR '')",
             write={
                 "mysql": "GROUP_CONCAT(CONCAT(a, b, c) ORDER BY d SEPARATOR '')",
-                "sqlite": "GROUP_CONCAT(a || b || c, '')",
+                "sqlite": "GROUP_CONCAT(a || b || c, '' ORDER BY d)",
                 "tsql": "STRING_AGG(a + b + c, '') WITHIN GROUP (ORDER BY d)",
                 "databricks": "LISTAGG(CONCAT(a, b, c), '') WITHIN GROUP (ORDER BY d)",
                 "postgres": "STRING_AGG(a || b || c, '' ORDER BY d NULLS FIRST)",
@@ -1291,7 +1574,7 @@ class TestMySQL(Validator):
             "GROUP_CONCAT(DISTINCT a, b, c ORDER BY d SEPARATOR '')",
             write={
                 "mysql": "GROUP_CONCAT(DISTINCT CONCAT(a, b, c) ORDER BY d SEPARATOR '')",
-                "sqlite": "GROUP_CONCAT(DISTINCT a || b || c, '')",
+                "sqlite": "GROUP_CONCAT(DISTINCT a || b || c, '' ORDER BY d)",
                 "tsql": "STRING_AGG(a + b + c, '') WITHIN GROUP (ORDER BY d)",
                 "databricks": "LISTAGG(DISTINCT CONCAT(a, b, c), '') WITHIN GROUP (ORDER BY d)",
                 "postgres": "STRING_AGG(DISTINCT a || b || c, '' ORDER BY d NULLS FIRST)",
@@ -1433,6 +1716,36 @@ COMMENT='客户账户表'"""
             self.assertIsInstance(show, exp.Show)
             self.assertEqual(show.name, key)
             self.assertEqual(show.text("target"), "foo")
+
+    def test_show_create_qualified(self):
+        for key in ["CREATE TABLE", "CREATE VIEW", "CREATE FUNCTION", "CREATE PROCEDURE"]:
+            with self.subTest(create_stmt=key):
+                show = self.validate_identity(f"SHOW {key} db_name.foo")
+                self.assertIsInstance(show, exp.Show)
+                self.assertEqual(show.text("db"), "db_name")
+                self.assertEqual(show.text("target"), "foo")
+
+        # SHOW CREATE has no FROM clause, the database is part of the name
+        self.validate_identity(
+            "SHOW CREATE TABLE foo FROM db_name", "SHOW CREATE TABLE db_name.foo"
+        )
+
+    def test_if(self):
+        self.validate_identity("SELECT IF(a, 1, 2)")
+        self.validate_identity("SELECT IF(a, 1, IF(b, 2, 3))")
+
+        # a CASE that was written as one stays a CASE
+        self.validate_identity("SELECT CASE WHEN a THEN 1 ELSE 2 END")
+
+        self.validate_all(
+            "SELECT IF(a, 1, 2)",
+            read={"bigquery": "SELECT IF(a, 1, 2)", "tsql": "SELECT IIF(a, 1, 2)"},
+        )
+
+        # IF takes exactly three arguments, so a missing branch becomes NULL
+        self.validate_all("SELECT IF(a, 1, NULL)", read={"spark": "SELECT IF(a, 1)"})
+        # IF takes exactly three arguments, so a missing branch becomes NULL
+        self.validate_all("SELECT IF(a, 1, NULL)", read={"presto": "SELECT IF(a, 1)"})
 
     def test_show_grants(self):
         show = self.validate_identity("SHOW GRANTS FOR foo")
@@ -1603,6 +1916,19 @@ COMMENT='客户账户表'"""
             },
         )
 
+    def test_integer_division(self):
+        for source, expected in (
+            ("DIV(10, DIV(4, 2))", "10 DIV (4 DIV 2)"),
+            ("10 / DIV(4, 2)", "10 / (4 DIV 2)"),
+            ("300 * DIV(1000, 300) + 120", "300 * (1000 DIV 300) + 120"),
+            ("DIV(10 + 2, 3 + 1)", "(10 + 2) DIV (3 + 1)"),
+            ("DIV(10, 2) / DIV(4, 3)", "10 DIV 2 / (4 DIV 3)"),
+            ("-DIV(7, 2)", "-(7 DIV 2)"),
+            ("~DIV(7, 3)", "~(7 DIV 3)"),
+        ):
+            with self.subTest(source=source):
+                self.validate_all(f"SELECT {expected}", read={"bigquery": f"SELECT {source}"})
+
     def test_safe_div(self):
         self.validate_all(
             "a / b",
@@ -1673,6 +1999,22 @@ COMMENT='客户账户表'"""
             self.validate_identity(
                 f"""SELECT JSON_VALUE({json_doc}, '$.price' RETURNING DECIMAL(4, 2) {on_option} ON EMPTY {on_option} ON ERROR) AS price"""
             )
+
+    def test_weight_string(self):
+        for sql in (
+            "SELECT WEIGHT_STRING('ab')",
+            "SELECT WEIGHT_STRING('1' AS CHAR(1))",
+            "SELECT WEIGHT_STRING('ab' AS BINARY(4))",
+        ):
+            with self.subTest(sql):
+                self.validate_identity(sql).selects[0].assert_is(exp.WeightString)
+
+        self.validate_identity("SELECT WEIGHT_STRING('ab', 0, 3, 0)").selects[0].assert_is(
+            exp.Anonymous
+        )
+        self.assertEqual(
+            self.parse_one("SELECT weight_string('ab', 0, 3, 0)").selects[0].name, "weight_string"
+        )
 
     def test_grant(self):
         grant_cmds = [
@@ -1925,6 +2267,35 @@ COMMENT='客户账户表'"""
             read={
                 "duckdb": "SELECT t1.x + t2.y AS s FROM t1 JOIN t2 ON t1.id = t2.id ORDER BY s",
             },
+        )
+
+        self.validate_all(
+            "SELECT GROUP_CONCAT(v ORDER BY CASE WHEN v IS NULL THEN 1 ELSE 0 END, v) AS v FROM t",
+            read={"trino": "SELECT ARRAY_AGG(v ORDER BY v) AS v FROM t"},
+        )
+        self.validate_all(
+            "SELECT GROUP_CONCAT(v ORDER BY CASE WHEN v IS NULL THEN 1 ELSE 0 END, v SEPARATOR ',') AS v FROM t",
+            read={"trino": "SELECT LISTAGG(v, ',') WITHIN GROUP (ORDER BY v) AS v FROM t"},
+        )
+        self.validate_all(
+            "SELECT x AS v, GROUP_CONCAT(v ORDER BY CASE WHEN v IS NULL THEN 1 ELSE 0 END, v) AS w FROM t GROUP BY x",
+            read={"trino": "SELECT x AS v, ARRAY_AGG(v ORDER BY v) AS w FROM t GROUP BY x"},
+        )
+        self.validate_all(
+            "WITH c AS (SELECT a AS v, b AS x FROM t UNION ALL SELECT a, b FROM u"
+            " ORDER BY CASE WHEN v IS NULL THEN 1 ELSE 0 END, v LIMIT 1) SELECT x AS v FROM c",
+            read={
+                "postgres": "WITH c AS (SELECT a AS v, b AS x FROM t UNION ALL SELECT a, b FROM u"
+                " ORDER BY v LIMIT 1) SELECT x AS v FROM c",
+            },
+        )
+        self.validate_all(
+            "SELECT a + 1 AS v FROM t UNION ALL SELECT b FROM u ORDER BY CASE WHEN v IS NULL THEN 1 ELSE 0 END, v",
+            read={"trino": "SELECT a + 1 AS v FROM t UNION ALL SELECT b FROM u ORDER BY v"},
+        )
+        self.validate_all(
+            "SELECT x AS v, ROW_NUMBER() OVER (ORDER BY CASE WHEN v IS NULL THEN 1 ELSE 0 END, v) AS rn FROM t",
+            read={"postgres": "SELECT x AS v, ROW_NUMBER() OVER (ORDER BY v) AS rn FROM t"},
         )
 
     def test_invisible_column(self):

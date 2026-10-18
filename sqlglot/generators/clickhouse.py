@@ -164,6 +164,7 @@ def _json_cast_sql(self: ClickHouseGenerator, expression: exp.JSONCast) -> str:
 
 
 class ClickHouseGenerator(generator.Generator):
+    BYTE_STRING_FUNCTION = "unhex"
     SELECT_KINDS: tuple[str, ...] = ()
     TRY_SUPPORTED = False
     SUPPORTS_UESCAPE = False
@@ -186,6 +187,7 @@ class ClickHouseGenerator(generator.Generator):
     TABLE_HINTS = False
     GROUPINGS_SEP = ""
     SET_OP_MODIFIERS = False
+    SET_OP_LIMITS = True
     ARRAY_SIZE_NAME = "LENGTH"
     WRAP_DERIVED_VALUES = False
     AUTO_REFRESH_BARE_INTERVALS = True
@@ -293,6 +295,9 @@ class ClickHouseGenerator(generator.Generator):
         exp.ArgMax: arg_max_or_min_no_count("argMax"),
         exp.ArgMin: arg_max_or_min_no_count("argMin"),
         exp.Array: inline_array_sql,
+        exp.BitwiseAndAgg: rename_func("groupBitAnd"),
+        exp.BitwiseOrAgg: rename_func("groupBitOr"),
+        exp.BitwiseXorAgg: rename_func("groupBitXor"),
         exp.CityHash64: rename_func("cityHash64"),
         exp.CastToStrType: rename_func("CAST"),
         exp.CurrentDatabase: rename_func("CURRENT_DATABASE"),
@@ -311,13 +316,17 @@ class ClickHouseGenerator(generator.Generator):
         exp.DateDiff: _datetime_delta_sql("DATE_DIFF"),
         exp.DateStrToDate: rename_func("toDate"),
         exp.DateSub: _datetime_delta_sql("DATE_SUB"),
+        exp.DayOfMonth: rename_func("toDayOfMonth"),
+        exp.DayOfWeekIso: rename_func("toDayOfWeek"),
+        exp.DayOfYear: rename_func("toDayOfYear"),
         exp.Explode: rename_func("arrayJoin"),
         exp.FarmFingerprint: rename_func("farmFingerprint64"),
         exp.Final: lambda self, e: f"{self.sql(e, 'this')} FINAL",
+        exp.IsInf: rename_func("isInfinite"),
         exp.IsNan: rename_func("isNaN"),
         exp.JarowinklerSimilarity: jarowinkler_similarity("jaroWinklerSimilarity"),
         exp.JSONCast: _json_cast_sql,
-        exp.JSONExtract: json_extract_segments("JSONExtractString", quoted_index=False),
+        exp.JSONExtract: json_extract_segments("JSONExtractRaw", quoted_index=False),
         exp.JSONExtractScalar: json_extract_segments("JSONExtractString", quoted_index=False),
         exp.JSONPathKey: json_path_key_only_name,
         exp.JSONPathRoot: lambda *_: "",
@@ -369,6 +378,9 @@ class ClickHouseGenerator(generator.Generator):
         exp.UnixToTime: _unix_to_time_sql,
         exp.Trim: lambda self, e: trim_sql(self, e, default_trim_type="BOTH"),
         exp.Variance: rename_func("varSamp"),
+        exp.VariancePop: rename_func("varPop"),
+        exp.WeekOfYear: rename_func("toISOWeek"),
+        exp.YearOfWeekIso: rename_func("toISOYear"),
         exp.SchemaCommentProperty: lambda self, e: self.naked_property(e),
         exp.Stddev: rename_func("stddevSamp"),
         exp.Chr: rename_func("CHAR"),
@@ -419,6 +431,16 @@ class ClickHouseGenerator(generator.Generator):
         exp.DType.MULTIPOLYGON,
     }
 
+    @unsupported_args("json_scope")
+    def contains_sql(self, expression: exp.Contains) -> str:
+        # ClickHouse has no CONTAINS; the comparison needs parentheses inside another operator
+        result = exp.StrPosition(this=expression.this, substr=expression.expression) > 0
+        if isinstance(expression.parent, exp.Binary) and not isinstance(
+            expression.parent, exp.Connector
+        ):
+            return self.sql(exp.paren(result, copy=False))
+        return self.sql(result)
+
     def groupconcat_sql(self, expression: exp.GroupConcat) -> str:
         this = expression.this
         separator = expression.args.get("separator")
@@ -444,6 +466,15 @@ class ClickHouseGenerator(generator.Generator):
             )
 
         return self.func("groupConcat", this)
+
+    def select_sql(self, expression: exp.Select) -> str:
+        limit = expression.args.get("limit")
+        if isinstance(limit, exp.Fetch) and not expression.args.get("order"):
+            count = limit.args.get("count")
+            expression.set(
+                "limit", exp.Limit(expression=count if count is not None else exp.Literal.number(1))
+            )
+        return super().select_sql(expression)
 
     def offset_sql(self, expression: exp.Offset) -> str:
         offset = super().offset_sql(expression)
@@ -471,6 +502,14 @@ class ClickHouseGenerator(generator.Generator):
 
         if isinstance(this, exp.StrToDate) and expression.to == exp.DType.DATETIME.into_expr():
             return self.sql(this)
+
+        this = this.unnest()
+        if (
+            isinstance(this, exp.JSONExtract)
+            and this.args.get("requires_json")
+            and expression.to.is_type(*exp.DataType.TEXT_TYPES)
+        ):
+            return self.func("JSONExtract", this, exp.Literal.string("Nullable(String)"))
 
         return super().cast_sql(expression, safe_prefix=safe_prefix)
 
@@ -511,6 +550,30 @@ class ClickHouseGenerator(generator.Generator):
 
     def neq_sql(self, expression: exp.NEQ) -> str:
         return self._any_to_has(expression, super().neq_sql, "NOT ")
+
+    def regexpcount_sql(self, expression: exp.RegexpCount) -> str:
+        this = expression.this
+        pattern = expression.expression
+        position = expression.args.get("position")
+        parameters = expression.args.get("parameters")
+
+        if position:
+            # SUBSTRING counts bytes in ClickHouse, the position counts characters
+            this = self.func("substringUTF8", this, position)
+
+        if parameters:
+            flags = parameters.name if parameters.is_string else ""
+            if not parameters.is_string or set(flags) - set("cims"):
+                self.unsupported("Only literal 'c', 'i', 'm' and 's' regexp flags are supported")
+            # "c" (case-sensitive) is the default, and the last of "c" and "i" wins
+            if flags.rfind("c") > flags.rfind("i"):
+                flags = flags.replace("i", "")
+            flags = "".join(f for f in flags if f in "ims")
+            if flags:
+                # countMatches has no flags argument, so they are embedded in the pattern
+                pattern = self.func("CONCAT", exp.Literal.string(f"(?{flags})"), pattern)
+
+        return self.func("countMatches", this, pattern)
 
     def regexpilike_sql(self, expression: exp.RegexpILike) -> str:
         # Manually add a flag to make the search case-insensitive

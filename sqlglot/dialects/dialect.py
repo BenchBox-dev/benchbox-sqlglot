@@ -140,6 +140,19 @@ class NormalizationStrategy(str, AutoName):
     """Always case-insensitive (uppercase), regardless of quotes."""
 
 
+class UsingColumnOrder(str, AutoName):
+    """Where star expansion places the columns of a `USING` or `NATURAL` join."""
+
+    USING_LIST = auto()
+    """First, in the order they're listed in USING (SQL standard, e.g. Postgres)."""
+
+    LEFT_TABLE = auto()
+    """First, in the order they appear in the left table (e.g. MySQL)."""
+
+    IN_PLACE = auto()
+    """Where the left table has them (e.g. DuckDB)."""
+
+
 # "Strict" dialects (e.g. modern Hive, Spark 3+) map their zero-padded MM/dd/HH/hh/mm/ss to these in
 # TIME_MAPPING so they roundtrip, since a lax %m/%d renders non-padded there for parse expressions
 # (see HiveGenerator.format_time).
@@ -343,8 +356,34 @@ class _Dialect(type):
             # The filter is necessary because of `\\a -> a` in Snowflake; we can't replace `a` with `\a`.
             v: k
             for k, v in klass.UNESCAPED_SEQUENCES.items()
-            if not v.isprintable() or v == "\\"
+            # Sequences that only drop the backslash (e.g. "\\\n" -> "\n") aren't needed for generation
+            if v == "\\" or (not v.isprintable() and k[1:] != v)
         }
+
+        identifier_escapes = klass.tokenizer_class.IDENTIFIER_ESCAPES
+        klass.IDENTIFIER_ESCAPED_SEQUENCES = {
+            v: k
+            for k, v in klass.UNESCAPED_SEQUENCES.items()
+            if k[0] in identifier_escapes and v in identifier_escapes
+        }
+
+        # Prefer hex, then octal, then Unicode for numeric control-character escapes.
+        numeric_escapes = klass.tokenizer_class.NUMERIC_ESCAPES
+        if "x" in numeric_escapes:
+            fmt = "\\x{:02x}"
+        elif "0" in numeric_escapes:
+            fmt = "\\{:03o}"
+        elif "u" in numeric_escapes:
+            fmt = "\\u{:04x}"
+        else:
+            fmt = ""
+
+        if fmt:
+            # ASCII controls are 0-31 and DEL (127). Preserve existing escape mappings and
+            # leave tab (9), newline (10), and carriage return (13) to their existing handling.
+            for code in (*range(32), 127):
+                if code not in (9, 10, 13):
+                    klass.ESCAPED_SEQUENCES.setdefault(chr(code), fmt.format(code))
 
         klass.SUPPORTS_COLUMN_JOIN_MARKS = "(+)" in klass.tokenizer_class.KEYWORDS
 
@@ -410,11 +449,11 @@ class Dialect(metaclass=_Dialect):
         False: Disables function name normalization.
     """
 
-    PRESERVE_ORIGINAL_NAMES: bool = False
+    ORIGINAL_NAME_META_KEY: str | None = None
     """
-    Whether the name of the function should be preserved inside the node's metadata,
-    can be useful for roundtripping deprecated vs new functions that share an AST node
-    e.g JSON_VALUE vs JSON_EXTRACT_SCALAR in BigQuery
+    Dialect-specific metadata key for preserving original function names, or None to disable.
+    Only generators using the same key reuse these names, allowing round trips of aliases
+    that share an AST node, e.g. JSON_VALUE vs JSON_EXTRACT_SCALAR in BigQuery.
     """
 
     LOG_BASE_FIRST: bool | None = True
@@ -471,6 +510,9 @@ class Dialect(metaclass=_Dialect):
 
     BYTE_STRINGS_SUPPORT_ESCAPED_SEQUENCES: bool = False
     """Whether byte string literals support escape sequences. Set by the metaclass based on the tokenizer's BYTE_STRING_ESCAPES."""
+
+    IDENTIFIER_ESCAPED_SEQUENCES: dict[str, str] = {}
+    """Mapping of an identifier escape char (`\\`) to its escaped version (`\\\\`). Set by the metaclass based on the tokenizer's IDENTIFIER_ESCAPES."""
 
     INVERSE_VECTOR_TYPE_ALIASES: dict[str, str] = {}
     """Mapping of vector type aliases back to their canonical names. Overridden by dialects like SingleStore."""
@@ -633,6 +675,19 @@ class Dialect(metaclass=_Dialect):
     they must be explicitly selected.
     """
 
+    USING_COLUMN_ORDER = UsingColumnOrder.USING_LIST
+    """
+    Where star expansion places the columns of a `USING` or `NATURAL` join.
+
+    Given `a(a_id, k1, k2)` and `b(k2, b_id, k1)`, `SELECT * FROM a JOIN b USING (k2, k1)` returns:
+    - `USING_LIST`: `k2, k1, a_id, b_id`
+    - `LEFT_TABLE`: `k1, k2, a_id, b_id`
+    - `IN_PLACE`: `a_id, k1, k2, b_id`
+
+    When join columns come first, this applies at every join: each USING join moves its columns
+    ahead of all the columns to its left.
+    """
+
     QUERY_RESULTS_ARE_STRUCTS = False
     """
     Whether query results are typed as structs in metadata for type inference.
@@ -755,6 +810,9 @@ class Dialect(metaclass=_Dialect):
 
     # Whether ADD is present for each column added by ALTER TABLE
     ALTER_TABLE_ADD_REQUIRED_FOR_EACH_COLUMN = True
+
+    # Whether DROP is present for each column dropped by ALTER TABLE
+    ALTER_TABLE_DROP_REQUIRED_FOR_EACH_COLUMN = True
 
     # Whether the value/LHS of the TRY_CAST(<value> AS <type>) should strictly be a
     # STRING type (Snowflake's case) or can be of any type
@@ -1246,6 +1304,31 @@ def bracket_to_element_at_sql(self: Generator, expression: exp.Bracket) -> str:
     return self.func("ELEMENT_AT", expression.this, index)
 
 
+def array_slice_to_slice_sql(self: Generator, expression: exp.ArraySlice) -> str:
+    start = expression.args["start"]
+    end = expression.args.get("end")
+
+    # Preserve unmarked slices and bounds that require runtime normalization or narrowing.
+    if (
+        expression.args.get("is_length") is False
+        and expression.args.get("step") is None
+        and start.is_int
+        and 0 <= start.to_py() <= 2**31 - 1
+        and end is not None
+        and end.is_int
+        and 0 <= end.to_py() <= 2**31 - 1
+    ):
+        start_value = max(start.to_py(), 1)
+        return self.func(
+            "SLICE",
+            expression.this,
+            exp.Literal.number(start_value),
+            exp.Literal.number(max(end.to_py() - start_value + 1, 0)),
+        )
+
+    return rename_func("SLICE")(self, expression)
+
+
 @unsupported_args("accuracy")
 def approx_count_distinct_sql(self: Generator, expression: exp.ApproxDistinct) -> str:
     return self.func("APPROX_COUNT_DISTINCT", expression.this)
@@ -1287,7 +1370,13 @@ def inline_array_sql(self: Generator, expression: exp.Expr) -> str:
 
 def inline_array_unless_query(self: Generator, expression: exp.Expr) -> str:
     elem = seq_get(expression.expressions, 0)
-    if isinstance(elem, exp.Expr) and elem.find(exp.Query):
+    if (
+        len(expression.expressions) == 1
+        and isinstance(elem, exp.Query)
+        # value_constructor=True keeps scalar subqueries as array elements. In [(SELECT …)], the
+        # subquery supplies one scalar value; in ARRAY(SELECT …) (BigQuery), the query supplies rows.
+        and not expression.args.get("value_constructor")
+    ):
         return self.func("ARRAY", elem)
     return inline_array_sql(self, expression)
 
@@ -1338,6 +1427,71 @@ def no_comment_column_constraint_sql(
 def no_map_from_entries_sql(self: Generator, expression: exp.MapFromEntries) -> str:
     self.unsupported("MAP_FROM_ENTRIES unsupported")
     return ""
+
+
+def no_filter_sql(self: Generator, expression: exp.Filter) -> str:
+    # Rewrite `AGG(x) FILTER (WHERE cond)` into an equivalent conditional aggregation, i.e. wrap
+    # the input values in an IF, which works because aggregate functions skip NULLs
+    agg = expression.this
+    # IGNORE NULLS can wrap the aggregate, but the condition still belongs to its arguments
+    if isinstance(agg, exp.IgnoreNulls):
+        agg = agg.this
+
+    agg_arg = seq_get(agg.expressions, 0) if isinstance(agg, exp.Anonymous) else agg.this
+    cond = expression.expression.this
+
+    if isinstance(agg, exp.WithinGroup):
+        # Ordered-set aggregates take their input from the ORDER BY key, so the
+        # condition has to wrap that instead of the aggregate's own argument
+        if isinstance(agg_arg, (exp.Mode, *exp.PERCENTILES)):
+            for ordered in agg.expression.expressions:
+                key = ordered.this
+                key.replace(exp.If(this=cond.copy(), true=key.copy(), false=exp.null()))
+
+            return self.sql(expression.this)
+
+        # Besides the ordered-set aggregates, these are the only functions that take WITHIN GROUP
+        # and the input values as arguments, so anything else can't be rewritten correctly
+        if isinstance(agg_arg, (exp.ArrayAgg, exp.GroupConcat)):
+            agg_arg = agg_arg.this
+        else:
+            self.unsupported("Unable to rewrite FILTER into the aggregate's arguments")
+            return self.sql(expression.this)
+
+    # Folding the condition into COUNT_IF's predicate avoids an IF that returns a predicate, which
+    # dialects without a boolean type (e.g. T-SQL) reject
+    if isinstance(agg, exp.CountIf) and not isinstance(agg_arg, exp.Distinct):
+        return self.sql(exp.CountIf(this=exp.and_(cond, agg_arg)))
+
+    # `COUNT(*/t.*) FILTER (WHERE cond)` counts qualifying rows, but a star can't be an IF
+    # argument: `IF(cond, *, NULL)` expands to multiple columns once the table has 2+ of
+    # them. Each dialect generates CountIf in its own way instead, e.g. COUNT_IF or COUNTIF.
+    if isinstance(agg, exp.Count) and (agg_arg is None or agg_arg.is_star):
+        return self.sql(exp.CountIf(this=cond))
+
+    # `DISTINCT` and `ORDER BY` are part of the aggregate's own argument list, so the
+    # condition has to wrap the values underneath them rather than the whole clause --
+    # `IF(cond, DISTINCT x, NULL)` is not a call any dialect accepts.
+    if isinstance(agg_arg, exp.Order):
+        agg_arg = agg_arg.this
+
+    if isinstance(agg_arg, exp.Distinct):
+        targets = agg_arg.expressions
+    else:
+        targets = [agg_arg]
+
+    for target in targets:
+        target.replace(exp.If(this=cond.copy(), true=target.copy(), false=exp.null()))
+
+    # In dialects where ARRAY_AGG keeps NULLs (e.g. BigQuery, which even fails on them), the
+    # rows that don't satisfy the condition have to be dropped explicitly
+    if isinstance(agg, exp.ArrayAgg) and self.dialect.ARRAY_AGG_INCLUDES_NULLS:
+        # IGNORE NULLS already drops them, so no extra FILTER (WHERE x IS NOT NULL) is needed
+        agg.set("nulls_excluded", None)
+        if agg is expression.this:
+            return self.sql(exp.IgnoreNulls(this=agg))
+
+    return self.sql(expression.this)
 
 
 def property_sql(self: Generator, expression: exp.Property) -> str:
@@ -1630,11 +1784,7 @@ def build_formatted_time(
     """
 
     def _builder(args: BuilderArgs, dialect: Dialect) -> E:
-        target_dialect = (
-            t.cast(Dialect, Dialect[dialect_override])
-            if isinstance(dialect_override, str)
-            else dialect
-        )
+        target_dialect = Dialect[dialect_override] if isinstance(dialect_override, str) else dialect
 
         fmt = seq_get(args, 1)
         if not fmt:

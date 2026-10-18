@@ -119,10 +119,10 @@ UNICODE('bcd');
 INT;
 
 CEIL(tbl.double_col);
-INT;
+DOUBLE;
 
 FLOOR(tbl.double_col);
-INT;
+DOUBLE;
 
 LAST_DAY(tbl.timestamp_col);
 DATE;
@@ -5395,7 +5395,7 @@ DOUBLE;
 
 # dialect: snowflake
 SIGN(tbl.double_col);
-INT;
+DOUBLE;
 
 # dialect: snowflake
 SKEW(tbl.double_col);
@@ -7349,6 +7349,54 @@ BOOLEAN;
 CURRENT_ROLE();
 VARCHAR;
 
+# dialect: duckdb
+BIT_AND(tbl.int_col);
+INTEGER;
+
+# dialect: duckdb
+BIT_AND(tbl.bigint_col);
+BIGINT;
+
+# dialect: duckdb
+BIT_AND(tbl.bit_col);
+BIT;
+
+# dialect: duckdb
+BIT_OR(tbl.int_col);
+INTEGER;
+
+# dialect: duckdb
+BIT_OR(tbl.bigint_col);
+BIGINT;
+
+# dialect: duckdb
+BIT_OR(tbl.bit_col);
+BIT;
+
+# dialect: duckdb
+BIT_XOR(tbl.int_col);
+INTEGER;
+
+# dialect: duckdb
+BIT_XOR(tbl.bigint_col);
+BIGINT;
+
+# dialect: duckdb
+BIT_XOR(tbl.bit_col);
+BIT;
+
+# dialect: duckdb
+Mode(tbl.int_col);
+INT;
+
+# dialect: duckdb
+Mode(tbl.str_col);
+VARCHAR;
+
+# dialect: duckdb
+Mode(tbl.date_col);
+DATE;
+
 --------------------------------------
 -- Postgres
 --------------------------------------
@@ -7569,7 +7617,7 @@ VARBINARY;
 LEVENSHTEIN_DISTANCE(tbl.str_col, tbl.str_col);
 BIGINT;
 
-# dialect: presto, trino
+# dialect: presto, trino, athena
 LENGTH(tbl.str_col);
 BIGINT;
 
@@ -7577,7 +7625,7 @@ BIGINT;
 POSITION(tbl.str_col IN tbl.str_col);
 BIGINT;
 
-# dialect: presto, trino
+# dialect: presto, trino, athena
 STRPOS(tbl.str_col, tbl.str_col);
 BIGINT;
 
@@ -7600,6 +7648,14 @@ BIGINT;
 # dialect: presto, trino
 WIDTH_BUCKET(tbl.double_col, tbl.array_col);
 BIGINT;
+
+# dialect: athena
+FLOOR(2.5);
+DOUBLE;
+
+# dialect: athena
+CEIL(5.5);
+DOUBLE;
 
 # dialect: trino
 ARRAY_FIRST(ARRAY['a', 'b'], x -> x = 'b');

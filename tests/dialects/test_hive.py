@@ -1,5 +1,5 @@
 from tests.dialects.test_dialect import Validator
-from sqlglot import exp
+from sqlglot import UnsupportedError, exp
 
 
 class TestHive(Validator):
@@ -127,10 +127,10 @@ class TestHive(Validator):
         self.validate_all(
             "1.0bd",
             write={
-                "duckdb": "TRY_CAST(1.0 AS DECIMAL)",
-                "presto": "TRY_CAST(1.0 AS DECIMAL)",
-                "hive": "CAST(1.0 AS DECIMAL)",
-                "spark": "CAST(1.0 AS DECIMAL)",
+                "duckdb": "TRY_CAST('1.0' AS DECIMAL(1, 0))",
+                "presto": "TRY_CAST('1.0' AS DECIMAL(1, 0))",
+                "hive": "CAST('1.0' AS DECIMAL(1, 0))",
+                "spark": "CAST('1.0' AS DECIMAL(1, 0))",
             },
         )
         self.validate_all(
@@ -315,6 +315,17 @@ class TestHive(Validator):
                 "spark": "SELECT a FROM x LATERAL VIEW EXPLODE(ARRAY(y)) t AS a",
             },
         )
+        self.validate_all(
+            "FROM x LATERAL VIEW EXPLODE(y) t AS a SELECT a",
+            write={
+                "presto": "SELECT a FROM x CROSS JOIN UNNEST(y) AS t(a)",
+                "hive": "SELECT a FROM x LATERAL VIEW EXPLODE(y) t AS a",
+            },
+        )
+        self.validate_identity(
+            "SELECT * FROM (FROM x LATERAL VIEW EXPLODE(y) t AS a SELECT a) AS q",
+            "SELECT * FROM (SELECT a FROM x LATERAL VIEW EXPLODE(y) t AS a) AS q",
+        )
 
     def test_quotes(self):
         self.validate_all(
@@ -347,12 +358,12 @@ class TestHive(Validator):
         self.validate_all(
             "'\\\\\\\\a'",
             read={
-                "drill": "'\\\\\\\\a'",
+                "drill": "'\\\\a'",
                 "duckdb": "'\\\\a'",
                 "presto": "'\\\\a'",
             },
             write={
-                "drill": "'\\\\\\\\a'",
+                "drill": "'\\\\a'",
                 "duckdb": "'\\\\a'",
                 "hive": "'\\\\\\\\a'",
                 "presto": "'\\\\a'",
@@ -548,7 +559,8 @@ class TestHive(Validator):
             "INSERT OVERWRITE TABLE zipcodes PARTITION(state = 0) VALUES (896, 'US', 'TAMPA', 33607)"
         )
         self.validate_identity(
-            "INSERT OVERWRITE DIRECTORY 'x' ROW FORMAT DELIMITED FIELDS TERMINATED BY '\001' COLLECTION ITEMS TERMINATED BY ',' MAP KEYS TERMINATED BY ':' LINES TERMINATED BY '' STORED AS TEXTFILE SELECT * FROM `a`.`b`"
+            "INSERT OVERWRITE DIRECTORY 'x' ROW FORMAT DELIMITED FIELDS TERMINATED BY '\001' COLLECTION ITEMS TERMINATED BY ',' MAP KEYS TERMINATED BY ':' LINES TERMINATED BY '' STORED AS TEXTFILE SELECT * FROM `a`.`b`",
+            "INSERT OVERWRITE DIRECTORY 'x' ROW FORMAT DELIMITED FIELDS TERMINATED BY '\\001' COLLECTION ITEMS TERMINATED BY ',' MAP KEYS TERMINATED BY ':' LINES TERMINATED BY '' STORED AS TEXTFILE SELECT * FROM `a`.`b`",
         )
         self.validate_identity(
             "SELECT a, b, SUM(c) FROM tabl AS t GROUP BY a, b GROUPING SETS ((a, b), a)"
@@ -828,7 +840,7 @@ class TestHive(Validator):
             write={
                 "duckdb": "x // y",
                 "databricks": "x DIV y",
-                "presto": "CAST(CAST(x AS DOUBLE) / y AS INTEGER)",
+                "presto": "CAST(TRUNCATE(CAST(x AS DOUBLE) / y) AS BIGINT)",
                 "spark2": "x DIV y",
                 "spark": "x DIV y",
             },
@@ -1032,7 +1044,7 @@ class TestHive(Validator):
     def test_escapes(self) -> None:
         self.validate_identity("'\n'", "'\\n'")
         self.validate_identity("'\\n'")
-        self.validate_identity("'\\\n'", "'\\\\\\n'")
+        self.validate_identity("'\\\n'", "'\\n'")
         self.validate_identity("'\\\\n'")
         self.validate_identity("''")
         self.validate_identity("'\\\\'")
@@ -1170,4 +1182,73 @@ class TestHive(Validator):
         self.assertEqual(
             expr.sql(dialect="hive"),
             "CREATE FUNCTION my_func AS 'com.example.MyFunc' USING JAR 'hdfs://new/path.jar'",
+        )
+
+    def test_multitable_inserts(self):
+        self.validate_identity("FROM x INSERT OVERWRITE TABLE a SELECT k, v")
+        self.validate_identity(
+            "FROM x INSERT INTO TABLE a SELECT k", "FROM x INSERT INTO a SELECT k"
+        )
+        self.validate_identity(
+            "FROM x AS v "
+            "INSERT OVERWRITE TABLE a PARTITION(ds = '1') SELECT v.k, v.m['c'] AS c WHERE v.os = 'ios' "
+            "INSERT OVERWRITE TABLE b PARTITION(ds) SELECT v.k, v.ds WHERE v.os = 'android' "
+            "INSERT INTO c SELECT v.os, COUNT(DISTINCT v.k) AS uv GROUP BY v.os"
+        )
+        self.validate_identity(
+            "FROM x INSERT OVERWRITE LOCAL DIRECTORY '/tmp/a' SELECT k "
+            "INSERT OVERWRITE DIRECTORY '/tmp/b' ROW FORMAT DELIMITED FIELDS TERMINATED BY ',' SELECT v"
+        )
+        self.validate_identity(
+            "FROM a JOIN b ON a.k = b.k LEFT JOIN c ON a.k = c.k INSERT OVERWRITE TABLE t SELECT a.k, c.v"
+        )
+        self.validate_identity(
+            "FROM (SELECT k, v FROM x WHERE v > 0) AS s INSERT OVERWRITE TABLE t SELECT s.k"
+        )
+        self.validate_identity(
+            "FROM x LATERAL VIEW EXPLODE(arr) a AS c LATERAL VIEW OUTER EXPLODE(m) b AS mk, mv "
+            "INSERT OVERWRITE TABLE t SELECT c, mk"
+        )
+        self.validate_identity(
+            "FROM x "
+            "INSERT OVERWRITE TABLE a SELECT k, COUNT(*) WHERE v > 1 GROUP BY k HAVING COUNT(*) > 2 ORDER BY k LIMIT 10 "
+            "INSERT INTO b SELECT DISTINCT k DISTRIBUTE BY k SORT BY k"
+        )
+        self.validate_identity(
+            "WITH c AS (SELECT 1 AS k) FROM c INSERT OVERWRITE TABLE a SELECT k INSERT INTO b SELECT k"
+        )
+        self.validate_identity(
+            "-- a\nFROM x\n-- b\nINSERT OVERWRITE TABLE t SELECT k\n-- c\nINSERT INTO u SELECT v",
+            "/* a */ FROM x /* b */ INSERT OVERWRITE TABLE t SELECT k /* c */ INSERT INTO u SELECT v",
+        )
+        self.validate_identity(
+            "FROM (FROM x LATERAL VIEW EXPLODE(arr) a AS c SELECT k, c) AS s INSERT INTO t SELECT s.c INSERT INTO u SELECT s.k",
+            "FROM (SELECT k, c FROM x LATERAL VIEW EXPLODE(arr) a AS c) AS s INSERT INTO t SELECT s.c INSERT INTO u SELECT s.k",
+        )
+        self.validate_all(
+            "FROM x INSERT INTO t SELECT v QUALIFY ROW_NUMBER() OVER (PARTITION BY k ORDER BY v) = 1",
+            write={
+                "hive": UnsupportedError,
+                "spark": UnsupportedError,
+                "databricks": "FROM x INSERT INTO t SELECT v QUALIFY ROW_NUMBER() OVER (PARTITION BY k ORDER BY v) = 1",
+            },
+        )
+
+        ast = self.validate_identity(
+            "FROM x INSERT OVERWRITE TABLE a SELECT k INSERT INTO b SELECT v WHERE k > 0"
+        ).assert_is(exp.MultitableInserts)
+        self.assertEqual(ast.args["source"].sql(), "x")
+        self.assertEqual(
+            [insert.expression.sql() for insert in ast.expressions],
+            ["SELECT k", "SELECT v WHERE k > 0"],
+        )
+
+        self.validate_all(
+            "FROM x INSERT OVERWRITE TABLE a SELECT k",
+            write={
+                "hive": "FROM x INSERT OVERWRITE TABLE a SELECT k",
+                "spark2": "FROM x INSERT OVERWRITE TABLE a SELECT k",
+                "spark": "FROM x INSERT OVERWRITE TABLE a SELECT k",
+                "databricks": "FROM x INSERT OVERWRITE TABLE a SELECT k",
+            },
         )

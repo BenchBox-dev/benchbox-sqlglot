@@ -1,11 +1,142 @@
-from tests.dialects.test_dialect import Validator
+import sqlite3
+from datetime import datetime, timedelta
 
-from sqlglot import exp
+from sqlglot import ErrorLevel, UnsupportedError, exp, parse_one
+from sqlglot.generator import logger as generator_logger
 from sqlglot.helper import logger as helper_logger
+from tests.dialects.test_dialect import Validator
 
 
 class TestSQLite(Validator):
     dialect = "sqlite"
+
+    def test_date_extraction(self):
+        for part, fmt in (("YEAR", "%Y"), ("MONTH", "%m"), ("DAY", "%d")):
+            self.validate_all(
+                f"SELECT CAST(STRFTIME('{fmt}', DATE('2020-06-01')) AS INTEGER)",
+                read={
+                    dialect: f"SELECT EXTRACT({part} FROM DATE '2020-06-01')"
+                    for dialect in ("postgres", "duckdb")
+                },
+            )
+        self.validate_all(
+            "SELECT CAST(CAST(STRFTIME('%Y', DATE('2020-06-01')) AS INTEGER) AS REAL) / 3 > 673",
+            read={
+                dialect: "SELECT EXTRACT(YEAR FROM DATE '2020-06-01') / 3 > 673"
+                for dialect in ("postgres", "duckdb")
+            },
+        )
+        for source in (
+            "EXTRACT(YEAR FROM TIMESTAMP '2020-06-01 12:00:00')",
+            "EXTRACT(HOUR FROM DATE '2020-06-01')",
+            "EXTRACT(YEAR FROM INTERVAL '1' YEAR)",
+            "EXTRACT(YEAR FROM d)",
+            "DATE_PART('year', DATE '2020-06-01')",
+        ):
+            with self.subTest(source=source), self.assertRaises(UnsupportedError):
+                parse_one(source, read="postgres").sql("sqlite", unsupported_level=ErrorLevel.RAISE)
+
+    def test_date_extraction_execution(self):
+        connection = sqlite3.connect(":memory:")
+        try:
+            for dialect in ("postgres", "duckdb"):
+                for value in ("2000-02-29", "1900-03-01", "2024-12-31", None):
+                    source_value = "NULL" if value is None else f"'{value}'"
+                    fields = tuple(map(int, value.split("-"))) if value else (None, None, None)
+                    query = "SELECT " + ", ".join(
+                        f"EXTRACT({part} FROM CAST({source_value} AS DATE))"
+                        for part in ("YEAR", "MONTH", "DAY")
+                    )
+                    sql = parse_one(query, read=dialect).sql("sqlite")
+                    self.assertEqual(connection.execute(sql).fetchone(), fields)
+
+                for query, expected in (
+                    ("SELECT 2020 / 3 > 673", (0 if dialect == "postgres" else 1,)),
+                    ("SELECT -EXTRACT(YEAR FROM DATE '2020-06-01') / 3 < -673", (1,)),
+                    ("SELECT EXTRACT(YEAR FROM CAST(NULL AS DATE)) / 3 IS NULL", (1,)),
+                    (
+                        "WITH dates(d) AS (VALUES ('2020-06-01')) "
+                        "SELECT EXTRACT(YEAR FROM CAST(d AS DATE)) / 3 > 673 FROM dates",
+                        (1,),
+                    ),
+                    (
+                        "WITH t AS (SELECT EXTRACT(YEAR FROM DATE '2020-06-01') AS y) "
+                        "SELECT CAST(y AS TEXT), y / 3 > 673, COALESCE(y, 0) / 3 > 673 FROM t",
+                        ("2020", 1, 1),
+                    ),
+                    (
+                        "SELECT EXTRACT(YEAR FROM COALESCE(CAST(NULL AS DATE), DATE '2020-06-01'))",
+                        (2020,),
+                    ),
+                    (
+                        "SELECT CAST(EXTRACT(YEAR FROM DATE '2020-06-01') AS INTEGER) / 3 > 673",
+                        (0 if dialect == "postgres" else 1,),
+                    ),
+                    (
+                        "SELECT (EXTRACT(YEAR FROM DATE '2020-06-01') / 3) / 2 > 336.5",
+                        (1,),
+                    ),
+                ):
+                    with self.subTest(dialect=dialect, query=query):
+                        sql = parse_one(query, read=dialect).sql("sqlite")
+                        self.assertEqual(connection.execute(sql).fetchone(), expected)
+        finally:
+            connection.close()
+
+    def test_date_interval_arithmetic(self):
+        for operator, amount in (("+", "5"), ("-", "-5")):
+            for unit in ("DAY", "HOUR", "MINUTE", "SECOND"):
+                self.validate_all(
+                    f"SELECT DATETIME(DATE('2025-01-01'), '{amount} {unit}')",
+                    read={
+                        "duckdb": f"SELECT DATE '2025-01-01' {operator} INTERVAL '5' {unit}",
+                        "postgres": f"SELECT DATE '2025-01-01' {operator} INTERVAL '5' {unit}",
+                    },
+                )
+        self.validate_all(
+            "SELECT DATETIME(DATE(d), '-1 DAY') FROM t",
+            read={"postgres": "SELECT INTERVAL '-1' DAY + CAST(d AS DATE) FROM t"},
+        )
+        self.validate_all(
+            "SELECT DATETIME(DATE(d), '1 DAY') FROM t",
+            read={"postgres": "SELECT CAST(d AS DATE) - INTERVAL '-1' DAY FROM t"},
+        )
+        for source in (
+            "DATE '2024-01-31' + INTERVAL '1' MONTH",
+            "DATE '2024-02-29' + INTERVAL '1' YEAR",
+            "DATE '2024-01-01' + INTERVAL '0.1' SECOND",
+            "TIMESTAMP '2024-01-01 12:30:00.123456' + INTERVAL '1' DAY",
+            "d + INTERVAL '1' DAY",
+            "INTERVAL '1' DAY",
+        ):
+            with self.subTest(source=source), self.assertRaises(UnsupportedError):
+                self.parse_one(source, dialect="postgres").sql(
+                    "sqlite", unsupported_level=ErrorLevel.RAISE
+                )
+        self.validate_identity("SELECT a + 1, b - 2 FROM t")
+
+    def test_date_interval_execution(self):
+        with sqlite3.connect(":memory:") as connection:
+            for dialect in ("postgres", "duckdb"):
+                for unit, duration in (
+                    ("DAY", timedelta(days=1)),
+                    ("HOUR", timedelta(hours=1)),
+                    ("MINUTE", timedelta(minutes=1)),
+                    ("SECOND", timedelta(seconds=1)),
+                ):
+                    for amount in (-5, 0, 5):
+                        query = f"SELECT DATE '2024-02-29' + INTERVAL '{amount}' {unit}"
+                        expected = (datetime(2024, 2, 29) + amount * duration).isoformat(" ")
+                        sql = parse_one(query, read=dialect).sql(
+                            "sqlite", unsupported_level=ErrorLevel.RAISE
+                        )
+                        with self.subTest(dialect=dialect, query=query):
+                            self.assertEqual(connection.execute(sql).fetchone(), (expected,))
+                query = "SELECT CAST(NULL AS DATE) + INTERVAL '1' DAY"
+                sql = parse_one(query, read=dialect).sql(
+                    "sqlite", unsupported_level=ErrorLevel.RAISE
+                )
+                self.assertEqual(connection.execute(sql).fetchone(), (None,))
 
     def test_sqlite(self):
         # Range operators (IN/LIKE) are left-associative and can be chained.
@@ -24,6 +155,30 @@ class TestSQLite(Validator):
         self.validate_identity("SELECT match FROM t")
         self.validate_identity("SELECT rowid FROM t1 WHERE t1 MATCH 'lorem'")
         self.validate_identity("SELECT * FROM t WHERE a REGEXP 'x'")
+        self.validate_identity("SELECT GROUP_CONCAT(x ORDER BY y)")
+        self.validate_identity("SELECT GROUP_CONCAT(x, ',' ORDER BY y)")
+        self.validate_identity("SELECT GROUP_CONCAT(DISTINCT x ORDER BY y DESC)")
+        self.validate_identity("SELECT GROUP_CONCAT(x, ',') OVER (PARTITION BY z ORDER BY y)")
+        self.validate_all(
+            "SELECT GROUP_CONCAT(x, ',' ORDER BY y)",
+            write={
+                "mysql": "SELECT GROUP_CONCAT(x ORDER BY y SEPARATOR ',')",
+                "tsql": "SELECT STRING_AGG(x, ',') WITHIN GROUP (ORDER BY y)",
+            },
+        )
+        self.validate_all(
+            "SELECT GROUP_CONCAT(x, ',' ORDER BY y) OVER (PARTITION BY z)",
+            write={"sqlite": UnsupportedError},
+        )
+        self.validate_all(
+            "SELECT GROUP_CONCAT(x, ',') FILTER(WHERE y > 0) OVER (PARTITION BY z)",
+            read={
+                "duckdb": "SELECT STRING_AGG(x, ',' ORDER BY y) FILTER (WHERE y > 0) OVER (PARTITION BY z)",
+            },
+        )
+        self.validate_identity(
+            "SELECT SUM(z) OVER (PARTITION BY GROUP_CONCAT(x ORDER BY y)) FROM t GROUP BY z"
+        )
         self.validate_identity("SELECT RANK() OVER (RANGE CURRENT ROW) FROM tbl")
         self.validate_identity(
             "SELECT RANK() OVER (RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) FROM tbl"
@@ -41,6 +196,36 @@ class TestSQLite(Validator):
             "SELECT DATE(d, '1 DAY') FROM t",
             read={
                 "duckdb": "SELECT DATE_ADD(d, INTERVAL 1 DAY) FROM t",
+            },
+        )
+        self.validate_all(
+            "SELECT DATE(d, '-1 DAY') FROM t",
+            read={
+                "duckdb": "SELECT DATE_ADD(d, INTERVAL (-1) DAY) FROM t",
+            },
+        )
+        self.validate_all(
+            "SELECT DATE(d, (n) || ' DAY') FROM t",
+            read={
+                "duckdb": "SELECT DATE_ADD(d, INTERVAL (n) DAY) FROM t",
+            },
+        )
+        self.validate_all(
+            "SELECT DATE(d, (n + 1) || ' DAY') FROM t",
+            read={
+                "duckdb": "SELECT DATE_ADD(d, INTERVAL (n + 1) DAY) FROM t",
+            },
+        )
+        self.validate_all(
+            "SELECT DATE(d, (-n) || ' MONTH') FROM t",
+            read={
+                "duckdb": "SELECT DATE_ADD(d, INTERVAL (-n) MONTH) FROM t",
+            },
+        )
+        self.validate_all(
+            "SELECT DATE(d, (NULL) || ' DAY') FROM t",
+            read={
+                "duckdb": "SELECT DATE_ADD(d, INTERVAL (NULL) DAY) FROM t",
             },
         )
         self.validate_identity("SELECT DATETIME(1092941466, 'unixepoch')")
@@ -175,24 +360,48 @@ class TestSQLite(Validator):
             "SELECT MIN(a, b) FROM t",
             read={"mysql": "SELECT LEAST(a, b) FROM t"},
         )
-        # CONCAT skips NULL args in these dialects, but || propagates it, so the
-        # operands have to keep the COALESCE wrapping the other targets get.
+        # CONCAT and CONCAT_WS skip NULL args in SQLite, like in these dialects
         self.validate_all(
-            "SELECT COALESCE(a, '') || COALESCE(b, '') FROM t",
+            "SELECT CONCAT(a, b) FROM t",
             read={
                 "duckdb": "SELECT CONCAT(a, b) FROM t",
                 "postgres": "SELECT CONCAT(a, b) FROM t",
                 "tsql": "SELECT CONCAT(a, b) FROM t",
             },
+            write={
+                "duckdb": "SELECT CONCAT(a, b) FROM t",
+                "mysql": "SELECT CONCAT(COALESCE(a, ''), COALESCE(b, '')) FROM t",
+                "postgres": "SELECT CONCAT(a, b) FROM t",
+                "snowflake": "SELECT CONCAT(COALESCE(a, ''), COALESCE(b, '')) FROM t",
+                "sqlite": "SELECT CONCAT(a, b) FROM t",
+            },
         )
-        # CONCAT propagates NULL in these dialects, so || already matches and the
-        # operands are left alone.
+        self.validate_all(
+            "SELECT CONCAT_WS(',', a, b) FROM t",
+            read={
+                "duckdb": "SELECT CONCAT_WS(',', a, b) FROM t",
+                "mysql": "SELECT CONCAT_WS(',', a, b) FROM t",
+                "postgres": "SELECT CONCAT_WS(',', a, b) FROM t",
+            },
+            write={
+                "duckdb": "SELECT CONCAT_WS(',', a, b) FROM t",
+                "mysql": "SELECT CONCAT_WS(',', a, b) FROM t",
+                "postgres": "SELECT CONCAT_WS(',', a, b) FROM t",
+                "snowflake": "SELECT CONCAT_WS(',', COALESCE(a, ''), COALESCE(b, '')) FROM t",
+                "sqlite": "SELECT CONCAT_WS(',', a, b) FROM t",
+            },
+        )
+        # CONCAT propagates NULL in these dialects, so || already matches
         self.validate_all(
             "SELECT a || b FROM t",
             read={
                 "mysql": "SELECT CONCAT(a, b) FROM t",
                 "snowflake": "SELECT CONCAT(a, b) FROM t",
             },
+        )
+        self.validate_all(
+            "SELECT CASE WHEN ',' IS NULL OR a IS NULL OR b IS NULL THEN NULL ELSE CONCAT_WS(',', a, b) END FROM t",
+            read={"snowflake": "SELECT CONCAT_WS(',', a, b) FROM t"},
         )
         self.validate_all(
             "SELECT JSON_GROUP_ARRAY(name) FROM t",
@@ -396,6 +605,17 @@ class TestSQLite(Validator):
             "DATEDIFF(a, b, 'year')",
             write={"sqlite": "CAST((JULIANDAY(a) - JULIANDAY(b)) / 365.0 AS INTEGER)"},
         )
+        self.validate_all(
+            "DATEDIFF(a, b, 'nanosecond')",
+            write={"sqlite": "CAST((JULIANDAY(a) - JULIANDAY(b)) * 86400000000000.0 AS INTEGER)"},
+        )
+        self.validate_all(
+            "CAST((JULIANDAY(a) - JULIANDAY(b)) * 86400000000000.0 AS INTEGER)",
+            read={
+                "snowflake": "DATEDIFF(NANOSECOND, b, a)",
+                "tsql": "DATEDIFF_BIG(NANOSECOND, b, a)",
+            },
+        )
 
     def test_hexadecimal_literal(self):
         self.validate_all(
@@ -467,6 +687,58 @@ class TestSQLite(Validator):
             "CREATE TABLE t (a INTEGER, b AS (a * 2) STORED NOT NULL)",
             read={"tsql": "CREATE TABLE t (a INT, b AS (a * 2) PERSISTED NOT NULL)"},
         )
+
+    def test_identity_columns(self):
+        for generated in ("ALWAYS", "BY DEFAULT", "BY DEFAULT ON NULL"):
+            for options in ("", " (START WITH 10 INCREMENT BY 2)"):
+                identity = f"GENERATED {generated} AS IDENTITY{options}"
+                for schema, expected in (
+                    (f"a INT {identity}", "a INTEGER"),
+                    (
+                        f"a INT {identity} PRIMARY KEY",
+                        "a INTEGER PRIMARY KEY AUTOINCREMENT",
+                    ),
+                    (
+                        f"a INT {identity}, PRIMARY KEY (a)",
+                        "a INTEGER PRIMARY KEY AUTOINCREMENT",
+                    ),
+                    (
+                        f"a INT {identity}, b INT PRIMARY KEY",
+                        "a INTEGER, b INTEGER PRIMARY KEY",
+                    ),
+                    (
+                        f"a INT {identity}, b INT, PRIMARY KEY (a, b)",
+                        "a INTEGER, b INTEGER, PRIMARY KEY (a, b)",
+                    ),
+                ):
+                    with self.subTest(schema):
+                        self.validate_all(
+                            f"CREATE TABLE t ({expected})",
+                            read={"": f"CREATE TABLE t ({schema})"},
+                        )
+
+    def test_unsupported_auto_increment(self):
+        for dialect, constraint, expected in (
+            ("postgres", "GENERATED BY DEFAULT AS IDENTITY", "a INTEGER"),
+            ("mysql", "UNIQUE AUTO_INCREMENT", "a INTEGER UNIQUE"),
+            ("snowflake", "AUTOINCREMENT", "a INTEGER"),
+        ):
+            with self.subTest(dialect):
+                expression = parse_one(f"CREATE TABLE t (a INT {constraint})", read=dialect)
+                message = "SQLite AUTOINCREMENT requires an INTEGER PRIMARY KEY"
+
+                for level in (ErrorLevel.RAISE, ErrorLevel.IMMEDIATE):
+                    with self.assertRaisesRegex(UnsupportedError, message):
+                        expression.sql("sqlite", unsupported_level=level)
+
+                with self.assertLogs(generator_logger) as cm:
+                    self.assertEqual(expression.sql("sqlite"), f"CREATE TABLE t ({expected})")
+                self.assertIn(message, cm.output[0])
+
+                self.validate_all(
+                    f"CREATE TABLE t ({expected})",
+                    read={dialect: f"CREATE TABLE t (a INT {constraint})"},
+                )
 
     def test_ddl(self):
         for conflict_action in ("ABORT", "FAIL", "IGNORE", "REPLACE", "ROLLBACK"):

@@ -35,8 +35,8 @@ class TestBuild(unittest.TestCase):
             (lambda: 1 * x, "1 * x"),
             (lambda: x / 1, "x / 1"),
             (lambda: 1 / x, "1 / x"),
-            (lambda: x // 1, "CAST(x / 1 AS INT)"),
-            (lambda: 1 // x, "CAST(1 / x AS INT)"),
+            (lambda: x // 1, "CAST(x / 1 AS BIGINT)"),
+            (lambda: 1 // x, "CAST(1 / x AS BIGINT)"),
             (lambda: x % 1, "x % 1"),
             (lambda: 1 % x, "1 % x"),
             (lambda: x**1, "POWER(x, 1)"),
@@ -728,6 +728,10 @@ class TestBuild(unittest.TestCase):
             (lambda: exp.delete("tbl1", "x = 1").delete("tbl2"), "DELETE FROM tbl2 WHERE x = 1"),
             (lambda: exp.delete("tbl").where("x = 1"), "DELETE FROM tbl WHERE x = 1"),
             (lambda: exp.delete(exp.table_("tbl")), "DELETE FROM tbl"),
+            (
+                lambda: exp.table_(None, db="dataset", catalog="project", quoted=False),
+                "project.dataset",
+            ),
             (
                 lambda: exp.delete("tbl", "x = 1").where("y = 2"),
                 "DELETE FROM tbl WHERE x = 1 AND y = 2",

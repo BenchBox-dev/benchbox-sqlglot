@@ -9,6 +9,11 @@ from tests.dialects.test_dialect import Validator
 class TestSpark(Validator):
     dialect = "spark"
 
+    def test_string_escapes(self):
+        self.validate_identity(r"'\U0001F600'", "'\U0001f600'")
+        self.validate_identity(r"r'\u0041\101\z'", r"'\\u0041\\101\\z'")
+        self.validate_all("'U0001F600'", read={"spark2": r"'\U0001F600'"})
+
     def test_ddl(self):
         self.validate_identity("DAYOFWEEK(TO_DATE(x))")
         self.validate_identity("DAYOFMONTH(TO_DATE(x))")
@@ -29,6 +34,12 @@ class TestSpark(Validator):
             "CREATE TABLE foo (col STRING) CLUSTERED BY (col) SORTED BY (col) INTO 10 BUCKETS"
         )
         self.validate_identity("TRUNCATE TABLE t1 PARTITION(age = 10, name = 'test', address)")
+        self.validate_identity(
+            "CREATE FUNCTION f(col STRING) RETURNS STRING DETERMINISTIC RETURN col"
+        )
+        self.validate_identity(
+            "CREATE FUNCTION f(col STRING) RETURNS STRING NOT DETERMINISTIC RETURN col"
+        )
 
         self.validate_all(
             "CREATE TABLE t (a INT, b STRING, UNIQUE (a))",
@@ -146,6 +157,22 @@ TBLPROPERTIES (
                 "spark": "ALTER TABLE StudentInfo ADD COLUMNS (LastName STRING, DOB TIMESTAMP)",
             },
         )
+        self.validate_identity(
+            "ALTER TABLE t ADD COLUMNS (a.b INT COMMENT 'x' AFTER c, d.e.f STRING)"
+        )
+        for sql, expected in (
+            ("ALTER TABLE t DROP COLUMN a", None),
+            ("ALTER TABLE t DROP COLUMN IF EXISTS a.b", None),
+            ("ALTER TABLE t DROP COLUMNS (a, b.c)", None),
+            ("ALTER TABLE t DROP COLUMNS (from)", None),
+            ("ALTER TABLE t DROP COLUMNS IF EXISTS (a, b.c)", None),
+            ("ALTER TABLE t DROP COLUMNS a, b", "ALTER TABLE t DROP COLUMNS (a, b)"),
+        ):
+            with self.subTest(sql):
+                # A Command would round-trip too, so check that a real AST is built
+                ast = self.validate_identity(sql, expected)
+                self.assertIsInstance(ast, exp.Alter)
+                self.assertIsInstance(ast.args["actions"][0], exp.Drop)
         self.validate_all(
             "ALTER TABLE db.example ALTER COLUMN col_a TYPE BIGINT",
             write={
@@ -342,6 +369,7 @@ TBLPROPERTIES (
         self.validate_identity("SELECT TRANSFORM(ARRAY(1, 2, 3), x -> x + 1)")
         self.validate_identity("SELECT TRANSFORM(ARRAY(1, 2, 3), (x, i) -> x + i)")
         self.validate_identity("REFRESH TABLE a.b.c")
+        self.validate_identity("REFRESH FUNCTION db.func1", check_command_warning=True)
         self.validate_identity("INTERVAL '-86' DAYS")
         self.validate_identity("TRIM('    SparkSQL   ')")
         self.validate_identity("TRIM(BOTH 'SL' FROM 'SSparkSQLS')")
@@ -1277,6 +1305,15 @@ TBLPROPERTIES (
             "SELECT TRANSFORM(zip_code, name, age) USING 'cat' FROM person WHERE zip_code > 94500"
         )
 
+    def test_multitable_inserts(self):
+        self.validate_identity(
+            "FROM x INSERT OVERWRITE TABLE a PARTITION(ds = '1') SELECT k WHERE v > 0 INSERT INTO b SELECT k, v"
+        )
+        self.validate_identity(
+            "FROM (SELECT k, v FROM x QUALIFY ROW_NUMBER() OVER (PARTITION BY k ORDER BY v) = 1) AS s INSERT INTO t SELECT s.v INSERT INTO u SELECT s.k",
+            "FROM (SELECT k, v FROM (SELECT k, v, ROW_NUMBER() OVER (PARTITION BY k ORDER BY v) AS _w FROM x) AS _t WHERE _w = 1) AS s INSERT INTO t SELECT s.v INSERT INTO u SELECT s.k",
+        )
+
     def test_insert_cte(self):
         self.validate_all(
             "INSERT OVERWRITE TABLE table WITH cte AS (SELECT cola FROM other_table) SELECT cola FROM cte",
@@ -1537,6 +1574,38 @@ TBLPROPERTIES (
             write={
                 "databricks": "SELECT ARRAY_INSERT(ARRAY('a', 'b', 'c'), 1, 'z')",
                 "spark": "SELECT ARRAY_INSERT(ARRAY('a', 'b', 'c'), 1, 'z')",
+                "snowflake": "SELECT ARRAY_INSERT(['a', 'b', 'c'], 0, 'z')",
+            },
+        )
+        self.validate_all(
+            "SELECT ARRAY_INSERT(ARRAY('a', 'b', 'c'), -2, 'z')",
+            read={
+                "snowflake": "SELECT ARRAY_INSERT(['a', 'b', 'c'], -1, 'z')",
+            },
+            write={
+                "snowflake": "SELECT ARRAY_INSERT(['a', 'b', 'c'], -1, 'z')",
+            },
+        )
+        self.validate_all(
+            "SELECT ARRAY_INSERT(ARRAY('a', 'b', 'c'), -1, 'z')",
+            write={
+                "snowflake": "SELECT ARRAY_INSERT(['a', 'b', 'c'], ARRAY_SIZE(['a', 'b', 'c']), 'z')",
+            },
+        )
+        self.validate_all(
+            "SELECT ARRAY_INSERT(ARRAY('a', 'b', 'c'), 3, 'z')",
+            read={
+                "snowflake": "SELECT ARRAY_INSERT(['a', 'b', 'c'], 2, 'z')",
+            },
+        )
+
+    def test_array_slice(self):
+        self.validate_all(
+            "SLICE(x, 2, 3)",
+            read={
+                "clickhouse": "arraySlice(x, 2, 3)",
+                "presto": "SLICE(x, 2, 3)",
+                "spark": "SLICE(x, 2, 3)",
             },
         )
 

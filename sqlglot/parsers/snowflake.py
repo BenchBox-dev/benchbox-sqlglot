@@ -767,6 +767,7 @@ class SnowflakeParser(parser.Parser):
     STATEMENT_PARSERS = {
         **parser.Parser.STATEMENT_PARSERS,
         TokenType.GET: lambda self: self._parse_get(),
+        TokenType.LIST: lambda self: self._parse_list_stage(),
         TokenType.PUT: lambda self: self._parse_put(),
         TokenType.SHOW: lambda self: self._parse_show(),
         TokenType.UNDROP: lambda self: self._parse_undrop(),
@@ -1249,12 +1250,12 @@ class SnowflakeParser(parser.Parser):
         return self.expression(exp.Undrop(this=this, kind=kind.name, rename=rename))
 
     def _parse_put(self) -> exp.Put | exp.Command:
-        if self._curr.token_type != TokenType.STRING:
+        if self._curr.token_type not in (TokenType.STRING, TokenType.URI_START):
             return self._parse_as_command(self._prev)
 
         return self.expression(
             exp.Put(
-                this=self._parse_string(),
+                this=self._parse_string() or exp.Literal.string(self._parse_location_path().name),
                 target=self._parse_location_path(),
                 properties=self._parse_properties(),
             )
@@ -1277,6 +1278,16 @@ class SnowflakeParser(parser.Parser):
         return self.expression(
             exp.Get(this=self._parse_string(), target=target, properties=self._parse_properties())
         )
+
+    def _parse_list_stage(self) -> exp.ListStage:
+        this = self._parse_location_path() if self._curr else None
+        pattern = None
+        if self._match_text_seq("PATTERN", "="):
+            pattern = self._parse_string()
+            if pattern is None:
+                self.raise_error("Expected string after PATTERN =")
+
+        return self.expression(exp.ListStage(this=this, pattern=pattern))
 
     def _parse_location_property(self) -> exp.LocationProperty:
         self._match(TokenType.EQ)

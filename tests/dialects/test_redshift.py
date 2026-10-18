@@ -1,10 +1,68 @@
 from sqlglot import exp, ParseError, parse_one, transpile
-from sqlglot.optimizer.annotate_types import annotate_types
+from sqlglot.optimizer.annotate_types import annotate_types, TypeAnnotator
+from sqlglot.schema import MappingSchema
 from tests.dialects.test_dialect import Validator
 
 
 class TestRedshift(Validator):
     dialect = "redshift"
+
+    def test_sha2_type(self):
+        for bits, expected in (
+            ("0", "VARCHAR(64)"),
+            ("224", "VARCHAR(56)"),
+            ("256", "VARCHAR(64)"),
+            ("384", "VARCHAR(96)"),
+            ("512", "VARCHAR(128)"),
+            ("128", "VARCHAR(1)"),
+            ("-256", "VARCHAR(1)"),
+            ("CAST(NULL AS INTEGER)", "VARCHAR(128)"),
+            ("bits", "VARCHAR(128)"),
+            ("bits + 0", "VARCHAR(128)"),
+        ):
+            for value in ("'abc'", "value"):
+                with self.subTest(bits=bits, value=value):
+                    expression = annotate_types(
+                        self.validate_identity(f"SELECT SHA2({value}, {bits}) AS hash FROM t"),
+                        dialect=self.dialect,
+                    )
+                    self.assertEqual(expression.selects[0].type, exp.DataType.build(expected))
+
+    def test_sha2_argument_types(self):
+        for bits, expected in (("bits", "VARCHAR(128)"), ("256", "VARCHAR(64)")):
+            for value_type, bits_type in (
+                (None, None),
+                (exp.DType.UNKNOWN, exp.DType.UNKNOWN),
+                (exp.DType.VARCHAR, exp.DType.INT),
+                (None, exp.DType.INT),
+                (exp.DType.VARCHAR, None),
+                (exp.DType.UNKNOWN, exp.DType.INT),
+                (exp.DType.VARCHAR, exp.DType.UNKNOWN),
+            ):
+                with self.subTest(bits=bits, value_type=value_type, bits_type=bits_type):
+                    expression = self.parse_one(f"SHA2(value, {bits})")
+                    expression.this.type = value_type
+                    expression.args["length"].type = bits_type
+                    annotator = TypeAnnotator(MappingSchema(dialect=self.dialect))
+                    annotator.expression_metadata[exp.SHA2]["annotator"](annotator, expression)
+                    self.assertEqual(expression.type, exp.DataType.build(expected))
+
+    def test_sha2_cte_type(self):
+        for value in ("CAST('abc' AS VARCHAR(20))", "CAST(NULL AS VARCHAR(20))"):
+            with self.subTest(value=value):
+                expression = annotate_types(
+                    self.validate_identity(
+                        f"WITH cte AS (SELECT {value} AS value, 256 AS bits) "
+                        "SELECT SHA2(value, 128) AS invalid_bits, "
+                        "SHA2(value, 256) AS valid_bits, "
+                        "SHA2(value, bits) AS variable_bits FROM cte"
+                    ),
+                    dialect=self.dialect,
+                )
+                self.assertEqual(
+                    [projection.type for projection in expression.selects],
+                    [exp.DataType.build(f"VARCHAR({size})") for size in (1, 64, 128)],
+                )
 
     def test_redshift(self):
         self.validate_identity("SELECT COSH(1.5)")
@@ -183,16 +241,16 @@ class TestRedshift(Validator):
         self.validate_all(
             "SELECT DATE_PART(minute, timestamp '2023-01-04 04:05:06.789')",
             write={
-                "postgres": "SELECT EXTRACT(MINUTE FROM CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
-                "redshift": "SELECT EXTRACT(MINUTE FROM CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
+                "postgres": "SELECT DATE_PART('minute', CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
+                "redshift": "SELECT DATE_PART('minute', CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
                 "snowflake": "SELECT DATE_PART(MINUTE, CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
             },
         )
         self.validate_all(
             "SELECT DATE_PART(month, date '20220502')",
             write={
-                "postgres": "SELECT EXTRACT(MONTH FROM CAST('20220502' AS DATE))",
-                "redshift": "SELECT EXTRACT(MONTH FROM CAST('20220502' AS DATE))",
+                "postgres": "SELECT DATE_PART('month', CAST('20220502' AS DATE))",
+                "redshift": "SELECT DATE_PART('month', CAST('20220502' AS DATE))",
                 "snowflake": "SELECT DATE_PART(MONTH, CAST('20220502' AS DATE))",
             },
         )
@@ -343,6 +401,9 @@ class TestRedshift(Validator):
         self.validate_identity("SELECT GETBIT(FROM_HEX('4d'), 2)")
         self.validate_identity("SELECT EXP(1)")
         self.validate_identity("ALTER TABLE table_name ALTER COLUMN bla TYPE VARCHAR")
+        self.validate_identity(
+            "ALTER TABLE t DROP b CASCADE", "ALTER TABLE t DROP COLUMN b CASCADE"
+        )
         self.validate_identity("SELECT CAST(value AS FLOAT(8))")
         self.validate_identity("1 div", "1 AS div")
         self.validate_identity("LISTAGG(DISTINCT foo, ', ')")
@@ -389,7 +450,7 @@ class TestRedshift(Validator):
         )
         self.validate_identity(
             'DATE_PART(year, "somecol")',
-            'EXTRACT(YEAR FROM "somecol")',
+            "DATE_PART('year', \"somecol\")",
         ).this.assert_is(exp.Var)
         self.validate_identity(
             "SELECT CONCAT('abc', 'def')",
