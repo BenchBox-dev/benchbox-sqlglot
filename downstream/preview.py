@@ -18,7 +18,50 @@ CONSUMER_TESTS = [
     "tests/unit/platforms/test_sqlite_adapter.py",
     "tests/unit/tpchavoc/test_cloud_compat.py",
     "tests/unit/tpchavoc/test_dialect_compat.py",
+    "tests/unit/sql_compat/test_translate_sql_delegation.py",
+    "tests/unit/test_base_advanced.py",
 ]
+
+CONSUMER_CONTRACT = """import logging
+import sqlite3
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import benchbox_sqlglot
+import pytest
+from benchbox.base import BaseBenchmark
+from benchbox.platforms.base.dialect_translation import DialectTranslationMixin
+from benchbox.utils.dialect_utils import translate_sql_query
+
+pytestmark = [pytest.mark.unit, pytest.mark.fast]
+
+class Adapter(DialectTranslationMixin):
+    _dialect = "sqlite"
+    logger = logging.getLogger("consumer-contract")
+
+@pytest.mark.parametrize("query, expected", [
+    ("SELECT EXTRACT(YEAR FROM DATE '2020-06-01') / 3 > 673", (1,)),
+    ("WITH t AS (SELECT EXTRACT(YEAR FROM DATE '2020-06-01') AS y) SELECT CAST(y AS INTEGER) / 3 > 673, y / 3 > 673 FROM t", (0, 1)),
+    ("SELECT DATE '2024-02-29' + INTERVAL '1' DAY", ("2024-03-01 00:00:00",)),
+    ("SELECT CAST(NULL AS DATE) + INTERVAL '1' DAY", (None,)),
+    ("SELECT -EXTRACT(YEAR FROM DATE '2020-06-01') / 3 < -673", (1,)),
+])
+@pytest.mark.parametrize("entrypoint", ["utility", "mixin", "base"])
+def test_real_translation_entrypoint(query, expected, entrypoint):
+    with patch.object(benchbox_sqlglot, "transpile", wraps=benchbox_sqlglot.transpile) as transpile:
+        if entrypoint == "utility":
+            translated = translate_sql_query(query, "sqlite", source_dialect="netezza", identify=True)
+        elif entrypoint == "mixin":
+            translated = Adapter().translate_sql(query, source_dialect="netezza")
+        else:
+            benchmark = SimpleNamespace(get_query=lambda _: query)
+            translated = BaseBenchmark.translate_query(benchmark, "fixture", "sqlite")
+        assert transpile.call_args.kwargs["read"] == "postgres"
+        assert transpile.call_args.kwargs["write"] == "sqlite"
+        assert transpile.call_args.kwargs["identify"] is True
+    with sqlite3.connect(":memory:") as connection:
+        assert connection.execute(translated).fetchone() == expected
+"""
 
 
 def preview(repository: Path, ref: str, wheel: Path) -> None:
@@ -39,7 +82,13 @@ def preview(repository: Path, ref: str, wheel: Path) -> None:
             for path in (work / directory).rglob("*.py"):
                 text = path.read_text()
                 if "sqlglot" in text:
-                    path.write_text(relocate(text, path.relative_to(work).as_posix(), suite=True))
+                    text = relocate(text, path.relative_to(work).as_posix(), suite=True)
+                    if path.name == "test_translate_sql_delegation.py":
+                        text = text.replace(
+                            'if name == "sqlglot":', 'if name == "benchbox_sqlglot":'
+                        )
+                    path.write_text(text)
+        (work / "test_downstream_consumer.py").write_text(CONSUMER_CONTRACT)
         env = {**os.environ, "BENCHBOX_EPHEMERAL_CLONE": "1"}
         env.pop("PYTHONPATH", None)
         subprocess.run(
@@ -77,6 +126,7 @@ def preview(repository: Path, ref: str, wheel: Path) -> None:
                 "0",
                 "-q",
                 *CONSUMER_TESTS,
+                "test_downstream_consumer.py",
             ],
             cwd=work,
             env=env,
