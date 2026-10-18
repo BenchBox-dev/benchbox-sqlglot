@@ -19,27 +19,27 @@ def spawned_roundtrip(expression, queue) -> None:
 def smoke(*, coexist: bool = False, upstream_first: bool = False) -> None:
     if coexist and upstream_first:
         importlib.import_module("sqlglot")
-    fork = importlib.import_module("benchbox_sqlglot")
+    fork = importlib.import_module("benchbox._vendor.sqlglot")
     assert fork.__file__ is not None
-    assert Path(fork.__file__).parent.parent.name == "site-packages", fork.__file__
+    assert "site-packages" in Path(fork.__file__).parts, fork.__file__
     distribution = importlib.metadata.distribution("benchbox-sqlglot")
     provenance = json.loads(
-        importlib.resources.files("benchbox_sqlglot")
+        importlib.resources.files("benchbox._vendor.sqlglot")
         .joinpath("benchbox_provenance.json")
         .read_text()
     )
     assert fork.__version__ == distribution.version == provenance["version"]
     assert not distribution.entry_points
     assert not distribution.metadata.get_all("Provides-Extra")
-    assert importlib.resources.files("benchbox_sqlglot").joinpath("py.typed").is_file()
+    assert importlib.resources.files("benchbox._vendor.sqlglot").joinpath("py.typed").is_file()
     for dialect in fork.Dialects:
         assert fork.Dialect.get_or_raise(dialect).__class__.__module__.startswith(
-            "benchbox_sqlglot."
+            "benchbox._vendor.sqlglot."
         )
-    optimizer = importlib.import_module("benchbox_sqlglot.optimizer")
+    optimizer = importlib.import_module("benchbox._vendor.sqlglot.optimizer")
     expression = fork.parse_one("SELECT 1 + 2 AS n")
     assert optimizer.optimize(expression).sql() == 'SELECT 3 AS "n"'
-    serde = importlib.import_module("benchbox_sqlglot.serde")
+    serde = importlib.import_module("benchbox._vendor.sqlglot.serde")
     assert serde.load(serde.dump(expression)) == expression
     assert pickle.loads(pickle.dumps(expression)) == expression
     for name in ("postgres", "sqlite", "singlestore", "duckdb", "bigquery"):

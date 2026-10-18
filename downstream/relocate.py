@@ -4,7 +4,7 @@ import ast
 import re
 from pathlib import Path
 
-PACKAGE = "benchbox_sqlglot"
+PACKAGE = "benchbox._vendor.sqlglot"
 DYNAMIC_PATHS = {
     "dialects/__init__.py": {"sqlglot.dialects."},
     "dialects/dialect.py": {"sqlglot.dialects", "sqlglot.dialects."},
@@ -17,7 +17,6 @@ RETAINED_STRINGS = {
 SUITE_EXCLUSIONS = {
     "test_downstream_contract.py": "Checks source manifest and workflow files, not the installed runtime.",
     "test_downstream_distribution.py": "Checks release tooling in the source repository.",
-    "test_downstream_release.py": "Checks owner approval and hosted publishing controls.",
     "test_downstream_refresh.py": "Checks source Git refresh operations.",
     "test_integration_loader.py": "Loads the optional private upstream integration repository.",
     "sqlglot": "Private integration discovery shim.",
@@ -25,15 +24,15 @@ SUITE_EXCLUSIONS = {
 }
 
 
-def module_name(name: str) -> str:
-    return PACKAGE + name[len("sqlglot") :] if name.split(".")[0] == "sqlglot" else name
+def module_name(name: str, namespace: str = PACKAGE) -> str:
+    return namespace + name[len("sqlglot") :] if name.split(".")[0] == "sqlglot" else name
 
 
-def import_statement(node: ast.Import) -> str:
+def import_statement(node: ast.Import, namespace: str = PACKAGE) -> str:
     imports = []
     bind_root = False
     for alias in node.names:
-        name = module_name(alias.name)
+        name = module_name(alias.name, namespace)
         asname = alias.asname
         if name != alias.name and not asname:
             if alias.name == "sqlglot":
@@ -42,10 +41,10 @@ def import_statement(node: ast.Import) -> str:
                 bind_root = True
         imports.append(name + (f" as {asname}" if asname else ""))
     result = "import " + ", ".join(imports)
-    return result + (f"; import {PACKAGE} as sqlglot" if bind_root else "")
+    return result + (f"; import {namespace} as sqlglot" if bind_root else "")
 
 
-def relocate(source: str, path: str, *, suite: bool = False) -> str:
+def relocate(source: str, path: str, *, suite: bool = False, namespace: str = PACKAGE) -> str:
     tree = ast.parse(source)
     data = source.encode()
     lines = data.splitlines(keepends=True)
@@ -91,13 +90,13 @@ def relocate(source: str, path: str, *, suite: bool = False) -> str:
     allowed = DYNAMIC_PATHS.get(path, set())
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            if any(module_name(alias.name) != alias.name for alias in node.names):
-                edit(node, import_statement(node))
+            if any(module_name(alias.name, namespace) != alias.name for alias in node.names):
+                edit(node, import_statement(node, namespace))
         elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
-            if module_name(node.module) != node.module:
+            if module_name(node.module, namespace) != node.module:
                 segment = ast.get_source_segment(source, node)
                 assert segment is not None
-                edit(node, segment.replace(node.module, module_name(node.module), 1))
+                edit(node, segment.replace(node.module, module_name(node.module, namespace), 1))
         elif isinstance(node, ast.JoinedStr):
             values = [v.value for v in node.values if isinstance(v, ast.Constant)]
             matches = [v for v in values if isinstance(v, str) and v.startswith("sqlglot.")]
@@ -106,7 +105,7 @@ def relocate(source: str, path: str, *, suite: bool = False) -> str:
                     raise ValueError(f"Unreviewed dynamic import string in {path}: {matches}")
                 segment = ast.get_source_segment(source, node)
                 assert segment is not None
-                edit(node, segment.replace("sqlglot.", PACKAGE + "."))
+                edit(node, segment.replace("sqlglot.", namespace + "."))
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             value = node.value
             if id(node) in joined_constants:
@@ -114,18 +113,20 @@ def relocate(source: str, path: str, *, suite: bool = False) -> str:
             if id(node) in docstrings:
                 updated = re.sub(
                     r"(?m)(>>>\s+)import sqlglot\b",
-                    rf"\1import {PACKAGE} as sqlglot",
+                    rf"\1import {namespace} as sqlglot",
                     value,
                 )
-                updated = re.sub(r"(?m)(>>>\s+from )sqlglot\b", rf"\1{PACKAGE}", updated)
+                updated = re.sub(r"(?m)(>>>\s+from )sqlglot\b", rf"\1{namespace}", updated)
             elif suite:
-                updated = value.replace("<class 'sqlglot.", f"<class '{PACKAGE}.")
+                updated = value.replace("<class 'sqlglot.", f"<class '{namespace}.")
                 if updated.startswith("sqlglot."):
-                    updated = module_name(updated)
+                    updated = module_name(updated, namespace)
                 if updated.startswith("import sqlglot;"):
-                    updated = updated.replace("import sqlglot;", f"import {PACKAGE} as sqlglot;", 1)
+                    updated = updated.replace(
+                        "import sqlglot;", f"import {namespace} as sqlglot;", 1
+                    )
             elif value in allowed:
-                updated = module_name(value)
+                updated = module_name(value, namespace)
             else:
                 updated = value
                 if value.startswith("sqlglot.") or value == "sqlglot":
@@ -153,7 +154,7 @@ def relocate(source: str, path: str, *, suite: bool = False) -> str:
     return result
 
 
-def stage_suite(root: Path, destination: Path) -> None:
+def stage_suite(root: Path, destination: Path, *, namespace: str = PACKAGE) -> None:
     for path in sorted((root / "tests").rglob("*")):
         relative = path.relative_to(root / "tests")
         if not path.is_file() or any(part in SUITE_EXCLUSIONS for part in relative.parts):
@@ -165,6 +166,14 @@ def stage_suite(root: Path, destination: Path) -> None:
         target = destination / "tests" / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         if path.suffix == ".py":
-            target.write_text(relocate(path.read_text(), relative.as_posix(), suite=True))
+            target.write_text(
+                relocate(
+                    path.read_text(encoding="utf-8"),
+                    relative.as_posix(),
+                    suite=True,
+                    namespace=namespace,
+                ),
+                encoding="utf-8",
+            )
         else:
             target.write_bytes(path.read_bytes())

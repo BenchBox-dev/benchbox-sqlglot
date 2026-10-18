@@ -2,6 +2,10 @@
 
 ## Source and release boundaries
 
+The canonical repository is `BenchBox-dev/benchbox-sqlglot`. BenchBox-dev owns
+the fork; upstream remains `tobymao/sqlglot`. Keep local `origin` remotes pointed
+at `https://github.com/BenchBox-dev/benchbox-sqlglot`.
+
 `main` preserves upstream ancestry and the original `sqlglot/` source layout.
 `downstream/patches.json` records the selected upstream tag and commit, every
 prepared patch's disposition, and the normalized patches used for refreshes.
@@ -12,79 +16,86 @@ the current patch-owned source files exactly.
 
 Use a linked worktree and a named branch. Inspect effective Git identity before
 committing. Submit source and tooling changes through pull requests. Never
-rewrite consumed `main` commits or published tags. The fork retains upstream's
-source and compiled `make check` gates; the downstream distribution is pure
-Python and supports Python 3.11 through 3.14 in CI.
+rewrite consumed `main` commits or immutable tags, including `benchbox-v30.23.0.1`.
+The fork retains upstream's seven-Python source and compiled `make check` gates;
+the private runtime wheel is pure Python and supports Python 3.11 through 3.14 in CI.
 
-## Build and verification
+## Wheel-only shipping, builds and verification
 
-From a clean checkout with the full upstream tags available:
+BenchBox checks in and ships only the pinned, built pure-Python runtime wheel
+inside its own published wheel and sdist. It must not check in or unpack the
+fork's Python source tree. The private import namespace is
+`benchbox._vendor.sqlglot`. There is no separately published `benchbox-sqlglot`
+PyPI dependency, trusted publisher or production publication workflow.
+Ordinary BenchBox installs and builds consume the packaged wheel bytes:
+they never fetch this repository, a Git dependency or a custom index.
+
+From a clean pinned fork checkout with the upstream tag available:
+
+```sh
+make benchbox-upstream-tag
+uv run --no-project -- python -m downstream.build --out-dir /tmp/benchbox-sqlglot-dist
+uv run --no-project -- python -m downstream.verify --dist-dir /tmp/benchbox-sqlglot-dist --full --sdist
+```
+
+The output directory must be empty. The builder rejects tracked and untracked
+source changes, validates upstream ancestry, and writes one private wheel,
+a verification-only sdist and `SHA256SUMS`. Only the wheel is copied into
+BenchBox package data. No separate installation or PyPI publication is needed.
+Its payload contains UTF-8 Python, static `_version.py`, `py.typed`, original
+`LICENSE` and `benchbox_provenance.json`; no bytecode or compiled extensions.
+Provenance records schema, distribution, version, upstream/fork commits, commit
+timestamp, dirty status, complete patch manifest, canonical repository,
+private namespace and SHA256 of every runtime file except provenance itself.
+
+The BenchBox maintainer refresh operation invokes this builder in an explicitly
+pinned clean checkout and copies the reviewed wheel, not its extracted files.
+Record the exact wheel hash and fork commit with the consumer pin and notices.
+Do not build the fork during a normal BenchBox package build.
+`--allow-dirty` and verifier `--development` are explicit local diagnostics only;
+never ship those artifacts.
+
+BenchBox's real `benchbox._vendor` package extends only its own `__path__` with
+the packaged wheel path plus `/benchbox/_vendor`. Standard `zipimport` loads
+the private runtime directly from the nested wheel. Do not modify global
+`sys.path`, extract source, run pip, install the wheel, or fetch dependencies at
+runtime. Resources are read with `importlib.resources`, not filesystem paths.
+The original fork sources remain solely in this repository.
+
+Retain native source and compiled checks:
 
 ```sh
 uv run --no-project --with-editable '.[dev]' -- make check NPROC=2
-make benchbox-upstream-tag
 make benchbox-dist
 make benchbox-check
 ```
 
-`benchbox-dist` produces a wheel, a self-contained sdist and `SHA256SUMS` under
-`dist/benchbox`. It requires a clean tree, validates upstream ancestry and
-generates static metadata. `--allow-dirty` is for local development only;
-artifact verification and publication reject those artifacts by default.
+`benchbox-check` verifies direct wheel zipimport, then runs the relocated
+upstream suite from an installed private wheel outside the checkout and
+rebuilds the unpacked verification sdist offline. The pinned setuptools and
+wheel dependencies must first be cached; the direct build seeds them and CI
+seeds them on its separate runner. Verification compares runtime payloads and
+complete wheel bytes, and checks public SQLGlot coexistence, both import
+orders, separate plugin groups, pickle/spawn, built-in dialects and both
+uninstall directions. The candidate workflow retains artifacts for 30 days;
+it cannot publish them. Source-only suite exclusions live in
+`downstream/relocate.py`; SQL fixtures are unchanged. `SKIP_INTEGRATION=1`
+matches upstream's `make unit` contract.
 
-`benchbox-check` runs the full relocated upstream unit suite from a fresh
-installed wheel outside the checkout, then rebuilds the unpacked sdist offline.
-The pinned setuptools and wheel dependencies must first be cached; the direct
-build seeds them. CI seeds them explicitly on its separate verification runner.
-It compares runtime payloads and complete wheel bytes, checks transitive
-upstream installation, both import orders, plugin groups, pickle/spawn, all
-built-in dialects and both uninstall directions. `downstream/relocate.py` lists
-the source-only suite exclusions and their reasons. SQL fixtures are copied
-unchanged. The standard unit mode skips the upstream executor integration
-cases through `SKIP_INTEGRATION=1`, matching upstream's `make unit` contract.
+The assembler rewrites imports, enumerated dynamic import paths and doctests.
+It preserves local bindings, logger names, SQL text and `sqlglot.meta` /
+`sqlglot.anonymous` markers. New module-looking runtime strings fail assembly
+until reviewed. Keep allowlists narrow. Never alias `sys.modules['sqlglot']`
+or add an upstream fallback. Plugins must explicitly opt into the
+`benchbox._vendor.sqlglot.dialects` entry-point group; upstream plugins are not
+silently reused.
 
-The assembler rewrites Python imports, the enumerated dynamic import paths and
-doctest imports. It preserves local bindings, logger names, SQL text and
-`sqlglot.meta` / `sqlglot.anonymous` SQL markers. New module-looking runtime
-strings fail assembly until reviewed. Keep retained-string and dynamic-path
-allowlists narrow. Do not alias `sys.modules['sqlglot']` or add an upstream
-fallback. The generated distribution has no optional dependencies or console
-entry points and includes `py.typed`, original licensing and provenance.
-
-Before a release, test BenchBox's wrapper, platform mixin, base benchmark,
-SQLite exact arithmetic and TPC-Havoc BigQuery behavior against the built wheel
-in a disposable copy of merged BenchBox. Apply the planned import migration in
-that copy. A new semantic regression requires an explicit scope decision;
-do not silently add capabilities or change the reviewed upstream base.
-
-## Publication
-
-Only the explicit `Publish BenchBox SQLGlot` workflow can publish. An ordinary
-upstream `v*` tag cannot publish. Inherited mutating workflows remain preserved
-under `.github/disabled-workflows` for provenance and stay inactive.
-
-The owner must first approve the exact version, source commit and both artifact
-SHA256 hashes. Configure PyPI trusted publishing for `benchbox-sqlglot`, this
-repository's `benchbox-release.yml` workflow and the
-`benchbox-sqlglot-pypi` environment. That environment must have required human
-reviewers. Name ownership, environment changes and publishing configuration
-remain owner actions unless explicitly authorized. The workflow refuses missing
-reviewers and a candidate that is not a successful `main` push run of the
-downstream CI workflow on the exact tagged commit.
-
-Download `benchbox-sqlglot` from that successful run and review `SHA256SUMS`.
-Create an immutable `benchbox-vX.Y.Z.N` tag at its source commit only after
-approval. Dispatch publication with that tag, the successful candidate run ID
-and both approved hashes. The workflow downloads and verifies those exact
-artifacts, reruns artifact checks, and waits for environment approval. It does
-not rebuild different bytes for upload. Artifacts are retained for 30 days;
-expired or changed artifacts require a new reviewable candidate and approval.
-No credential or branch-protection bypass is part of this procedure.
-
-After publication, install the exact version from public PyPI in a fresh
-environment, verify its provenance, hashes and coexistence behavior, then
-update BenchBox with an exact version and its regenerated lockfile. A local
-path or Git override is not a substitute for that install proof.
+Before consumer adoption, test BenchBox's wrapper, platform mixin, base
+benchmark, SQLite exact arithmetic, Q6 bounds, DDL and TPC-Havoc variants against
+the packaged private wheel and installed BenchBox wheel and sdist. The fork
+checks do not replace actual consumer packaging checks. Preserve
+upstream notices. New semantic changes require separately approved scope:
+the current base remains upstream 30.23.0 plus the three carried patches.
 
 ## Upstream refresh
 
@@ -142,8 +153,9 @@ consumer change. Previously declined patches do not require new upstream PRs.
 
 ## Rollback
 
-For the initial adoption, revert the complete BenchBox adoption PR, restoring
-its public SQLGlot 30.18.0 dependency, lockfile and imports. Test that restoration
-in isolation before adoption merges. Subsequent rollback selects the previous
-tested fork version and its matching BenchBox dependency/lock change. Never
-replace or delete a published release to implement rollback.
+For initial adoption, revert the complete BenchBox adoption PR to restore its
+public SQLGlot dependency, lockfile and imports; test that restoration in
+isolation. Subsequently restore the previous tested wheel together
+with its matching fork pin, wheel hash, provenance, notices and consumer lockfile. Rebuild
+and exercise the BenchBox wheel and sdist before merging rollback. Never move
+an immutable fork tag or replace runtime files without their provenance.

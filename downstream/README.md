@@ -1,31 +1,52 @@
 # BenchBox SQLGlot
 
-`benchbox-sqlglot` is a BenchBox maintained distribution of
-[SQLGlot](https://github.com/tobymao/sqlglot), licensed under the MIT license.
-It provides a small, reviewed patch set for SQL used by BenchBox.
+[`BenchBox-dev/benchbox-sqlglot`](https://github.com/BenchBox-dev/benchbox-sqlglot)
+is the maintained source fork of [SQLGlot](https://github.com/tobymao/sqlglot),
+licensed under the original MIT license. The bounded patch set targets SQL used
+by BenchBox; upstream 30.23.0 plus the three carried patches is the current base.
+
+BenchBox checks in and ships **only the pinned built pure-Python runtime wheel**
+as package data inside its own published wheel and sdist. The fork's unpacked
+Python sources stay in this repository, never in the BenchBox checkout.
+There is no separate PyPI publication, dependency or custom index. Ordinary
+BenchBox installs and builds do not fetch Git or rebuild this fork.
+
+BenchBox extends its real `benchbox._vendor` package's `__path__` with the
+packaged wheel path plus `/benchbox/_vendor`. Standard `zipimport` loads the
+runtime directly from the nested wheel without global `sys.path` changes,
+pip installation, extraction or runtime network access:
 
 ```python
-import benchbox_sqlglot
+from benchbox._vendor import sqlglot
 
-benchbox_sqlglot.transpile("SELECT 1", read="postgres", write="sqlite")
+sqlglot.transpile("SELECT 1", read="postgres", write="sqlite")
 ```
 
-The import namespace is `benchbox_sqlglot`. Public SQLGlot can coexist as
-`sqlglot`; their expression and dialect classes are distinct. Exchange SQL text
-between them, rather than passing expression objects across namespaces.
-Third-party dialect plugins use the `benchbox_sqlglot.dialects` entry-point
-group. Upstream plugins must explicitly support that group before use here.
+Public SQLGlot can coexist as `sqlglot`; its expression and dialect classes are
+distinct. Exchange SQL text rather than objects across namespaces. Plugins
+must explicitly target `benchbox._vendor.sqlglot.dialects`; public SQLGlot's
+plugin group remains separate. There is no `sys.modules` alias or fallback.
 
-This distribution supports Python 3.11 and later and initially ships pure
-Python only. It has no `c` or `rs` extra or console script. Run the module with
-`python -m benchbox_sqlglot`. SQL comment markers such as `sqlglot.meta` remain
-SQLGlot syntax and keep their original spelling.
+The private runtime wheel supports Python 3.11 and later and has no compiled
+extension, optional dependency or console script. SQL comment markers such as
+`sqlglot.meta` and `sqlglot.anonymous`, and upstream logger strings, retain their
+spelling. Original upstream licensing and `py.typed` are embedded in the wheel.
 
-Versions use `X.Y.Z.N`: the first three components identify the upstream tag;
-the positive fourth component increments for downstream releases and resets
-to one when the upstream base changes. Published versions and tags are immutable.
+From a clean, pinned source checkout, build into an empty output directory:
 
-Read `benchbox_sqlglot/benchbox_provenance.json` with
-`importlib.resources.files("benchbox_sqlglot")` for the exact upstream and fork
-commits, build timestamp and patch manifest. The source repository records the selected upstream base and patch decisions
-in `downstream/patches.json`.
+```sh
+make benchbox-upstream-tag
+uv run --no-project -- python -m downstream.build --out-dir /tmp/benchbox-sqlglot-dist
+```
+
+The builder writes the runtime wheel, verification-only sdist and `SHA256SUMS`.
+Only the reviewed wheel is copied to BenchBox. Versions use `X.Y.Z.N`: the first
+three components identify the upstream tag; the positive fourth component
+increments for downstream revisions and resets to one on a new base. Existing
+tags, including `benchbox-v30.23.0.1`, are immutable.
+
+Read `benchbox_provenance.json` with
+`importlib.resources.files("benchbox._vendor.sqlglot")` for exact upstream/fork
+commits, commit timestamp, repository, namespace, complete patch manifest and
+per-file SHA256 hashes. This works directly from the zipped wheel. See the
+[maintenance guide](MAINTAINING.md) for refresh, verification and rollback.

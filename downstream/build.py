@@ -45,7 +45,9 @@ def fetch_upstream_tag(root: Path) -> None:
         raise ValueError("Fetched upstream tag does not match the recorded SHA")
 
 
-def stage(root: Path, destination: Path, *, allow_dirty: bool = False) -> dict:
+def stage_runtime(
+    root: Path, destination: Path, *, namespace: str = PACKAGE, allow_dirty: bool = False
+) -> dict:
     manifest = json.loads((root / "downstream/patches.json").read_text())
     if (
         manifest["schema"] != 1
@@ -64,33 +66,62 @@ def stage(root: Path, destination: Path, *, allow_dirty: bool = False) -> dict:
     subprocess.run(
         ["git", "-C", str(root), "merge-base", "--is-ancestor", upstream, "HEAD"], check=True
     )
+    if not namespace or any(not part.isidentifier() for part in namespace.split(".")):
+        raise ValueError("Target namespace must be a dotted Python identifier")
     if destination.exists():
         raise ValueError("Assembly destination must not exist")
     destination.mkdir(parents=True)
-    package = destination / PACKAGE
+    package = destination
     for path in sorted((root / "sqlglot").rglob("*.py")):
         relative = path.relative_to(root / "sqlglot")
         if relative.as_posix() == "_version.py":
             continue
         target = package / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(relocate(path.read_text(), relative.as_posix()))
+        target.write_text(
+            relocate(path.read_text(encoding="utf-8"), relative.as_posix(), namespace=namespace),
+            encoding="utf-8",
+        )
     shutil.copyfile(root / "sqlglot/py.typed", package / "py.typed")
     version = manifest["version"]
     (package / "_version.py").write_text(
-        f"__version__ = {version!r}\n__version_tuple__ = {tuple(map(int, version.split('.')))!r}\n"
+        f"__version__ = {version!r}\n__version_tuple__ = {tuple(map(int, version.split('.')))!r}\n",
+        encoding="utf-8",
     )
+    shutil.copyfile(root / "LICENSE", package / "LICENSE")
     provenance = {
         "schema": 1,
         "distribution": manifest["distribution"],
+        "repository": "https://github.com/BenchBox-dev/benchbox-sqlglot",
+        "namespace": namespace,
         "version": version,
         "upstream_sha": upstream,
         "fork_sha": git(root, "rev-parse", "HEAD"),
         "source_date_epoch": int(git(root, "show", "-s", "--format=%ct", "HEAD")),
         "dirty": dirty,
         "manifest": manifest,
+        "files": {
+            path.relative_to(package).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(package.rglob("*"))
+            if path.is_file()
+        },
     }
-    (package / "benchbox_provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
+    (package / "benchbox_provenance.json").write_text(
+        json.dumps(provenance, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    return provenance
+
+
+def stage(root: Path, destination: Path, *, allow_dirty: bool = False) -> dict:
+    """Stage the private wheel project; only the built wheel is shipped by BenchBox."""
+    if destination.exists():
+        raise ValueError("Assembly destination must not exist")
+    provenance = stage_runtime(
+        root, destination / Path(*PACKAGE.split(".")), allow_dirty=allow_dirty
+    )
+    for parent in (destination / "benchbox", destination / "benchbox/_vendor"):
+        (parent / "__init__.py").write_text("", encoding="utf-8")
+    version = provenance["version"]
     shutil.copyfile(root / "LICENSE", destination / "LICENSE")
     shutil.copyfile(root / "downstream/README.md", destination / "README.md")
     requirements = json.dumps(BUILD_REQUIREMENTS)
@@ -110,15 +141,15 @@ license-files = ["LICENSE"]
 authors = [{{name = "Toby Mao and SQLGlot contributors"}}]
 
 [project.urls]
-Repository = "https://github.com/joeharris76/sqlglot"
+Repository = "https://github.com/BenchBox-dev/benchbox-sqlglot"
 Upstream = "https://github.com/tobymao/sqlglot"
-Issues = "https://github.com/joeharris76/sqlglot/issues"
+Issues = "https://github.com/BenchBox-dev/benchbox-sqlglot/issues"
 
 [tool.setuptools.packages.find]
-include = ["benchbox_sqlglot", "benchbox_sqlglot.*"]
+include = ["benchbox", "benchbox.*"]
 
 [tool.setuptools.package-data]
-benchbox_sqlglot = ["py.typed", "benchbox_provenance.json"]
+"benchbox._vendor.sqlglot" = ["py.typed", "LICENSE", "benchbox_provenance.json"]
 '''
     )
     return provenance
