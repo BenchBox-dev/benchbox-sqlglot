@@ -1,0 +1,240 @@
+diff --git a/sqlglot/expressions/temporal.py b/sqlglot/expressions/temporal.py
+index 62b5bc07..0b5da196 100644
+--- a/sqlglot/expressions/temporal.py
++++ b/sqlglot/expressions/temporal.py
+@@ -227,7 +227,8 @@ class Dayname(Expression, Func):
+ 
+ 
+ class Extract(Expression, Func):
+-    arg_types = {"this": True, "expression": True}
++    # Preserve source return semantics when EXTRACT and DATE_PART share this node.
++    arg_types = {"this": True, "expression": True, "return_type": False}
+ 
+ 
+ class GetExtract(Expression, Func):
+diff --git a/sqlglot/generators/postgres.py b/sqlglot/generators/postgres.py
+index 6047a679..a03dbfb6 100644
+--- a/sqlglot/generators/postgres.py
++++ b/sqlglot/generators/postgres.py
+@@ -440,6 +440,15 @@ class PostgresGenerator(generator.Generator):
+             exp.Literal.string("hex"),
+         )
+ 
++    def extract_sql(self, expression: exp.Extract) -> str:
++        return_type = expression.args.get("return_type")
++        if return_type and return_type.is_type(exp.DType.DOUBLE):
++            part = expression.this
++            if isinstance(part, exp.Var):
++                part = exp.Literal.string(part.name.lower())
++            return self.func("DATE_PART", part, expression.expression)
++        return super().extract_sql(expression)
++
+     def schemacommentproperty_sql(self, expression: exp.SchemaCommentProperty) -> str:
+         self.unsupported("Table comments are not supported in the CREATE statement")
+         return ""
+diff --git a/sqlglot/optimizer/annotate_types.py b/sqlglot/optimizer/annotate_types.py
+index df8a03d3..0123aa51 100644
+--- a/sqlglot/optimizer/annotate_types.py
++++ b/sqlglot/optimizer/annotate_types.py
+@@ -1082,7 +1082,9 @@ class TypeAnnotator:
+ 
+     def _annotate_extract(self, expression: exp.Extract) -> exp.Extract:
+         part = expression.name
+-        if part == "TIME":
++        if expression.args.get("return_type"):
++            self._set_type(expression, expression.args["return_type"])
++        elif part == "TIME":
+             self._set_type(expression, exp.DType.TIME)
+         elif part == "DATE":
+             self._set_type(expression, exp.DType.DATE)
+diff --git a/sqlglot/parsers/postgres.py b/sqlglot/parsers/postgres.py
+index 50631efa..573346e0 100644
+--- a/sqlglot/parsers/postgres.py
++++ b/sqlglot/parsers/postgres.py
+@@ -88,6 +88,7 @@ class PostgresParser(parser.Parser):
+     ALTER_TABLE_MIXED_ACTIONS = True
+     ALTER_COLUMN_TYPE_REQUIRES_KEYWORD = True
+     SUPPORTS_OMITTED_INTERVAL_SPAN_UNIT = True
++    EXTRACT_RETURN_TYPE: t.ClassVar[exp.DType | None] = exp.DType.DECIMAL
+ 
+     # The one-byte "char" type is distinct from CHAR, and it can only be referenced by
+     # quoting it: https://www.postgresql.org/docs/current/datatype-character.html
+@@ -324,6 +325,12 @@ class PostgresParser(parser.Parser):
+         self._match_text_seq("S")
+         return self.expression(exp.Placeholder(this=this))
+ 
++    def _parse_extract(self) -> exp.Extract | exp.Anonymous:
++        expression = super()._parse_extract()
++        if isinstance(expression, exp.Extract) and self.EXTRACT_RETURN_TYPE:
++            expression.set("return_type", exp.DataType.build(self.EXTRACT_RETURN_TYPE))
++        return expression
++
+     def _parse_date_part(self) -> exp.Expr:
+         part = self._parse_type()
+         self._match(TokenType.COMMA)
+@@ -332,7 +339,11 @@ class PostgresParser(parser.Parser):
+         if part and isinstance(part, (exp.Column, exp.Literal)):
+             part = exp.var(part.name.upper())
+ 
+-        return self.expression(exp.Extract(this=part, expression=value))
++        return self.expression(
++            exp.Extract(
++                this=part, expression=value, return_type=exp.DataType.build(exp.DType.DOUBLE)
++            )
++        )
+ 
+     def _parse_unique_key(self) -> exp.Expr | None:
+         return None
+diff --git a/sqlglot/parsers/redshift.py b/sqlglot/parsers/redshift.py
+index 69d391cf..052f3860 100644
+--- a/sqlglot/parsers/redshift.py
++++ b/sqlglot/parsers/redshift.py
+@@ -31,6 +31,8 @@ def _build_date_delta(expr_type: Type[E]) -> t.Callable[[list], E]:
+ 
+ 
+ class RedshiftParser(PostgresParser):
++    # Unlike PostgreSQL, EXTRACT's return type depends on the input type.
++    EXTRACT_RETURN_TYPE = None
+     ID_VAR_TOKENS = {*PostgresParser.ID_VAR_TOKENS, TokenType.QUALIFY}
+ 
+     FUNCTIONS = {
+diff --git a/tests/dialects/test_postgres.py b/tests/dialects/test_postgres.py
+index 75170499..2a4d6cb2 100644
+--- a/tests/dialects/test_postgres.py
++++ b/tests/dialects/test_postgres.py
+@@ -40,6 +40,27 @@ class TestPostgres(Validator):
+             if expression.args.get("returning"):
+                 self.assertIsInstance(expression.args["returning"], exp.DataType)
+ 
++    def test_extract_return_types(self):
++        for dialect in ("postgres", "materialize", "risingwave"):
++            for source, expected in (
++                ("EXTRACT(YEAR FROM DATE '2020-06-01')", exp.DType.DECIMAL),
++                ("EXTRACT(SECOND FROM TIMESTAMP '2020-06-01 12:34:56.123456')", exp.DType.DECIMAL),
++                ("DATE_PART('year', DATE '2020-06-01')", exp.DType.DOUBLE),
++            ):
++                with self.subTest(dialect=dialect, source=source):
++                    expression = parse_one(source, read=dialect)
++                    self.assertTrue(expression.args["return_type"].is_type(expected))
++                    self.assertTrue(annotate_types(expression, dialect=dialect).is_type(expected))
++                    roundtrip = parse_one(expression.sql(dialect), read=dialect)
++                    self.assertEqual(expression.args["return_type"], roundtrip.args["return_type"])
++                    restored = exp.Expression.load(expression.dump())
++                    self.assertEqual(restored.args["return_type"], expression.args["return_type"])
++
++        self.assertNotEqual(
++            parse_one("EXTRACT(YEAR FROM d)", read="postgres"),
++            parse_one("DATE_PART('year', d)", read="postgres"),
++        )
++
+     def test_postgres(self):
+         expr = self.parse_one("SELECT * FROM r CROSS JOIN LATERAL UNNEST(ARRAY[1]) AS s(location)")
+         unnest = expr.args["joins"][0].this.this
+@@ -263,11 +284,11 @@ class TestPostgres(Validator):
+         )
+         self.validate_identity(
+             "SELECT DATE_PART('isodow'::varchar(6), current_date)",
+-            "SELECT EXTRACT(CAST('isodow' AS VARCHAR(6)) FROM CURRENT_DATE)",
++            "SELECT DATE_PART(CAST('isodow' AS VARCHAR(6)), CURRENT_DATE)",
+         )
+         self.validate_identity(
+             "SELECT DATE_PART('isoyear', ts)",
+-            "SELECT EXTRACT(ISOYEAR FROM ts)",
++            "SELECT DATE_PART('isoyear', ts)",
+         )
+         self.validate_identity(
+             "END WORK AND NO CHAIN",
+@@ -734,16 +755,16 @@ FROM json_data, field_ids""",
+         self.validate_all(
+             "SELECT DATE_PART('minute', timestamp '2023-01-04 04:05:06.789')",
+             write={
+-                "postgres": "SELECT EXTRACT(MINUTE FROM CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
+-                "redshift": "SELECT EXTRACT(MINUTE FROM CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
++                "postgres": "SELECT DATE_PART('minute', CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
++                "redshift": "SELECT DATE_PART('minute', CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
+                 "snowflake": "SELECT DATE_PART(MINUTE, CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
+             },
+         )
+         self.validate_all(
+             "SELECT DATE_PART('month', date '20220502')",
+             write={
+-                "postgres": "SELECT EXTRACT(MONTH FROM CAST('20220502' AS DATE))",
+-                "redshift": "SELECT EXTRACT(MONTH FROM CAST('20220502' AS DATE))",
++                "postgres": "SELECT DATE_PART('month', CAST('20220502' AS DATE))",
++                "redshift": "SELECT DATE_PART('month', CAST('20220502' AS DATE))",
+                 "snowflake": "SELECT DATE_PART(MONTH, CAST('20220502' AS DATE))",
+             },
+         )
+diff --git a/tests/dialects/test_redshift.py b/tests/dialects/test_redshift.py
+index 926486b3..43c6fe9a 100644
+--- a/tests/dialects/test_redshift.py
++++ b/tests/dialects/test_redshift.py
+@@ -241,16 +241,16 @@ class TestRedshift(Validator):
+         self.validate_all(
+             "SELECT DATE_PART(minute, timestamp '2023-01-04 04:05:06.789')",
+             write={
+-                "postgres": "SELECT EXTRACT(MINUTE FROM CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
+-                "redshift": "SELECT EXTRACT(MINUTE FROM CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
++                "postgres": "SELECT DATE_PART('minute', CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
++                "redshift": "SELECT DATE_PART('minute', CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
+                 "snowflake": "SELECT DATE_PART(MINUTE, CAST('2023-01-04 04:05:06.789' AS TIMESTAMP))",
+             },
+         )
+         self.validate_all(
+             "SELECT DATE_PART(month, date '20220502')",
+             write={
+-                "postgres": "SELECT EXTRACT(MONTH FROM CAST('20220502' AS DATE))",
+-                "redshift": "SELECT EXTRACT(MONTH FROM CAST('20220502' AS DATE))",
++                "postgres": "SELECT DATE_PART('month', CAST('20220502' AS DATE))",
++                "redshift": "SELECT DATE_PART('month', CAST('20220502' AS DATE))",
+                 "snowflake": "SELECT DATE_PART(MONTH, CAST('20220502' AS DATE))",
+             },
+         )
+@@ -450,7 +450,7 @@ class TestRedshift(Validator):
+         )
+         self.validate_identity(
+             'DATE_PART(year, "somecol")',
+-            'EXTRACT(YEAR FROM "somecol")',
++            "DATE_PART('year', \"somecol\")",
+         ).this.assert_is(exp.Var)
+         self.validate_identity(
+             "SELECT CONCAT('abc', 'def')",
+diff --git a/tests/fixtures/optimizer/annotate_types.sql b/tests/fixtures/optimizer/annotate_types.sql
+index 5bb23aec..9220e5ec 100644
+--- a/tests/fixtures/optimizer/annotate_types.sql
++++ b/tests/fixtures/optimizer/annotate_types.sql
+@@ -126,6 +126,34 @@ TIME;
+ EXTRACT(day from x);
+ INT;
+ 
++# dialect: postgres
++EXTRACT(YEAR FROM DATE '2020-06-01');
++DECIMAL;
++
++# dialect: postgres
++DATE_PART('year', DATE '2020-06-01');
++DOUBLE;
++
++# dialect: postgres
++EXTRACT(YEAR FROM DATE '2020-06-01') / 3;
++DECIMAL;
++
++# dialect: postgres
++DATE_PART('year', DATE '2020-06-01') / 3;
++DOUBLE;
++
++# dialect: redshift
++EXTRACT(YEAR FROM TIMESTAMP '2020-06-01 00:00:00');
++INT;
++
++# dialect: redshift
++DATE_PART('year', TIMESTAMP '2020-06-01 00:00:00');
++DOUBLE;
++
++# dialect: duckdb
++EXTRACT(YEAR FROM DATE '2020-06-01');
++BIGINT;
++
+ CASE WHEN x THEN CAST(y AS DECIMAL(18, 2)) ELSE NULL END;
+ DECIMAL(18,2);
+ 

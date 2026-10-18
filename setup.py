@@ -18,6 +18,8 @@ setup(
             "pytz",
             "pdoc",
             "pre-commit",
+            "pyyaml",
+            "types-PyYAML",
             "ruff==0.15.6",
             "types-python-dateutil",
             "types-pytz",
