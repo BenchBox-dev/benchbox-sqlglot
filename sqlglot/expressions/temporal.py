@@ -227,7 +227,8 @@ class Dayname(Expression, Func):
 
 
 class Extract(Expression, Func):
-    arg_types = {"this": True, "expression": True}
+    # Preserve source return semantics when EXTRACT and DATE_PART share this node.
+    arg_types = {"this": True, "expression": True, "return_type": False}
 
 
 class GetExtract(Expression, Func):

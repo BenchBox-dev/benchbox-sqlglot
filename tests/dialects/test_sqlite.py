@@ -1,3 +1,6 @@
+import sqlite3
+from datetime import datetime, timedelta
+
 from sqlglot import ErrorLevel, UnsupportedError, exp, parse_one
 from sqlglot.generator import logger as generator_logger
 from sqlglot.helper import logger as helper_logger
@@ -6,6 +9,134 @@ from tests.dialects.test_dialect import Validator
 
 class TestSQLite(Validator):
     dialect = "sqlite"
+
+    def test_date_extraction(self):
+        for part, fmt in (("YEAR", "%Y"), ("MONTH", "%m"), ("DAY", "%d")):
+            self.validate_all(
+                f"SELECT CAST(STRFTIME('{fmt}', DATE('2020-06-01')) AS INTEGER)",
+                read={
+                    dialect: f"SELECT EXTRACT({part} FROM DATE '2020-06-01')"
+                    for dialect in ("postgres", "duckdb")
+                },
+            )
+        self.validate_all(
+            "SELECT CAST(CAST(STRFTIME('%Y', DATE('2020-06-01')) AS INTEGER) AS REAL) / 3 > 673",
+            read={
+                dialect: "SELECT EXTRACT(YEAR FROM DATE '2020-06-01') / 3 > 673"
+                for dialect in ("postgres", "duckdb")
+            },
+        )
+        for source in (
+            "EXTRACT(YEAR FROM TIMESTAMP '2020-06-01 12:00:00')",
+            "EXTRACT(HOUR FROM DATE '2020-06-01')",
+            "EXTRACT(YEAR FROM INTERVAL '1' YEAR)",
+            "EXTRACT(YEAR FROM d)",
+            "DATE_PART('year', DATE '2020-06-01')",
+        ):
+            with self.subTest(source=source), self.assertRaises(UnsupportedError):
+                parse_one(source, read="postgres").sql("sqlite", unsupported_level=ErrorLevel.RAISE)
+
+    def test_date_extraction_execution(self):
+        connection = sqlite3.connect(":memory:")
+        try:
+            for dialect in ("postgres", "duckdb"):
+                for value in ("2000-02-29", "1900-03-01", "2024-12-31", None):
+                    source_value = "NULL" if value is None else f"'{value}'"
+                    fields = tuple(map(int, value.split("-"))) if value else (None, None, None)
+                    query = "SELECT " + ", ".join(
+                        f"EXTRACT({part} FROM CAST({source_value} AS DATE))"
+                        for part in ("YEAR", "MONTH", "DAY")
+                    )
+                    sql = parse_one(query, read=dialect).sql("sqlite")
+                    self.assertEqual(connection.execute(sql).fetchone(), fields)
+
+                for query, expected in (
+                    ("SELECT 2020 / 3 > 673", (0 if dialect == "postgres" else 1,)),
+                    ("SELECT -EXTRACT(YEAR FROM DATE '2020-06-01') / 3 < -673", (1,)),
+                    ("SELECT EXTRACT(YEAR FROM CAST(NULL AS DATE)) / 3 IS NULL", (1,)),
+                    (
+                        "WITH dates(d) AS (VALUES ('2020-06-01')) "
+                        "SELECT EXTRACT(YEAR FROM CAST(d AS DATE)) / 3 > 673 FROM dates",
+                        (1,),
+                    ),
+                    (
+                        "WITH t AS (SELECT EXTRACT(YEAR FROM DATE '2020-06-01') AS y) "
+                        "SELECT CAST(y AS TEXT), y / 3 > 673, COALESCE(y, 0) / 3 > 673 FROM t",
+                        ("2020", 1, 1),
+                    ),
+                    (
+                        "SELECT EXTRACT(YEAR FROM COALESCE(CAST(NULL AS DATE), DATE '2020-06-01'))",
+                        (2020,),
+                    ),
+                    (
+                        "SELECT CAST(EXTRACT(YEAR FROM DATE '2020-06-01') AS INTEGER) / 3 > 673",
+                        (0 if dialect == "postgres" else 1,),
+                    ),
+                    (
+                        "SELECT (EXTRACT(YEAR FROM DATE '2020-06-01') / 3) / 2 > 336.5",
+                        (1,),
+                    ),
+                ):
+                    with self.subTest(dialect=dialect, query=query):
+                        sql = parse_one(query, read=dialect).sql("sqlite")
+                        self.assertEqual(connection.execute(sql).fetchone(), expected)
+        finally:
+            connection.close()
+
+    def test_date_interval_arithmetic(self):
+        for operator, amount in (("+", "5"), ("-", "-5")):
+            for unit in ("DAY", "HOUR", "MINUTE", "SECOND"):
+                self.validate_all(
+                    f"SELECT DATETIME(DATE('2025-01-01'), '{amount} {unit}')",
+                    read={
+                        "duckdb": f"SELECT DATE '2025-01-01' {operator} INTERVAL '5' {unit}",
+                        "postgres": f"SELECT DATE '2025-01-01' {operator} INTERVAL '5' {unit}",
+                    },
+                )
+        self.validate_all(
+            "SELECT DATETIME(DATE(d), '-1 DAY') FROM t",
+            read={"postgres": "SELECT INTERVAL '-1' DAY + CAST(d AS DATE) FROM t"},
+        )
+        self.validate_all(
+            "SELECT DATETIME(DATE(d), '1 DAY') FROM t",
+            read={"postgres": "SELECT CAST(d AS DATE) - INTERVAL '-1' DAY FROM t"},
+        )
+        for source in (
+            "DATE '2024-01-31' + INTERVAL '1' MONTH",
+            "DATE '2024-02-29' + INTERVAL '1' YEAR",
+            "DATE '2024-01-01' + INTERVAL '0.1' SECOND",
+            "TIMESTAMP '2024-01-01 12:30:00.123456' + INTERVAL '1' DAY",
+            "d + INTERVAL '1' DAY",
+            "INTERVAL '1' DAY",
+        ):
+            with self.subTest(source=source), self.assertRaises(UnsupportedError):
+                self.parse_one(source, dialect="postgres").sql(
+                    "sqlite", unsupported_level=ErrorLevel.RAISE
+                )
+        self.validate_identity("SELECT a + 1, b - 2 FROM t")
+
+    def test_date_interval_execution(self):
+        with sqlite3.connect(":memory:") as connection:
+            for dialect in ("postgres", "duckdb"):
+                for unit, duration in (
+                    ("DAY", timedelta(days=1)),
+                    ("HOUR", timedelta(hours=1)),
+                    ("MINUTE", timedelta(minutes=1)),
+                    ("SECOND", timedelta(seconds=1)),
+                ):
+                    for amount in (-5, 0, 5):
+                        query = f"SELECT DATE '2024-02-29' + INTERVAL '{amount}' {unit}"
+                        expected = (datetime(2024, 2, 29) + amount * duration).isoformat(" ")
+                        sql = parse_one(query, read=dialect).sql(
+                            "sqlite", unsupported_level=ErrorLevel.RAISE
+                        )
+                        with self.subTest(dialect=dialect, query=query):
+                            self.assertEqual(connection.execute(sql).fetchone(), (expected,))
+                query = "SELECT CAST(NULL AS DATE) + INTERVAL '1' DAY"
+                sql = parse_one(query, read=dialect).sql(
+                    "sqlite", unsupported_level=ErrorLevel.RAISE
+                )
+                self.assertEqual(connection.execute(sql).fetchone(), (None,))
 
     def test_sqlite(self):
         # Range operators (IN/LIKE) are left-associative and can be chained.
