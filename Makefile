@@ -136,3 +136,12 @@ resolve-integration-conflicts:
 
 update-fixtures:
 	python sqlglot-integration-tests/scripts/update_dbt_fixtures.py
+
+.PHONY: benchbox-dist benchbox-check
+BENCHBOX_DIST_DIR ?= dist/benchbox
+
+benchbox-dist:
+	uv run --no-project -- python -m downstream.build --out-dir $(BENCHBOX_DIST_DIR)
+
+benchbox-check:
+	uv run --no-project -- python -m downstream.verify --dist-dir $(BENCHBOX_DIST_DIR) --full --sdist
