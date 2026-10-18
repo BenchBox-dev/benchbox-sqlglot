@@ -1,7 +1,7 @@
 ## BenchBox maintained SQLGlot
 
-This fork provides the `benchbox-sqlglot` distribution and `benchbox_sqlglot`
-import namespace. See [package usage](downstream/README.md), the
+This fork builds the private `benchbox._vendor.sqlglot` runtime wheel shipped
+inside BenchBox, with no separate PyPI publication. See [runtime usage](downstream/README.md), the
 [patch manifest](downstream/patches.json) and the
 [maintenance guide](downstream/MAINTAINING.md). The upstream project overview
 and its source development instructions follow below.
