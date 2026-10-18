@@ -1,0 +1,215 @@
+diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
+index 3e027c1..88afcb2 100644
+--- a/sqlglot/generators/sqlite.py
++++ b/sqlglot/generators/sqlite.py
+@@ -16,6 +16,7 @@ from sqlglot.dialects.dialect import (
+     strposition_sql,
+ )
+ from sqlglot.generator import unsupported_args
++from sqlglot.errors import OptimizeError
+ from sqlglot.tokens import TokenType
+ 
+ 
+@@ -214,6 +215,99 @@ class SQLiteGenerator(generator.Generator):
+         self.unsupported("SQLite AUTOINCREMENT requires an INTEGER PRIMARY KEY")
+         return ""
+ 
++    _extraction_division_casts: dict[int, bool | None] | None = None
++
++    def preprocess(self, expression: exp.Expr) -> exp.Expr:
++        self._extraction_division_casts = None
++        return super().preprocess(expression)
++
++    def _resolve_extraction_divisions(self, expression: exp.Expr) -> dict[int, bool | None]:
++        root = expression.root()
++        if not any(
++            extract.args.get("return_type")
++            and extract.args["return_type"].is_type(exp.DType.DECIMAL)
++            for extract in root.find_all(exp.Extract)
++        ):
++            return {}
++
++        from sqlglot.optimizer.annotate_types import annotate_types
++        from sqlglot.optimizer.qualify_columns import qualify_columns
++
++        # Whole date parts fit SQLite INTEGER, but PostgreSQL's decimal EXTRACT
++        # still requires fractional division, including through CTE aliases.
++        # Resolve on a copy so qualification cannot alter emitted column names.
++        annotated = root.copy()
++        divisions = {
++            id(original): copied
++            for original, copied in zip(root.find_all(exp.Div), annotated.find_all(exp.Div))
++        }
++        try:
++            if annotated.find(exp.Column):
++                qualify_columns(annotated, schema={}, expand_stars=False, dialect=self.dialect)
++            annotate_types(annotated, dialect=self.dialect, overwrite_types=False)
++        except OptimizeError as error:
++            self.unsupported(f"Cannot resolve SQLite extraction division types: {error}")
++            return {}
++
++        casts: dict[int, bool | None] = {}
++        for key, division in divisions.items():
++            left, right = division.this, division.expression
++            if left.is_type(exp.DType.DECIMAL) or right.is_type(exp.DType.DECIMAL):
++                casts[key] = True
++            elif (
++                not left.type
++                or not right.type
++                or left.is_type(exp.DType.UNKNOWN)
++                or right.is_type(exp.DType.UNKNOWN)
++            ):
++                casts[key] = None
++            else:
++                casts[key] = False
++        return casts
++
++    def div_sql(self, expression: exp.Div) -> str:
++        if expression.args.get("typed"):
++            if self._extraction_division_casts is None:
++                self._extraction_division_casts = self._resolve_extraction_divisions(expression)
++            if self._extraction_division_casts:
++                needs_cast = self._extraction_division_casts.get(id(expression))
++                if needs_cast:
++                    expression.set(
++                        "this",
++                        exp.Cast(this=expression.this, to=exp.DataType.build(exp.DType.DOUBLE)),
++                    )
++                elif needs_cast is None:
++                    self.unsupported("SQLite extraction division requires known operand types")
++        return super().div_sql(expression)
++
++    def extract_sql(self, expression: exp.Extract) -> str:
++        formats = {"YEAR": "%Y", "MONTH": "%m", "DAY": "%d"}
++        format_string = formats.get(expression.name.upper())
++        value = expression.expression
++        return_type = expression.args.get("return_type")
++        if format_string and not value.type:
++            from sqlglot.optimizer.annotate_types import annotate_types
++
++            value = annotate_types(value.copy(), dialect=self.dialect, overwrite_types=False)
++        if (
++            format_string
++            and value.is_type(exp.DType.DATE)
++            and (
++                not return_type
++                or return_type.is_type(exp.DType.DECIMAL, *exp.DataType.INTEGER_TYPES)
++            )
++        ):
++            return self.sql(
++                exp.cast(
++                    exp.TimeToStr(this=value.copy(), format=exp.Literal.string(format_string)),
++                    exp.DType.INT,
++                )
++            )
++        self.unsupported(
++            "SQLite EXTRACT requires YEAR/MONTH/DAY from DATE with integer or decimal return semantics"
++        )
++        return super().extract_sql(expression)
++
+     def insert_sql(self, expression: exp.Insert) -> str:
+         if expression.args.get("ignore"):
+             expression.set("ignore", False)
+@@ -272,6 +366,10 @@ class SQLiteGenerator(generator.Generator):
+         modifier = f"'{modifier} {unit.name}'" if unit else f"'{modifier}'"
+         return self.func("DATE", expression.this, modifier)
+ 
++
++
++
++
+     def cast_sql(self, expression: exp.Cast, safe_prefix: str | None = None) -> str:
+         if expression.is_type("date"):
+             return self.func("DATE", expression.this)
+diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
+index 88363b6..f432b16 100644
+--- a/tests/dialects/test_sqlite.py
++++ b/tests/dialects/test_sqlite.py
+@@ -1,3 +1,5 @@
++import sqlite3
++
+ from sqlglot import ErrorLevel, UnsupportedError, exp, parse_one
+ from sqlglot.generator import logger as generator_logger
+ from sqlglot.helper import logger as helper_logger
+@@ -7,6 +9,81 @@ from tests.dialects.test_dialect import Validator
+ class TestSQLite(Validator):
+     dialect = "sqlite"
+ 
++    def test_date_extraction(self):
++        for part, fmt in (("YEAR", "%Y"), ("MONTH", "%m"), ("DAY", "%d")):
++            self.validate_all(
++                f"SELECT CAST(STRFTIME('{fmt}', DATE('2020-06-01')) AS INTEGER)",
++                read={
++                    dialect: f"SELECT EXTRACT({part} FROM DATE '2020-06-01')"
++                    for dialect in ("postgres", "duckdb")
++                },
++            )
++        self.validate_all(
++            "SELECT CAST(CAST(STRFTIME('%Y', DATE('2020-06-01')) AS INTEGER) AS REAL) / 3 > 673",
++            read={
++                dialect: "SELECT EXTRACT(YEAR FROM DATE '2020-06-01') / 3 > 673"
++                for dialect in ("postgres", "duckdb")
++            },
++        )
++        for source in (
++            "EXTRACT(YEAR FROM TIMESTAMP '2020-06-01 12:00:00')",
++            "EXTRACT(HOUR FROM DATE '2020-06-01')",
++            "EXTRACT(YEAR FROM INTERVAL '1' YEAR)",
++            "EXTRACT(YEAR FROM d)",
++            "DATE_PART('year', DATE '2020-06-01')",
++        ):
++            with self.subTest(source=source), self.assertRaises(UnsupportedError):
++                parse_one(source, read="postgres").sql("sqlite", unsupported_level=ErrorLevel.RAISE)
++
++    def test_date_extraction_execution(self):
++        connection = sqlite3.connect(":memory:")
++        try:
++            for dialect in ("postgres", "duckdb"):
++                for value in ("2000-02-29", "1900-03-01", "2024-12-31", None):
++                    source_value = "NULL" if value is None else f"'{value}'"
++                    fields = tuple(map(int, value.split("-"))) if value else (None, None, None)
++                    query = "SELECT " + ", ".join(
++                        f"EXTRACT({part} FROM CAST({source_value} AS DATE))"
++                        for part in ("YEAR", "MONTH", "DAY")
++                    )
++                    sql = parse_one(query, read=dialect).sql("sqlite")
++                    self.assertEqual(connection.execute(sql).fetchone(), fields)
++
++                for query, expected in (
++                    ("SELECT 2020 / 3 > 673", (0 if dialect == "postgres" else 1,)),
++                    ("SELECT -EXTRACT(YEAR FROM DATE '2020-06-01') / 3 < -673", (1,)),
++                    ("SELECT EXTRACT(YEAR FROM CAST(NULL AS DATE)) / 3 IS NULL", (1,)),
++                    (
++                        "WITH dates(d) AS (VALUES ('2020-06-01')) "
++                        "SELECT EXTRACT(YEAR FROM CAST(d AS DATE)) / 3 > 673 FROM dates",
++                        (1,),
++                    ),
++                    (
++                        "WITH t AS (SELECT EXTRACT(YEAR FROM DATE '2020-06-01') AS y) "
++                        "SELECT CAST(y AS TEXT), y / 3 > 673, COALESCE(y, 0) / 3 > 673 FROM t",
++                        ("2020", 1, 1),
++                    ),
++                    (
++                        "SELECT EXTRACT(YEAR FROM COALESCE(CAST(NULL AS DATE), DATE '2020-06-01'))",
++                        (2020,),
++                    ),
++                    (
++                        "SELECT CAST(EXTRACT(YEAR FROM DATE '2020-06-01') AS INTEGER) / 3 > 673",
++                        (0 if dialect == "postgres" else 1,),
++                    ),
++                    (
++                        "SELECT (EXTRACT(YEAR FROM DATE '2020-06-01') / 3) / 2 > 336.5",
++                        (1,),
++                    ),
++                ):
++                    with self.subTest(dialect=dialect, query=query):
++                        sql = parse_one(query, read=dialect).sql("sqlite")
++                        self.assertEqual(connection.execute(sql).fetchone(), expected)
++        finally:
++            connection.close()
++
++
++
+     def test_sqlite(self):
+         # Range operators (IN/LIKE) are left-associative and can be chained.
+         self.validate_identity("SELECT 1 IN (0) IN (1)")

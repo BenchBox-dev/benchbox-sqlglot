@@ -14,50 +14,93 @@
       "source": "eb360e1e2962b467ca093b9f6ab1000f9ced1a02",
       "status": "carried",
       "depends": [],
-      "paths": ["sqlglot/expressions/temporal.py", "sqlglot/generators/postgres.py", "sqlglot/optimizer/annotate_types.py", "sqlglot/parsers/postgres.py", "sqlglot/parsers/redshift.py", "tests/dialects/test_postgres.py", "tests/dialects/test_redshift.py", "tests/fixtures/optimizer/annotate_types.sql"],
-      "tests": ["tests.dialects.test_postgres", "tests.dialects.test_redshift", "tests.test_optimizer", "tests.test_serde"],
-      "reason": "Preserve PostgreSQL EXTRACT numeric and DATE_PART double semantics while retaining Redshift input-dependent typing."
+      "paths": [
+        "sqlglot/expressions/temporal.py",
+        "sqlglot/generators/postgres.py",
+        "sqlglot/optimizer/annotate_types.py",
+        "sqlglot/parsers/postgres.py",
+        "sqlglot/parsers/redshift.py",
+        "tests/dialects/test_postgres.py",
+        "tests/dialects/test_redshift.py",
+        "tests/fixtures/optimizer/annotate_types.sql"
+      ],
+      "tests": [
+        "tests.dialects.test_postgres",
+        "tests.dialects.test_redshift",
+        "tests.test_optimizer",
+        "tests.test_serde"
+      ],
+      "reason": "Preserve PostgreSQL EXTRACT numeric and DATE_PART double semantics while retaining Redshift input-dependent typing.",
+      "patch": "downstream/patches/postgres-extract-return-types.patch"
     },
     {
       "id": "sqlite-date-extraction",
       "source": "34cd3e9fdb29a4376023f9c6cd32932de07acd3d",
       "status": "carried",
-      "depends": ["postgres-extract-return-types"],
-      "paths": ["sqlglot/generators/sqlite.py", "tests/dialects/test_sqlite.py"],
-      "tests": ["tests.dialects.test_sqlite", "tests.test_optimizer"],
-      "reason": "Lower YEAR/MONTH/DAY extraction from typed DATE inputs, preserving source-aware division; reject unproved timestamp, unknown-input and DATE_PART lowering."
+      "depends": [
+        "postgres-extract-return-types"
+      ],
+      "paths": [
+        "sqlglot/generators/sqlite.py",
+        "tests/dialects/test_sqlite.py"
+      ],
+      "tests": [
+        "tests.dialects.test_sqlite",
+        "tests.test_optimizer"
+      ],
+      "reason": "Lower YEAR/MONTH/DAY extraction from typed DATE inputs, preserving source-aware division; reject unproved timestamp, unknown-input and DATE_PART lowering.",
+      "patch": "downstream/patches/sqlite-date-extraction.patch"
     },
     {
       "id": "sqlite-date-interval-arithmetic",
       "source": "b60935672d3fc52c4982077131d4cb5140a69b72",
       "status": "carried",
       "depends": [],
-      "paths": ["sqlglot/generators/sqlite.py", "tests/dialects/test_sqlite.py"],
-      "tests": ["tests.dialects.test_sqlite"],
-      "reason": "Lower typed DATE plus/minus whole DAY/HOUR/MINUTE/SECOND intervals; reject month/year, fractional, timestamp and unknown-input cases whose semantics are unproved."
+      "paths": [
+        "sqlglot/generators/sqlite.py",
+        "tests/dialects/test_sqlite.py"
+      ],
+      "tests": [
+        "tests.dialects.test_sqlite"
+      ],
+      "reason": "Lower typed DATE plus/minus whole DAY/HOUR/MINUTE/SECOND intervals; reject month/year, fractional, timestamp and unknown-input cases whose semantics are unproved.",
+      "patch": "downstream/patches/sqlite-date-interval-arithmetic.patch"
     },
     {
       "id": "singlestore-percentile-null-ordering",
       "source": "89c841a8f61e0d679af53bec7070fe5d4d3dab45",
       "status": "upstreamed",
-      "upstream": ["https://github.com/tobymao/sqlglot/pull/8352"],
-      "tests": ["tests.dialects.test_singlestore.TestSingleStore.test_percentile_null_ordering"],
+      "upstream": [
+        "https://github.com/tobymao/sqlglot/pull/8352"
+      ],
+      "tests": [
+        "tests.dialects.test_singlestore.TestSingleStore.test_percentile_null_ordering"
+      ],
       "reason": "The selected upstream base includes the dialect fix; BenchBox's separate mysql-target variant is not implicitly retired."
     },
     {
       "id": "pushdown-projections-setop-branch-width",
       "source": "143387a7f0d67ea6f4d3475f7c5fae952d2d6397",
       "status": "upstreamed",
-      "upstream": ["https://github.com/tobymao/sqlglot/pull/8325", "https://github.com/tobymao/sqlglot/pull/8440"],
-      "tests": ["tests.test_optimizer.TestOptimizer.test_pushdown_projections"],
+      "upstream": [
+        "https://github.com/tobymao/sqlglot/pull/8325",
+        "https://github.com/tobymao/sqlglot/pull/8440"
+      ],
+      "tests": [
+        "tests.test_optimizer.TestOptimizer.test_pushdown_projections"
+      ],
       "reason": "The selected base includes the fix and subsequent upstream algorithm replacement; do not restore the older implementation."
     },
     {
       "id": "qualified-star-except",
       "source": "c9fdb6ecc77b0ab7121e45339cdb87a88d98a63c",
       "status": "excluded",
-      "upstream": ["https://github.com/tobymao/sqlglot/pull/8247"],
-      "tests": ["tests.test_optimizer.TestOptimizer.test_qualify_columns"],
+      "upstream": [
+        "https://github.com/tobymao/sqlglot/pull/8247"
+      ],
+      "tests": [
+        "tests.test_optimizer.TestOptimizer.test_qualify_columns"
+      ],
       "reason": "Core source-qualified exclusions overlap upstream. The branch's broader unfinished nested-field design has not been accepted and is not claimed equivalent."
     }
   ]

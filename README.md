@@ -1,3 +1,11 @@
+## BenchBox maintained SQLGlot
+
+This fork provides the `benchbox-sqlglot` distribution and `benchbox_sqlglot`
+import namespace. See [package usage](downstream/README.md), the
+[patch manifest](downstream/patches.json) and the
+[maintenance guide](downstream/MAINTAINING.md). The upstream project overview
+and its source development instructions follow below.
+
 ![SQLGlot logo](sqlglot.png)
 
 SQLGlot is a no-dependency SQL parser, transpiler, optimizer, and engine. It can be used to format SQL or translate between [over 30 dialects](https://github.com/tobymao/sqlglot/blob/main/sqlglot/dialects/__init__.py) like [DuckDB](https://duckdb.org/), [Presto](https://prestodb.io/) / [Trino](https://trino.io/), [Spark](https://spark.apache.org/) / [Databricks](https://www.databricks.com/), [Snowflake](https://www.snowflake.com/en/), and [BigQuery](https://cloud.google.com/bigquery/). It aims to read a wide variety of SQL inputs and output syntactically and semantically correct SQL in the targeted dialects.

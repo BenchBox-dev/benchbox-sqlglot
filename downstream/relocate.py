@@ -17,6 +17,7 @@ RETAINED_STRINGS = {
 SUITE_EXCLUSIONS = {
     "test_downstream_contract.py": "Checks source manifest and workflow files, not the installed runtime.",
     "test_downstream_distribution.py": "Checks release tooling in the source repository.",
+    "test_downstream_release.py": "Checks owner approval and hosted publishing controls.",
     "test_downstream_refresh.py": "Checks source Git refresh operations.",
     "test_integration_loader.py": "Loads the optional private upstream integration repository.",
     "sqlglot": "Private integration discovery shim.",

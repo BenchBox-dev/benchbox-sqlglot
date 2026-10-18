@@ -1,0 +1,76 @@
+name: Publish BenchBox SQLGlot
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Immutable benchbox-vX.Y.Z.N tag for the approved source
+        required: true
+      candidate_run:
+        description: Successful BenchBox distribution push run on main
+        required: true
+      wheel_sha256:
+        description: Owner approved wheel SHA256
+        required: true
+      sdist_sha256:
+        description: Owner approved sdist SHA256
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: benchbox-sqlglot
+          path: dist/benchbox/
+          run-id: ${{ inputs.candidate_run }}
+          github-token: ${{ github.token }}
+      - name: Verify approved source, bytes and publishing controls
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run }}
+          WHEEL_HASH: ${{ inputs.wheel_sha256 }}
+          SDIST_HASH: ${{ inputs.sdist_sha256 }}
+        run: >-
+          uv run --no-project -- python -m downstream.release
+          --dist-dir dist/benchbox --tag "$RELEASE_TAG"
+          --candidate-run "$CANDIDATE_RUN"
+          --wheel-sha256 "$WHEEL_HASH" --sdist-sha256 "$SDIST_HASH"
+      - run: make benchbox-upstream-tag
+      - run: uv run --no-project --with setuptools==80.9.0 --with wheel==0.45.1 -- python -c "import setuptools, wheel"
+      - run: make benchbox-check
+      - uses: actions/upload-artifact@v4
+        with:
+          name: approved-benchbox-sqlglot
+          path: dist/benchbox/
+          retention-days: 30
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: benchbox-sqlglot-pypi
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: approved-benchbox-sqlglot
+          path: dist/benchbox/
+      - name: Keep only approved Python distributions in the upload directory
+        run: mkdir upload && cp dist/benchbox/*.whl dist/benchbox/*.tar.gz upload/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: upload/
