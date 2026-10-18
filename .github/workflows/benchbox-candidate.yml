@@ -1,0 +1,74 @@
+name: BenchBox distribution
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+      - run: make benchbox-upstream-tag benchbox-dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchbox-sqlglot
+          path: dist/benchbox/
+          retention-days: 30
+          if-no-files-found: error
+  wheel-smoke:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.11', '3.12', '3.13', '3.14']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: benchbox-sqlglot
+          path: dist/benchbox/
+      - run: uv run --no-project -- python -m downstream.verify --dist-dir dist/benchbox
+  installed-suite:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: benchbox-sqlglot
+          path: dist/benchbox/
+      - run: uv run --no-project -- python -m downstream.verify --dist-dir dist/benchbox --full
+  sdist-coexistence:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: benchbox-sqlglot
+          path: dist/benchbox/
+      - run: uv run --no-project --with setuptools==80.9.0 --with wheel==0.45.1 -- python -c "import setuptools, wheel"
+      - run: make benchbox-upstream-tag
+      - run: uv run --no-project -- python -m downstream.verify --dist-dir dist/benchbox --sdist
