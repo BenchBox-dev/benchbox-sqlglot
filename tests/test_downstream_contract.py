@@ -41,6 +41,10 @@ class TestDownstreamContract(unittest.TestCase):
         publishers = []
         for path in (root / ".github" / "workflows").glob("*.yml"):
             with self.subTest(workflow=path.name):
+                self.assertNotIn(
+                    path.name,
+                    {"package-publish.yml", "run-integration-tests.yml", "benchmark-sqlglot.yml"},
+                )
                 workflow = yaml.safe_load(path.read_text())
                 triggers = workflow.get("on", workflow.get(True))
                 self.assertNotIn("pull_request_target", triggers)
@@ -50,7 +54,7 @@ class TestDownstreamContract(unittest.TestCase):
                     for scope in ("contents", "pull-requests"):
                         self.assertNotEqual(job.get("permissions", {}).get(scope), "write")
                     for step in job.get("steps", []):
-                        self.assertNotIn("owner: fivetran", str(step))
+                        self.assertNotEqual(step.get("with", {}).get("owner"), "fivetran")
                         self.assertNotRegex(step.get("run", ""), r"twine\s+upload|git\s+push")
                         if step.get("uses", "").startswith("pypa/gh-action-pypi-publish@"):
                             publishers.append(path.name)
