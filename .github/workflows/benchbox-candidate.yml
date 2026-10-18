@@ -19,7 +19,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.12'
-      - run: make benchbox-dist
+      - run: make benchbox-upstream-tag benchbox-dist
       - uses: actions/upload-artifact@v4
         with:
           name: benchbox-sqlglot
@@ -70,4 +70,5 @@ jobs:
           name: benchbox-sqlglot
           path: dist/benchbox/
       - run: uv run --no-project --with setuptools==80.9.0 --with wheel==0.45.1 -- python -c "import setuptools, wheel"
+      - run: make benchbox-upstream-tag
       - run: uv run --no-project -- python -m downstream.verify --dist-dir dist/benchbox --sdist

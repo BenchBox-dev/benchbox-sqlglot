@@ -20,6 +20,31 @@ def git(root: Path, *args: str) -> str:
     return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
 
 
+def fetch_upstream_tag(root: Path) -> None:
+    manifest = json.loads((root / "downstream/patches.json").read_text())
+    repository, tag = manifest["upstream"]["repository"], manifest["upstream"]["tag"]
+    if repository != "https://github.com/tobymao/sqlglot" or not re.fullmatch(
+        r"v\d+\.\d+\.\d+", tag
+    ):
+        raise ValueError("Unexpected upstream repository or tag")
+    ref = "refs/tags/" + tag
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "fetch",
+            "--no-tags",
+            "--no-recurse-submodules",
+            repository,
+            f"{ref}:{ref}",
+        ],
+        check=True,
+    )
+    if git(root, "rev-parse", ref + "^{commit}") != manifest["upstream"]["sha"]:
+        raise ValueError("Fetched upstream tag does not match the recorded SHA")
+
+
 def stage(root: Path, destination: Path, *, allow_dirty: bool = False) -> dict:
     manifest = json.loads((root / "downstream/patches.json").read_text())
     if (
@@ -126,7 +151,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out-dir", type=Path, default=ROOT / "dist/benchbox")
     parser.add_argument("--allow-dirty", action="store_true")
+    parser.add_argument("--fetch-upstream-tag", action="store_true")
     args = parser.parse_args()
+    if args.fetch_upstream_tag:
+        fetch_upstream_tag(ROOT)
+        return
     build(ROOT, args.out_dir, allow_dirty=args.allow_dirty)
 
 
