@@ -72,3 +72,29 @@ class TestDownstreamContract(unittest.TestCase):
                                 any(s.get("run") == "make benchbox-check" for s in verifier)
                             )
         self.assertEqual(publishers, ["benchbox-release.yml"])
+
+    def test_artifact_ci_is_bounded_and_retained(self):
+        root = Path(__file__).resolve().parents[1]
+        workflow = yaml.safe_load((root / ".github/workflows/benchbox-candidate.yml").read_text())
+        jobs = workflow["jobs"]
+        self.assertEqual(
+            set(jobs), {"build", "wheel-smoke", "installed-suite", "sdist-coexistence"}
+        )
+        self.assertEqual(
+            jobs["wheel-smoke"]["strategy"]["matrix"]["python"], ["3.11", "3.12", "3.13", "3.14"]
+        )
+        for name in ("wheel-smoke", "installed-suite", "sdist-coexistence"):
+            self.assertEqual(jobs[name]["needs"], "build")
+        self.assertTrue(
+            any("--full" in step.get("run", "") for step in jobs["installed-suite"]["steps"])
+        )
+        self.assertTrue(
+            any("--sdist" in step.get("run", "") for step in jobs["sdist-coexistence"]["steps"])
+        )
+        uploads = [
+            step
+            for step in jobs["build"]["steps"]
+            if step.get("uses", "").startswith("actions/upload-artifact@")
+        ]
+        self.assertEqual(len(uploads), 1)
+        self.assertEqual(uploads[0]["with"]["retention-days"], 30)

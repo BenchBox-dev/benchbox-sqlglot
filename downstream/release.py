@@ -12,6 +12,29 @@ from downstream.build import ROOT, git
 from downstream.verify import inspect_artifacts
 
 
+def validate_sequence(version: str, tags: list[str]) -> None:
+    current = tuple(map(int, version.split(".")))
+    previous = [
+        tuple(map(int, tag.removeprefix("benchbox-v").split(".")))
+        for tag in tags
+        if re.fullmatch(r"benchbox-v\d+\.\d+\.\d+\.[1-9]\d*", tag) and tag != "benchbox-v" + version
+    ]
+    if not previous:
+        if current[-1] != 1:
+            raise ValueError(
+                "The first release on an upstream base starts at downstream revision one"
+            )
+        return
+    latest = max(previous)
+    if current[:3] < latest[:3]:
+        raise ValueError("Published upstream bases cannot regress")
+    expected = latest[-1] + 1 if current[:3] == latest[:3] else 1
+    if current[-1] != expected:
+        raise ValueError(
+            "Increment the downstream revision on the same base; reset it on a new base"
+        )
+
+
 def validate(directory: Path, tag: str, wheel_hash: str, sdist_hash: str) -> None:
     wheel, sdist, provenance = inspect_artifacts(directory)
     if tag != "benchbox-v" + provenance["version"]:
@@ -20,6 +43,7 @@ def validate(directory: Path, tag: str, wheel_hash: str, sdist_hash: str) -> Non
         raise ValueError("Release tag must identify the exact verified source commit")
     if git(ROOT, "rev-parse", "HEAD") != provenance["fork_sha"]:
         raise ValueError("Release checkout and artifact provenance disagree")
+    validate_sequence(provenance["version"], git(ROOT, "tag", "--list", "benchbox-v*").splitlines())
     for artifact, expected in [(wheel, wheel_hash), (sdist, sdist_hash)]:
         if not re.fullmatch(r"[a-f0-9]{64}", expected):
             raise ValueError("Approval must name both exact SHA256 hashes")

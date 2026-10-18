@@ -3,10 +3,28 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from downstream.release import publishing_environment, validate
+from downstream.release import publishing_environment, validate, validate_sequence
 
 
 class TestDownstreamRelease(unittest.TestCase):
+    def test_release_revision_sequence(self):
+        for version, tags in [
+            ("30.23.0.1", []),
+            ("30.23.0.1", ["benchbox-v30.23.0.1"]),
+            ("30.23.0.2", ["benchbox-v30.23.0.1"]),
+            ("30.24.0.1", ["benchbox-v30.23.0.9"]),
+        ]:
+            with self.subTest(version=version, tags=tags):
+                validate_sequence(version, tags)
+        for version, tags in [
+            ("30.23.0.2", []),
+            ("30.23.0.4", ["benchbox-v30.23.0.1"]),
+            ("30.24.0.2", ["benchbox-v30.23.0.9"]),
+            ("30.22.0.1", ["benchbox-v30.23.0.9"]),
+        ]:
+            with self.subTest(version=version, tags=tags), self.assertRaises(ValueError):
+                validate_sequence(version, tags)
+
     def test_publication_rejects_changed_approval_hash(self):
         with tempfile.TemporaryDirectory() as temporary:
             wheel = Path(temporary) / "artifact.whl"
