@@ -52,6 +52,15 @@ below); the key clauses are not part of any other engine's grammar, so they cann
 `tests/test_questdb_execution.py` runs in the `questdb` job: it executes the QuestDB
 generator's comma-join expansion, `DATEADD`, `SUBSTRING` and CTE column list output.
 
+`tests/test_engine_rewrites_execution.py` runs in the `in-process`, `starrocks` and `doris` jobs. On chDB it
+executes the ClickHouse rewrites (lowercased identifiers, decimal zero literals with the zero-divisor
+`NULLIF`, `SETTINGS`, the `IN` form of a correlated `EXISTS`, derived table aliases); on DuckDB it compares
+the `EXISTS` and `IN` forms row for row (including NULL keys and duplicates) and runs the qualified `ORDER BY`;
+on StarRocks and Doris it executes derived table aliasing, every reserved alias word the BenchBox StarRocks
+rewrite quoted, ANSI `SUBSTRING ... FROM ... FOR` and double-quoted identifiers as the dialect writes them. All
+four engines and DuckDB also run the Netezza `+ N days` durations. ClickHouse server-only behavior is not
+covered (see below); the chDB engine runs the same planner and analyzer.
+
 ## Writing an engine test
 
 ```python

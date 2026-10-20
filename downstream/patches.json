@@ -343,7 +343,7 @@
         "tests.test_sqlite_idioms_execution",
         "tests.test_regexp_replace_execution"
       ],
-      "reason": "The Netezza parser reads the SQLite date idioms (DATE('now' [, '-N days']), JULIANDAY(a) - JULIANDAY(b), a lone JULIANDAY) as portable date nodes so every target writes its own form; execution tests run them on SQLite, DuckDB, DataFusion, chDB, PySpark, Postgres, StarRocks and Doris and run a REGEXP_REPLACE with a non-capturing group on chDB, DuckDB, DataFusion and Postgres. The Netezza dialect module and its tests stay in platform-dialect-modules."
+      "reason": "The Netezza parser reads the SQLite date idioms (DATE('now' [, '-N days']), JULIANDAY(a) - JULIANDAY(b), a lone JULIANDAY) as portable date nodes so every target writes its own form; execution tests run them on SQLite, DuckDB, DataFusion, chDB, PySpark, Postgres, StarRocks and Doris and run a REGEXP_REPLACE with a non-capturing group on chDB, DuckDB, DataFusion and Postgres. The parser also reads `<expr> +/- N days` as a day interval, which TPC-DS Netezza templates use. The Netezza dialect module and its tests stay in platform-dialect-modules."
     },
     {
       "id": "benchbox-ddl",
@@ -361,6 +361,39 @@
         "tests.test_benchbox_ddl"
       ],
       "reason": "DdlOptions and transpile_ddl in the benchbox package: frozen options strip primary keys, foreign keys and unique constraints, write CREATE OR REPLACE TABLE, rename column types, and add SingleStore SHARD KEY, SORT KEY and REFERENCE TABLE clauses from caller-supplied tables and columns; tests execute the stripped and unstripped schemas on SQLite, DuckDB and Postgres."
+    },
+    {
+      "id": "engine-rewrites",
+      "source": "6377b407c1c0c10a3bf4048b4b404bc3795b9ff9",
+      "status": "original",
+      "depends": [
+        "benchbox-rewrites",
+        "netezza-sqlite-idioms"
+      ],
+      "paths": [
+        "sqlglot/benchbox/engine_rewrites.py",
+        "tests/test_benchbox_engine_rewrites.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_engine_rewrites"
+      ],
+      "reason": "Expression rewrites for engines that reject SQL their peers accept, with every gate passed as an argument: lowercase_identifiers and decimal_zero_literals and add_query_settings for ClickHouse (division reuses safe_division), correlated_exists_to_in (fails closed on an unexpected count), add_derived_table_aliases for StarRocks and Doris, and qualify_order_by_columns for ambiguous ORDER BY columns. The Netezza `+/- N days` reading lives in netezza-sqlite-idioms' parser and is tested here."
+    },
+    {
+      "id": "engine-rewrites-execution",
+      "source": "5c985ce15a4cf6aa2ae973efc9d9c19222260574",
+      "status": "original",
+      "depends": [
+        "real-engine-ci",
+        "engine-rewrites"
+      ],
+      "paths": [
+        "tests/test_engine_rewrites_execution.py"
+      ],
+      "tests": [
+        "tests.test_engine_rewrites_execution"
+      ],
+      "reason": "Execute the engine rewrites: ClickHouse rewrites on chDB, EXISTS versus IN row equality and qualified ORDER BY on DuckDB, derived table aliases, reserved alias words, ANSI SUBSTRING and quoted identifiers on StarRocks and Doris, and Netezza day durations on DuckDB, chDB, StarRocks and Doris."
     }
   ]
 }

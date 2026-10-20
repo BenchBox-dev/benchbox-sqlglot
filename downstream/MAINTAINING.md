@@ -156,6 +156,15 @@ exists in the fork. The module and `tests/test_benchbox_ddl.py` are the `origina
 Engine-specific DDL (ClickHouse, Doris, StarRocks, Hive, Redshift, Delta, Iceberg, BigQuery key
 enforcement and qualification) is not part of it and is added to `DdlOptions` by its own change.
 
+Engine rewrites (`sqlglot/benchbox/engine_rewrites.py`, an `original` file with its tests in the
+`engine-rewrites` entry) follow the same rule: nothing in them names a benchmark, a query or a table.
+The ClickHouse pipeline BenchBox runs after generation is `lowercase_identifiers`,
+`decimal_zero_literals`, `safe_division(..., "clickhouse")` and `add_query_settings`; the TPC-DS
+Q10/Q35 override is `correlated_exists_to_in` with `expected` set, and the Q58 ambiguity fix is
+`qualify_order_by_columns` with the column and source passed in. Which query gets which rewrite, the
+identifier patterns and the settings values are BenchBox data. `tests/test_engine_rewrites_execution.py`
+runs them on chDB, DuckDB, StarRocks and Doris.
+
 ## Platform dialects
 
 The fork adds `netezza`, `greenplum`, `vertica`, `datafusion` and `questdb`, each a

@@ -79,6 +79,29 @@ The adapter rewrites in the same module are:
 - `flag_comparisons_to_boolean(expression, columns, use_is=False)` rewrites `flag = 1` and
   `flag = 0` for the named columns into `= TRUE`/`= FALSE` (or `IS TRUE`/`IS FALSE`).
 
+`sqlglot.benchbox.engine_rewrites` holds the rewrites for engines that reject SQL their peers accept. Each
+takes an expression and options (every name or number it matches is an argument) and returns a copy:
+
+- `lowercase_identifiers(expression, patterns)` lowercases identifiers whose whole name matches a pattern
+  (ClickHouse compares identifier case-sensitively); string literals are never touched.
+- `decimal_zero_literals(expression, precision=15, scale=2)` replaces `0.0` with `CAST(0 AS DECIMAL(p, s))`
+  inside `COALESCE`, arithmetic with a column and `THEN`/`ELSE` results, so ClickHouse does not mix `Float64`
+  with decimals. ClickHouse division by zero reuses `safe_division(expression, "clickhouse")`.
+- `add_query_settings(expression, settings)` appends `SETTINGS name = value, ...` to a top-level ClickHouse
+  query and replaces a setting the query already carries.
+- `correlated_exists_to_in(expression, expected=None)` turns `EXISTS (SELECT ... WHERE outer.k = inner.k ...)`
+  that sits under `AND`/`OR` only into `outer.k IN (SELECT inner.k ...)`; `expected` raises `ValueError` when
+  the number of rewrites differs, so a query of an unexpected shape fails closed.
+- `add_derived_table_aliases(expression, prefix="_sq", quoted=True)` aliases unaliased derived tables, which
+  StarRocks and Doris require.
+- `qualify_order_by_columns(expression, qualifiers)` qualifies an unqualified `ORDER BY` column with the source
+  named for it, for queries whose joined sources expose the same column.
+
+StarRocks and Doris need no generator change: both already quote the reserved words that fail as aliases
+(checked unquoted on StarRocks 4.0.16 and Doris 4.1.3), write `SUBSTRING(x FROM a FOR b)` as
+`SUBSTRING(x, a, b)` and quote identifiers with backticks. The Netezza parser reads `<expr> + N days` and
+`<expr> - N days` (also `DAY`) as day intervals.
+
 The Databricks generator also drops ordering (`ASC`, `DESC`, `NULLS FIRST`, `NULLS LAST`) from
 `PRIMARY KEY` columns, which Databricks rejects, and its parser accepts that ordering.
 
