@@ -5,6 +5,7 @@ import typing as t
 
 from sqlglot import exp
 from sqlglot.parsers.postgres import PostgresParser
+from sqlglot.tokens import TokenType
 
 _RELATIVE_DAYS = re.compile(r"\s*([+-]?)\s*(\d+)\s+(day|month|year)s?\s*", re.IGNORECASE)
 _UNIX_EPOCH_JULIAN_DAY = 2440588
@@ -55,6 +56,22 @@ class NetezzaParser(PostgresParser):
         "DATE": _build_date,
         "JULIANDAY": _build_julianday,
     }
+
+    def _parse_factor(self, parse_mod: bool = True) -> exp.Expr | None:
+        start = self._index
+        this = super()._parse_factor(parse_mod=parse_mod)
+        if (
+            isinstance(this, exp.Literal)
+            and this.is_number
+            and this.name.isdigit()
+            and start > 0
+            and self._tokens[start - 1].token_type in (TokenType.PLUS, TokenType.DASH)
+            and self._curr
+            and self._curr.text.upper() in ("DAY", "DAYS")
+        ):
+            self._advance()
+            return exp.Interval(this=exp.Literal.string(this.name), unit=exp.var("DAY"))
+        return this
 
     def _parse_term(self, parse_mod: bool = True) -> exp.Expr | None:
         this = super()._parse_term(parse_mod=parse_mod)
