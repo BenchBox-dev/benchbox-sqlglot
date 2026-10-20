@@ -37,6 +37,13 @@ BigQuery `SAFE_DIVIDE` and Snowflake's `NULLIF` form are not executed in their o
 (see the BigQuery and Snowflake rows above); Databricks `PRIMARY KEY` is checked only for
 syntax on PySpark, which parses it and then rejects it as an unsupported constraint, so
 Delta constraint enforcement stays a managed-service gap.
+`tests/test_sqlite_idioms_execution.py` runs the Netezza-read SQLite date idioms on SQLite, DuckDB,
+DataFusion, chDB, PySpark and Postgres in those two jobs, and on StarRocks and Doris in their jobs.
+`tests/test_regexp_replace_execution.py` runs a ClickHouse `REGEXP_REPLACE` with a non-capturing group
+on chDB, DuckDB, DataFusion and Postgres; the Snowflake form (capturing groups, renumbered references)
+has no Snowflake engine, so it is run on DuckDB's RE2, chDB and Python's `re` instead, which agree with
+the original, and its output text is asserted (see the Snowflake row above). Spark and Databricks read
+`\1` in a replacement as the digit 1 (they expect `$1`); that is not changed by this slice.
 `tests/test_questdb_execution.py` runs in the `questdb` job: it executes the QuestDB
 generator's comma-join expansion, `DATEADD`, `SUBSTRING` and CTE column list output.
 

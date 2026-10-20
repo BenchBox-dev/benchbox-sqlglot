@@ -166,6 +166,15 @@ constructs QuestDB rejects in a form it runs: comma joins become explicit joins,
 length is given) and a CTE column list moves into the query's aliases. Each is proved
 by `tests/test_questdb_execution.py` on the `questdb` job's container.
 
+The Netezza parser (`sqlglot/parsers/netezza.py`, an `original` file) reads `DATE('now' ...)`
+and `JULIANDAY` into portable date nodes, so no target generator needs to know the SQLite
+spelling: `JULIANDAY(a) - JULIANDAY(b)` is recognized at the subtraction, and a lone
+`JULIANDAY(x)` is `DATEDIFF(DAY, DATE '1970-01-01', x) + 2440588`. The SQLite generator needs two
+fixes to write those nodes back (`DATEDIFF` in `DAY` units, and `DATE_SUB`), carried as
+`sqlite-date-day-arithmetic`. The Snowflake `REGEXP_REPLACE` group renumbering is the carried patch
+`snowflake-regexp-replace-groups`. `tests/test_sqlite_idioms_execution.py` and
+`tests/test_regexp_replace_execution.py` execute them.
+
 `ansi` and `standard` are not dialects the fork provides, and the fork has no alias
 dialects. The caller resolves them before calling SQLGlot: BenchBox's platform
 registry maps `ansi` and `standard` (and every platform name) to a dialect that
