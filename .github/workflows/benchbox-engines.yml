@@ -118,7 +118,7 @@ jobs:
           uv venv
           uv pip install -e . -r downstream/engines-requirements.txt
       - run: .venv/bin/python -m tests.engines wait questdb 180
-      - run: .venv/bin/python -m unittest tests.test_engines -v
+      - run: .venv/bin/python -m unittest tests.test_engines tests.test_questdb_execution -v
 
   starrocks:
     runs-on: ubuntu-latest

@@ -150,6 +150,13 @@ Registration (the `Dialects` enum and `DIALECTS`) edits
 upstream-owned files and is the carried patch `platform-dialects`; the dialect
 modules and their tests are the `original` entry `platform-dialect-modules`.
 
+The QuestDB generator (`sqlglot/generators/questdb.py`, an `original` file) writes the
+constructs QuestDB rejects in a form it runs: comma joins become explicit joins,
+`x +/- INTERVAL 'n' DAY|MONTH|YEAR` becomes `DATEADD('d'|'M'|'y', +/-n, x)`,
+`SUBSTRING(x FROM a [FOR b])` becomes `SUBSTRING(x, a, b)` (the length of `x` when no
+length is given) and a CTE column list moves into the query's aliases. Each is proved
+by `tests/test_questdb_execution.py` on the `questdb` job's container.
+
 `ansi` and `standard` are not dialects the fork provides, and the fork has no alias
 dialects. The caller resolves them before calling SQLGlot: BenchBox's platform
 registry maps `ansi` and `standard` (and every platform name) to a dialect that

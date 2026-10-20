@@ -28,6 +28,8 @@ so a missing package or an unreachable container fails the job.
 `tests/test_platform_dialects_engines.py` runs in the `in-process` and `postgres` jobs
 next to the seed tests: it executes DataFusion dialect output and the date
 arithmetic rewrite.
+`tests/test_questdb_execution.py` runs in the `questdb` job: it executes the QuestDB
+generator's comma-join expansion, `DATEADD`, `SUBSTRING` and CTE column list output.
 
 ## Writing an engine test
 
