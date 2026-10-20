@@ -344,6 +344,23 @@
         "tests.test_regexp_replace_execution"
       ],
       "reason": "The Netezza parser reads the SQLite date idioms (DATE('now' [, '-N days']), JULIANDAY(a) - JULIANDAY(b), a lone JULIANDAY) as portable date nodes so every target writes its own form; execution tests run them on SQLite, DuckDB, DataFusion, chDB, PySpark, Postgres, StarRocks and Doris and run a REGEXP_REPLACE with a non-capturing group on chDB, DuckDB, DataFusion and Postgres. The Netezza dialect module and its tests stay in platform-dialect-modules."
+    },
+    {
+      "id": "benchbox-ddl",
+      "source": "555e0da29ca6c89ca0876932f3eec4b4852c4450",
+      "status": "original",
+      "depends": [
+        "real-engine-ci",
+        "benchbox-rewrites"
+      ],
+      "paths": [
+        "sqlglot/benchbox/ddl.py",
+        "tests/test_benchbox_ddl.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_ddl"
+      ],
+      "reason": "DdlOptions and transpile_ddl in the benchbox package: frozen options strip primary keys, foreign keys and unique constraints, write CREATE OR REPLACE TABLE, rename column types, and add SingleStore SHARD KEY, SORT KEY and REFERENCE TABLE clauses from caller-supplied tables and columns; tests execute the stripped and unstripped schemas on SQLite, DuckDB and Postgres."
     }
   ]
 }

@@ -90,3 +90,31 @@ the SQLite generator writes `DATE(...)` and `JULIANDAY` back. Other dialects rea
 plain functions, as before. The Snowflake generator rewrites a `REGEXP_REPLACE` pattern that has
 non-capturing groups `(?:...)` into capturing groups and renumbers the `\N` references in the
 replacement, because Snowflake's regular expression syntax lacks non-capturing groups.
+
+## DDL
+
+`sqlglot.benchbox.ddl.transpile_ddl(sql, read, write, options=None, **generator_options)` translates
+DDL statements and returns one string per statement. What it changes besides the dialect spelling is
+set by `DdlOptions`, a frozen dataclass whose fields all default to off:
+
+| Field | Type | Effect |
+|---|---|---|
+| `strip_primary_keys` | `bool` | removes inline and table-level `PRIMARY KEY`, named or not |
+| `strip_foreign_keys` | `bool` | removes `FOREIGN KEY` and inline `REFERENCES`, with their `ON DELETE`/`ON UPDATE` actions |
+| `strip_unique` | `bool` | removes inline and table-level `UNIQUE` |
+| `or_replace` | `bool` | `CREATE TABLE` becomes `CREATE OR REPLACE TABLE` (not temporary tables, not `IF NOT EXISTS`) |
+| `replace_if_not_exists` | `bool` | with `or_replace`, also replaces `CREATE TABLE IF NOT EXISTS` |
+| `type_map` | `Mapping[str, str]` | column type name to the type written instead (`{"DECIMAL": "NUMERIC"}`), parameters kept |
+| `drop_type_parameters` | `Collection[str]` | replacement types written without parameters (`["TEXT"]`) |
+| `singlestore` | `SingleStoreKeys \| None` | SingleStore key clauses, below |
+
+`SingleStoreKeys` (also frozen) carries the benchmark data the fork must not know: `shard_keys` and
+`sort_keys` (table name to column or columns), `reference_tables` (written as `CREATE REFERENCE TABLE`
+without keys) and `random_shard_key` (write `SHARD KEY ()` for a table with neither a mapped shard key
+nor a primary key). Table names match case-insensitively and without a schema qualifier, and
+`shard_key_clause` and `sort_key_clause` write a single clause. Stripping happens before the other
+options, so a primary key removed by `strip_primary_keys` does not stop `SHARD KEY ()`.
+
+Constraint stripping, replacement and type renaming act on the parsed statement, so `CHECK`
+constraints, defaults and everything else are kept. Statements that are not `CREATE TABLE` are only
+translated.

@@ -39,7 +39,7 @@ jobs:
       - name: PySpark needs Java 17
         run: echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
       - run: .venv/bin/python -m tests.engines status
-      - run: .venv/bin/python -m unittest tests.test_engines tests.test_platform_dialects_engines tests.test_benchbox_adapter_rewrites_engines tests.test_sqlite_idioms_execution tests.test_regexp_replace_execution -v
+      - run: .venv/bin/python -m unittest tests.test_engines tests.test_platform_dialects_engines tests.test_benchbox_adapter_rewrites_engines tests.test_sqlite_idioms_execution tests.test_regexp_replace_execution tests.test_benchbox_ddl -v
 
   postgres:
     runs-on: ubuntu-latest
@@ -70,7 +70,7 @@ jobs:
           uv venv
           uv pip install -e . -r downstream/engines-requirements.txt
       - run: .venv/bin/python -m tests.engines wait postgres 120
-      - run: .venv/bin/python -m unittest tests.test_engines tests.test_platform_dialects_engines tests.test_benchbox_adapter_rewrites_engines tests.test_sqlite_idioms_execution tests.test_regexp_replace_execution -v
+      - run: .venv/bin/python -m unittest tests.test_engines tests.test_platform_dialects_engines tests.test_benchbox_adapter_rewrites_engines tests.test_sqlite_idioms_execution tests.test_regexp_replace_execution tests.test_benchbox_ddl -v
 
   trino:
     runs-on: ubuntu-latest
