@@ -433,6 +433,24 @@
         "tests.test_benchbox_compat_engines"
       ],
       "reason": "Engine-compatibility rewrites in sqlglot.benchbox.compat (alias inlining, column qualification by name, one-row sources for FROM-less selects, FILTER removal for BigQuery, ClickHouse and others, literal-subquery naming and VALUES, grouped scalar subqueries, ordered list aggregates, window NULL ordering reset) with every gate an argument, the DataFusion generator that drops an unsupported GROUP BY (), and execution tests on Postgres, DuckDB, DataFusion, PySpark and chDB."
+    },
+    {
+      "id": "benchbox-subqueries",
+      "source": "fdf569dec6aafcbee1d1d0585ca8ffa718453929",
+      "status": "original",
+      "depends": [
+        "real-engine-ci"
+      ],
+      "paths": [
+        "sqlglot/benchbox/subqueries.py",
+        "tests/test_benchbox_subqueries.py",
+        "tests/test_benchbox_subqueries_engines.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_subqueries",
+        "tests.test_benchbox_subqueries_engines"
+      ],
+      "reason": "Subquery rewrites in sqlglot.benchbox.subqueries for engines that plan subqueries badly or wrongly: NOT IN to NOT EXISTS for columns the caller says are never NULL, IN over a grouped subquery to EXISTS, and decorrelation (SQLGlot's unnest_subqueries after column qualification from a caller-passed schema and comma-join to CROSS JOIN conversion, skipping subqueries correlated by anything but equality), with execution tests on Postgres, DuckDB, DataFusion and PySpark."
     }
   ]
 }
