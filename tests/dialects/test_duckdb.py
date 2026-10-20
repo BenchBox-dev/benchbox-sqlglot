@@ -41,6 +41,57 @@ class TestDuckDB(Validator):
             with self.subTest(keyword=keyword):
                 self.assertEqual(exp.column(keyword).sql("duckdb"), f'"{keyword}"')
 
+    def test_order_by_all(self):
+        # Dialects without the ORDER BY ALL keyword parse ALL as a column; DuckDB must
+        # still emit the keyword, with or without identifier quoting.
+        for identify, sql in (
+            (False, "SELECT x FROM t GROUP BY ALL ORDER BY ALL"),
+            (True, 'SELECT "x" FROM "t" GROUP BY ALL ORDER BY ALL'),
+        ):
+            self.validate_all(
+                sql,
+                read={
+                    "duckdb": "SELECT x FROM t GROUP BY ALL ORDER BY ALL",
+                    "postgres": "SELECT x FROM t GROUP BY ALL ORDER BY ALL",
+                },
+                identify=identify,
+            )
+        self.validate_all(
+            'SELECT "x" FROM "t" ORDER BY ALL',
+            read={"postgres": "SELECT x FROM t ORDER BY ALL"},
+            identify=True,
+        )
+        self.validate_all(
+            "SELECT x FROM t ORDER BY ALL DESC NULLS FIRST",
+            read={"postgres": "SELECT x FROM t ORDER BY ALL DESC"},
+        )
+        self.validate_all(
+            "SELECT x FROM t UNION ALL SELECT x FROM u ORDER BY ALL",
+            read={"postgres": "SELECT x FROM t UNION ALL SELECT x FROM u ORDER BY ALL"},
+        )
+        self.validate_all(
+            "SELECT x FROM (SELECT x FROM t ORDER BY ALL) AS s",
+            read={"postgres": "SELECT x FROM (SELECT x FROM t ORDER BY ALL) s"},
+        )
+
+        # Anything that is not the sole ORDER BY item of a query stays a quoted column.
+        for sql in (
+            'SELECT 1 AS "ALL" ORDER BY "ALL"',
+            'SELECT x FROM t ORDER BY "ALL", x',
+            'SELECT SUM(x) OVER (ORDER BY "ALL") FROM t',
+            'SELECT x FROM t ORDER BY t."ALL"',
+        ):
+            with self.subTest(sql=sql):
+                self.validate_all(sql, read={"postgres": sql})
+        self.validate_all(
+            'SELECT x FROM t ORDER BY "ALL", x',
+            read={"postgres": "SELECT x FROM t ORDER BY ALL, x"},
+        )
+        self.validate_all(
+            'SELECT SUM(x) OVER (ORDER BY "ALL") FROM t',
+            read={"postgres": "SELECT SUM(x) OVER (ORDER BY ALL) FROM t"},
+        )
+
     def test_duckdb(self):
         self.validate_identity("TRUNC(3.14)").assert_is(exp.Trunc)
         self.validate_all(
