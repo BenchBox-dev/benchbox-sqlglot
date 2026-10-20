@@ -394,6 +394,45 @@
         "tests.test_engine_rewrites_execution"
       ],
       "reason": "Execute the engine rewrites: ClickHouse rewrites on chDB, EXISTS versus IN row equality and qualified ORDER BY on DuckDB, derived table aliases, reserved alias words, ANSI SUBSTRING and quoted identifiers on StarRocks and Doris, and Netezza day durations on DuckDB, chDB, StarRocks and Doris."
+    },
+    {
+      "id": "empty-group-by-generator",
+      "source": "355725b7ee694ee067b92f0f8eaf058d9be0f558",
+      "status": "carried",
+      "depends": [],
+      "paths": [
+        "sqlglot/generator.py",
+        "sqlglot/generators/snowflake.py",
+        "sqlglot/generators/spark2.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_generators"
+      ],
+      "reason": "A SUPPORTS_EMPTY_GROUP_BY generator flag, off for Snowflake and Spark (and Databricks, which inherits it): a global aggregate (one with an aggregate or HAVING) drops its GROUP BY (), which those engines reject, and any other GROUP BY () warns as unsupported. The DataFusion generator turns the flag off in its own file.",
+      "patch": "downstream/patches/empty-group-by-generator.patch"
+    },
+    {
+      "id": "engine-compat-rewrites",
+      "source": "427bfc5df7ea81e089fb67abf4cfd94b5964edd5",
+      "status": "original",
+      "depends": [
+        "real-engine-ci",
+        "platform-dialect-modules",
+        "empty-group-by-generator"
+      ],
+      "paths": [
+        "sqlglot/benchbox/compat.py",
+        "sqlglot/generators/datafusion.py",
+        "tests/test_benchbox_compat.py",
+        "tests/test_benchbox_compat_engines.py",
+        "tests/test_benchbox_generators.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_compat",
+        "tests.test_benchbox_generators",
+        "tests.test_benchbox_compat_engines"
+      ],
+      "reason": "Engine-compatibility rewrites in sqlglot.benchbox.compat (alias inlining, column qualification by name, one-row sources for FROM-less selects, FILTER removal for BigQuery, ClickHouse and others, literal-subquery naming and VALUES, grouped scalar subqueries, ordered list aggregates, window NULL ordering reset) with every gate an argument, the DataFusion generator that drops an unsupported GROUP BY (), and execution tests on Postgres, DuckDB, DataFusion, PySpark and chDB."
     }
   ]
 }
