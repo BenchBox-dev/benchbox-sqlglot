@@ -5,6 +5,9 @@ connected to, so importing this module (and test collection) never requires
 an optional engine. The fork uses ``unittest``, so skipping is exposed as a
 decorator rather than a pytest marker.
 
+Install the engine packages with
+``pip install -r downstream/engines-requirements.txt``.
+
 Environment:
 
 ``BENCHBOX_ENGINES_REQUIRED``

@@ -102,6 +102,23 @@
         "tests.test_optimizer.TestOptimizer.test_qualify_columns"
       ],
       "reason": "Core source-qualified exclusions overlap upstream. The branch's broader unfinished nested-field design has not been accepted and is not claimed equivalent."
+    },
+    {
+      "id": "real-engine-ci",
+      "source": "1b6ea284af156d447a4aae90dd2ce061c36de8ab",
+      "status": "original",
+      "depends": [],
+      "paths": [
+        ".github/workflows/benchbox-engines.yml",
+        "downstream/ENGINE-GAPS.md",
+        "downstream/engines-requirements.txt",
+        "tests/engines.py",
+        "tests/test_engines.py"
+      ],
+      "tests": [
+        "tests.test_engines"
+      ],
+      "reason": "Execute translated SQL on real engines in CI, with a lazy unittest helper and a recorded gap list for platforms that have no obtainable engine."
     }
   ]
 }

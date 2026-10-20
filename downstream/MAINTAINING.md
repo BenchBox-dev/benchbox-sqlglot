@@ -101,7 +101,9 @@ upstream notices. New semantic changes require separately approved scope.
 Translated SQL is proven by executing it on a real engine wherever one can be
 obtained. `.github/workflows/benchbox-engines.yml` runs the engine tests on
 in-process engines and service containers, `tests/engines.py` is the shared
-helper, and the `engines` extra declares the packages. A new moved piece adds
+helper, and `downstream/engines-requirements.txt` declares the packages (a new file, so
+`setup.py` stays untouched and refreshes need no carried patch). The engine files
+are `original` manifest entries. A new moved piece adds
 its own execution tests with `requires_engine`. Platforms with no engine in CI,
 and the evidence that substitutes for them, are listed in
 [ENGINE-GAPS.md](ENGINE-GAPS.md); a piece that targets one of them records the

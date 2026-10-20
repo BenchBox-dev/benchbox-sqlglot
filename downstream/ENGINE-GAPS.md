@@ -50,7 +50,8 @@ class TestSomething(unittest.TestCase):
   `duckdb: Python package 'duckdb' is not installed (pip install duckdb)`).
 - `BENCHBOX_ENGINES_REQUIRED=1` (or `all`, or a comma-separated engine list) turns
   a missing engine into a failure. CI sets it; never set it in default local runs.
-- Install the packages with `pip install -e ".[engines]"`. The extra is not part of
+- Install the packages with `pip install -r downstream/engines-requirements.txt`.
+  The file is separate from `setup.py` (which is upstream-owned) and is not part of
   the default install or of `dev`. `datafusion`, `chdb` and `pyspark` are gated to
   Python 3.10+ by marker.
 - Service engines need `BENCHBOX_ENGINE_<NAME>=host:port` (for example
