@@ -130,6 +130,21 @@ every gate (which columns, which alias, which keys) to the caller and returns a 
   the dialect's default NULL ordering, so the generator writes no `NULLS FIRST`/`NULLS LAST`; the
   caller decides which columns may hold no NULLs.
 
+`sqlglot.benchbox.subqueries` holds the subquery rewrites for engines that plan a subquery badly or wrongly:
+
+- `not_in_subquery_to_not_exists(expression, non_null_columns)` turns `x NOT IN (SELECT y FROM ... WHERE p)`
+  into `NOT EXISTS (SELECT 1 FROM ... WHERE p AND y = x)` only when both columns are named in
+  `non_null_columns` (`NOT IN` is three-valued, `NOT EXISTS` is not); any other `NOT IN` is left alone.
+- `in_aggregate_subquery_to_exists(expression, alias="_in_subquery")` turns `x IN (SELECT k ... GROUP BY ...
+  HAVING ...)` into `EXISTS (SELECT 1 FROM (SELECT k ...) AS alias WHERE alias.k = x)` where an `IN` can be
+  replaced without changing the filtered rows (reached through `AND`, `OR` and parentheses from `WHERE`,
+  `HAVING` or `ON`).
+- `decorrelate_subqueries(expression, schema, dialect=None)` is SQLGlot's own `unnest_subqueries` made safe for
+  such engines: columns are qualified from the `schema` the caller passes, comma joins next to a subquery
+  become `CROSS JOIN` (a left join added after `FROM a, b` binds to `b` only), and a correlated subquery that
+  correlates through anything but equality is left in place instead of becoming array functions. Scalar,
+  correlated and `IN` subqueries become cross or left joins against derived tables.
+
 Generator behavior needs no rewrite call: `GROUP BY ()` is dropped from a global aggregate (one with an
 aggregate or `HAVING`) for `snowflake`, `spark`, `databricks` and `datafusion`, which reject it; any other
 `GROUP BY ()` for those dialects warns as unsupported.

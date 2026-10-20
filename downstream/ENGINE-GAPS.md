@@ -56,6 +56,12 @@ drop runs on all four (DataFusion and PySpark also assert the engine rejects the
 BigQuery text transpiled to each engine, because BigQuery itself is a gap above; Trino and Presto get
 the same generic `IF` form executed on the four engines, not on Trino. The Snowflake `GROUP BY ()` drop and
 the BigQuery window NULL-ordering reset have only AST tests, because Snowflake and BigQuery are gaps.
+`tests/test_benchbox_subqueries_engines.py` runs in the same two jobs: it creates small tables on Postgres, DuckDB,
+DataFusion and PySpark and compares the rows of the original query with the rows of its `decorrelate_subqueries`,
+`not_in_subquery_to_not_exists` and `in_aggregate_subquery_to_exists` rewrites (scalar subquery in `HAVING`, `NOT IN`,
+`IN` over a grouped subquery behind comma joins, nested correlated subqueries, a correlated scalar subquery, and an
+inequality-correlated `EXISTS` that must stay in place). Whether a given engine version needs these rewrites is not
+something this test can show: current Postgres, DuckDB, DataFusion and Spark answer the originals correctly too.
 `tests/test_questdb_execution.py` runs in the `questdb` job: it executes the QuestDB
 generator's comma-join expansion, `DATEADD`, `SUBSTRING` and CTE column list output.
 
