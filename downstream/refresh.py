@@ -22,17 +22,23 @@ def clean(root: Path) -> None:
         raise ValueError("Refresh operations require a clean source tree")
 
 
+RETAINED = {"carried", "original"}
+
+
 def carried(data: dict, retired: set[str]) -> list[dict]:
     patches = [p for p in data["patches"] if p["status"] == "carried"]
     if not retired <= {p["id"] for p in patches}:
         raise ValueError("Only currently carried patches may be retired")
-    return [p for p in patches if p["id"] not in retired]
+    return [p for p in data["patches"] if p["status"] in RETAINED and p["id"] not in retired]
+
+
+def subject(entry: dict) -> str:
+    prefix = "fix" if entry["status"] == "carried" else "feat"
+    return f"{prefix}: retain {entry['id']}"
 
 
 def owned_paths(data: dict) -> list[str]:
-    return sorted(
-        {path for p in data["patches"] if p["status"] == "carried" for path in p["paths"]}
-    )
+    return sorted({path for p in data["patches"] if p["status"] in RETAINED for path in p["paths"]})
 
 
 def validate_tag(root: Path, data: dict, tag: str) -> str:
@@ -49,14 +55,30 @@ def candidate(root: Path, tag: str, destination: Path, branch: str, retired: set
     clean(root)
     data = manifest(root)
     sha = validate_tag(root, data, tag)
-    patches = carried(data, retired)
+    entries = carried(data, retired)
+    head = git(root, "rev-parse", "HEAD")
+    for entry in entries:
+        if entry["status"] == "original":
+            existing = [
+                path
+                for path in entry["paths"]
+                if command(root, "cat-file", "-e", f"{sha}:{path}", check=False).returncode == 0
+            ]
+            if existing:
+                raise ValueError(
+                    f"Original files now exist upstream; reconcile {entry['id']} manually: "
+                    + ", ".join(existing)
+                )
     command(root, "worktree", "add", "-b", branch, str(destination), sha)
-    for patch in patches:
-        patch_path = root / patch["patch"]
-        if not patch_path.is_file():
-            raise ValueError(f"Missing normalized patch: {patch_path}")
-        command(destination, "apply", "--3way", "--index", str(patch_path))
-        command(destination, "commit", "-m", f"fix: retain {patch['id']}")
+    for entry in entries:
+        if entry["status"] == "original":
+            command(destination, "checkout", head, "--", *entry["paths"])
+        else:
+            patch_path = root / entry["patch"]
+            if not patch_path.is_file():
+                raise ValueError(f"Missing normalized patch: {patch_path}")
+            command(destination, "apply", "--3way", "--index", str(patch_path))
+        command(destination, "commit", "-m", subject(entry))
     print(
         f"Candidate source ready at {destination}; resolve any conflicts explicitly and run source checks"
     )
@@ -79,17 +101,17 @@ def integrate(
     changed = set(git(root, "diff", "--name-only", sha, candidate_sha).splitlines())
     if not changed <= set(paths):
         raise ValueError("Candidate includes changes outside the reviewed patch source paths")
-    patches = carried(data, set(retirements))
+    entries = carried(data, set(retirements))
     if any(not reason.strip() for reason in retirements.values()):
         raise ValueError("Retirement requires a reviewed reason and upstream evidence")
     commits = git(
         root, "rev-list", "--reverse", "--no-merges", f"{sha}..{candidate_sha}"
     ).splitlines()
-    if len(commits) != len(patches):
-        raise ValueError("Candidate must contain exactly one reviewed commit per retained patch")
-    for patch, commit in zip(patches, commits):
-        if git(root, "show", "-s", "--format=%s", commit) != f"fix: retain {patch['id']}":
-            raise ValueError("Candidate patch order does not match the manifest")
+    if len(commits) != len(entries):
+        raise ValueError("Candidate must contain exactly one reviewed commit per retained entry")
+    for entry, commit in zip(entries, commits):
+        if git(root, "show", "-s", "--format=%s", commit) != subject(entry):
+            raise ValueError("Candidate commit order does not match the manifest")
     command(root, "worktree", "add", "-b", branch, str(destination), "HEAD")
     merge = command(destination, "merge", "--no-ff", "--no-commit", sha, check=False)
     conflicts = set(git(destination, "diff", "--name-only", "--diff-filter=U").splitlines())
@@ -112,7 +134,9 @@ def integrate(
     data["upstream"]["tag"] = tag
     data["upstream"]["sha"] = sha
     data["version"] = tag[1:] + ".1"
-    for patch, commit in zip(patches, commits):
+    for patch, commit in zip(entries, commits):
+        if patch["status"] != "carried":
+            continue
         content = subprocess.check_output(
             [
                 "git",

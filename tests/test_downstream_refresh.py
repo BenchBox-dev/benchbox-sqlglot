@@ -93,6 +93,88 @@ class TestDownstreamRefresh(unittest.TestCase):
             )
             self.command(final, "merge-base", "--is-ancestor", base, "HEAD")
 
+    def test_original_files_survive_refresh_with_carried_patch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            root = directory / "source"
+            root.mkdir()
+            self.command(root, "init", "-q", "-b", "main")
+            self.command(root, "config", "user.name", "Test Fixture")
+            self.command(root, "config", "user.email", "fixture@example.invalid")
+            (root / "registry.py").write_text("NAMES = ['base']\n")
+            self.commit(root, ["registry.py"], "Record upstream registry")
+            self.command(root, "tag", "v1.0.0")
+            base = git(root, "rev-parse", "HEAD")
+            (root / "registry.py").write_text("NAMES = ['base', 'feature']\n")
+            patch = subprocess.check_output(["git", "-C", str(root), "diff", "--binary"])
+            (root / "feature.py").write_text("FEATURE = 1\n")
+            self.commit(root, ["registry.py", "feature.py"], "Add feature")
+            downstream = root / "downstream"
+            downstream.mkdir()
+            (downstream / "registry.patch").write_bytes(patch)
+            data = {
+                "schema": 1,
+                "version": "1.0.0.1",
+                "upstream": {"tag": "v1.0.0", "sha": base},
+                "patches": [
+                    {
+                        "id": "feature-module",
+                        "status": "original",
+                        "depends": [],
+                        "paths": ["feature.py"],
+                    },
+                    {
+                        "id": "feature-registry",
+                        "status": "carried",
+                        "depends": ["feature-module"],
+                        "paths": ["registry.py"],
+                        "patch": "downstream/registry.patch",
+                    },
+                ],
+            }
+            (downstream / "patches.json").write_text(json.dumps(data))
+            self.commit(
+                root,
+                ["downstream/registry.patch", "downstream/patches.json"],
+                "Record downstream entries",
+            )
+            self.command(root, "switch", "-qc", "upstream", "v1.0.0")
+            (root / "other.py").write_text("OTHER = 1\n")
+            self.commit(root, ["other.py"], "Extend upstream runtime")
+            self.command(root, "tag", "v1.1.0")
+            self.command(root, "switch", "-q", "main")
+            first = directory / "candidate"
+            candidate(root, "v1.1.0", first, "candidate", set())
+            self.assertEqual((first / "feature.py").read_text(), "FEATURE = 1\n")
+            self.assertEqual((first / "registry.py").read_text(), "NAMES = ['base', 'feature']\n")
+            self.assertEqual(
+                git(first, "log", "--format=%s", "v1.1.0..HEAD").splitlines(),
+                ["fix: retain feature-registry", "feat: retain feature-module"],
+            )
+            integration = directory / "integration"
+            integrate(root, "v1.1.0", "candidate", integration, "integration", {})
+            for name in ("feature.py", "registry.py", "other.py"):
+                self.assertTrue((integration / name).is_file(), name)
+            self.assertEqual(
+                (integration / "feature.py").read_bytes(), (root / "feature.py").read_bytes()
+            )
+            self.assertEqual(
+                (integration / "registry.py").read_bytes(), (first / "registry.py").read_bytes()
+            )
+            refreshed = json.loads((integration / "downstream/patches.json").read_text())
+            self.assertEqual([p["status"] for p in refreshed["patches"]], ["original", "carried"])
+            self.assertEqual(refreshed["upstream"]["tag"], "v1.1.0")
+            self.assertEqual((integration / "downstream/registry.patch").read_bytes(), patch)
+            self.command(integration, "merge-base", "--is-ancestor", "v1.1.0", "HEAD")
+
+            self.command(root, "switch", "-q", "upstream")
+            (root / "feature.py").write_text("FEATURE = 'upstream'\n")
+            self.commit(root, ["feature.py"], "Upstream adds the same path")
+            self.command(root, "tag", "v1.2.0")
+            self.command(root, "switch", "-q", "main")
+            with self.assertRaises(ValueError):
+                candidate(root, "v1.2.0", directory / "candidate-two", "candidate-two", set())
+
     def test_normalized_series_reconstructs_current_source(self):
         root = Path(__file__).resolve().parents[1]
         data = json.loads((root / "downstream/patches.json").read_text())

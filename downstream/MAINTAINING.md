@@ -94,8 +94,28 @@ Before consumer adoption, test BenchBox's wrapper, platform mixin, base
 benchmark, SQLite exact arithmetic, Q6 bounds, DDL and TPC-Havoc variants against
 the packaged private wheel and installed BenchBox wheel and sdist. The fork
 checks do not replace actual consumer packaging checks. Preserve
-upstream notices. New semantic changes require separately approved scope:
-the current base remains upstream 30.23.0 plus the three carried patches.
+upstream notices. New semantic changes require separately approved scope.
+
+## Manifest entries
+
+Every downstream change is a `downstream/patches.json` entry:
+
+- `carried`: an edit to an upstream-owned file, including registrations and
+  generator changes that reference fork-added code. It has a normalized patch
+  under `downstream/patches/`, is replayed on each refresh and is committed as
+  `fix: retain <ID>`. Any edit to a file that exists upstream is a carried patch,
+  however small.
+- `original`: wholly new files that do not exist at the recorded upstream
+  commit (for example a new dialect module and its tests). It lists `paths` and
+  has no normalized patch; `source` may be a fork commit. Refresh copies the
+  files from fork `main` into the candidate as a `feat: retain <ID>` commit
+  before later entries are replayed, so carried patches may `depends` on it.
+  `original` never covers a file that exists upstream. If an upstream tag adds
+  one of an original entry's paths, `candidate` stops for manual reconciliation.
+- `upstreamed` and `excluded` are dispositions only and own no paths.
+
+A path belongs to exactly one entry. The contract test checks this and that
+original paths are absent upstream.
 
 ## Upstream refresh
 
@@ -116,10 +136,11 @@ permissions. It never creates a release, changes refs or submits upstream PRs.
      --branch refresh/candidate-30.24.0
    ```
 
-   Repeat `--retire PATCH_ID` for reviewed retirements. The helper applies the
-   normalized carried patches in manifest order and stops on conflicts. Resolve
-   conflicts explicitly, preserve one `fix: retain PATCH_ID` commit per retained
-   patch, apply the remaining patches in order, and review all adaptations.
+   Repeat `--retire PATCH_ID` for reviewed retirements (carried patches only).
+   The helper materializes `original` files and applies the normalized carried
+   patches in manifest order, one commit per entry, and stops on conflicts. Resolve
+   conflicts explicitly, preserve one `fix: retain PATCH_ID` (carried) or
+   `feat: retain ID` (original) commit per retained entry, apply the remaining patches in order, and review all adaptations.
    Never substitute an older original patch for the normalized patch. Run the
    source and compiled checks on this candidate.
 3. Create a descendant integration branch from current fork `main`:
@@ -132,7 +153,8 @@ permissions. It never creates a release, changes refs or submits upstream PRs.
 
    For each retired patch, repeat `--retire 'PATCH_ID=reviewed upstream evidence
    and equivalence result'`. This merges upstream ancestry, then reconciles
-   the union of previously carried source paths to the verified candidate.
+   the union of previously carried and original source paths to the verified
+   candidate.
    That union includes retired paths so old implementations cannot reappear.
    Unrelated conflicts stop for explicit resolution. The command updates the
    manifest and normalized patches and commits the integration result.
