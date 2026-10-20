@@ -96,6 +96,18 @@ the packaged private wheel and installed BenchBox wheel and sdist. The fork
 checks do not replace actual consumer packaging checks. Preserve
 upstream notices. New semantic changes require separately approved scope.
 
+## Real-engine tests and gap list
+
+Translated SQL is proven by executing it on a real engine wherever one can be
+obtained. `.github/workflows/benchbox-engines.yml` runs the engine tests on
+in-process engines and service containers, `tests/engines.py` is the shared
+helper, and the `engines` extra declares the packages. A new moved piece adds
+its own execution tests with `requires_engine`. Platforms with no engine in CI,
+and the evidence that substitutes for them, are listed in
+[ENGINE-GAPS.md](ENGINE-GAPS.md); a piece that targets one of them records the
+gap in its tracker item. Keep every workflow free of publishing steps and write
+permissions, as `tests/test_downstream_contract.py` requires.
+
 ## Manifest entries
 
 Every downstream change is a `downstream/patches.json` entry:
