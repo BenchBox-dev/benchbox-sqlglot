@@ -1,4 +1,5 @@
 import json
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -14,27 +15,44 @@ class TestDownstreamContract(unittest.TestCase):
         self.assertEqual(manifest["import_package"], "benchbox._vendor.sqlglot")
         self.assertRegex(manifest["version"], r"^\d+\.\d+\.\d+\.[1-9]\d*$")
         self.assertEqual(manifest["upstream"]["tag"], "v" + manifest["version"].rsplit(".", 1)[0])
-        admitted = set()
         available = {p["id"] for p in manifest["patches"] if p["status"] == "upstreamed"}
+        ids = [p["id"] for p in manifest["patches"]]
+        self.assertEqual(len(ids), len(set(ids)))
+        owners = {}
         for patch in manifest["patches"]:
             with self.subTest(patch=patch["id"]):
                 self.assertRegex(patch["source"], r"^[a-f0-9]{40}$")
-                self.assertIn(patch["status"], {"carried", "upstreamed", "excluded"})
+                self.assertIn(patch["status"], {"carried", "original", "upstreamed", "excluded"})
                 self.assertTrue(patch["tests"])
                 self.assertTrue(patch["reason"])
-                if patch["status"] == "carried":
+                if patch["status"] in {"carried", "original"}:
                     self.assertTrue(set(patch["depends"]) <= available)
+                    self.assertTrue(patch["paths"])
                     self.assertTrue(all((root / path).is_file() for path in patch["paths"]))
-                    admitted.add(patch["id"])
+                    for path in patch["paths"]:
+                        owners.setdefault(path, set()).add(patch["status"])
                     available.add(patch["id"])
-        self.assertLessEqual(
-            admitted,
-            {
-                "postgres-extract-return-types",
-                "sqlite-date-extraction",
-                "sqlite-date-interval-arithmetic",
-            },
-        )
+                if patch["status"] == "carried":
+                    self.assertTrue((root / patch["patch"]).is_file())
+                if patch["status"] == "original":
+                    self.assertNotIn("patch", patch)
+                    for path in patch["paths"]:
+                        self.assertNotEqual(
+                            subprocess.run(
+                                [
+                                    "git",
+                                    "-C",
+                                    str(root),
+                                    "cat-file",
+                                    "-e",
+                                    manifest["upstream"]["sha"] + ":" + path,
+                                ],
+                                capture_output=True,
+                            ).returncode,
+                            0,
+                            f"{path} exists upstream; original entries are limited to new files",
+                        )
+        self.assertTrue(all(len(kinds) == 1 for kinds in owners.values()))
 
     def test_upstream_automation_is_inactive(self):
         root = Path(__file__).resolve().parents[1]

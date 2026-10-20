@@ -2,8 +2,10 @@
 
 [`BenchBox-dev/benchbox-sqlglot`](https://github.com/BenchBox-dev/benchbox-sqlglot)
 is the maintained source fork of [SQLGlot](https://github.com/tobymao/sqlglot),
-licensed under the original MIT license. The bounded patch set targets SQL used
-by BenchBox; upstream 30.23.0 plus the three carried patches is the current base.
+licensed under the original MIT license. The fork targets SQL used
+by BenchBox. The base is upstream 30.23.0 plus the entries in
+`patches.json`: edits to upstream-owned files are carried patches (`fix: retain <ID>`
+commits), and `original` entries are limited to wholly new files.
 
 BenchBox checks in and ships **only the pinned built pure-Python runtime wheel**
 as package data inside its own published wheel and sdist. The fork's unpacked
