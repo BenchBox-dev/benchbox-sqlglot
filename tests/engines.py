@@ -63,8 +63,7 @@ ENGINES: dict[str, Engine] = {
     for e in (
         Engine("sqlite", "sqlite", (), ()),
         Engine("duckdb", "duckdb", ("duckdb",), ("duckdb",)),
-        # DataFusion has no dedicated dialect in the fork yet.
-        Engine("datafusion", "postgres", ("datafusion",), ("datafusion",)),
+        Engine("datafusion", "datafusion", ("datafusion",), ("datafusion",)),
         Engine("chdb", "clickhouse", ("chdb",), ("chdb",)),
         Engine("pyspark", "spark", ("pyspark",), ("pyspark",)),
         Engine(
@@ -80,9 +79,9 @@ ENGINES: dict[str, Engine] = {
         Engine("trino", "trino", ("trino",), ("trino",), True, "test", "", "memory"),
         Engine("starrocks", "starrocks", ("pymysql",), ("pymysql",), True, "root", "", ""),
         Engine("doris", "doris", ("pymysql",), ("pymysql",), True, "root", "", ""),
-        # QuestDB has no dialect in the fork yet; it speaks the Postgres wire protocol.
+        # QuestDB speaks the Postgres wire protocol, so it connects like Postgres.
         Engine(
-            "questdb", "postgres", ("psycopg",), ("psycopg[binary]",), True, "admin", "quest", "qdb"
+            "questdb", "questdb", ("psycopg",), ("psycopg[binary]",), True, "admin", "quest", "qdb"
         ),
         Engine("singlestore", "singlestore", ("pymysql",), ("pymysql",), True, "root", "", ""),
     )

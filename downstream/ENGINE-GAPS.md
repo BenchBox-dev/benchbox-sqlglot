@@ -16,17 +16,18 @@ so a missing package or an unreachable container fails the job.
 |---|---|---|---|
 | SQLite | `sqlite` | stdlib `sqlite3` | `in-process` |
 | DuckDB | `duckdb` | in-process (`duckdb`) | `in-process` |
-| DataFusion | `postgres` (no fork dialect yet) | in-process (`datafusion`) | `in-process` |
+| DataFusion | `datafusion` | in-process (`datafusion`) | `in-process` |
 | chDB (ClickHouse) | `clickhouse` | in-process (`chdb`) | `in-process` |
 | PySpark | `spark` | local mode, Java 17 from the runner image | `in-process` |
 | PostgreSQL | `postgres` | service container `postgres:16` | `postgres` |
 | Trino | `trino` | service container `trinodb/trino:484`, memory catalog | `trino` |
-| QuestDB | `postgres` (no fork dialect yet) | service container `questdb/questdb:10.0.1`, PG wire port | `questdb` |
+| QuestDB | `questdb` | service container `questdb/questdb:10.0.1`, PG wire port | `questdb` |
 | StarRocks | `starrocks` | `starrocks/allin1-ubuntu:4.0.16` started with `docker run` | `starrocks` |
 | Doris | `doris` | `apache/doris:all-in-one-4.1.3` started with `docker run` | `doris` |
 
-Engines whose dialect row says "no fork dialect yet" switch to their own dialect
-when that dialect lands; the seed tests then exercise it without other changes.
+`tests/test_platform_dialects_engines.py` runs in the `in-process` and `postgres` jobs
+next to the seed tests: it executes DataFusion dialect output and the date
+arithmetic rewrite.
 
 ## Writing an engine test
 
@@ -90,7 +91,21 @@ weaker than execution and must be named as such in the pull request.
 
 These can be added by following the pattern in the workflow when a moved piece needs
 them: ClickHouse server (chdb covers the engine, not server-only DDL), Databend,
-Citus, TimescaleDB, ParadeDB, CedarDB, Presto, DuckLake, Lakesail, Velox, InfluxDB,
-Vertica, Greenplum and Netezza (Greenplum and the Postgres family are covered by the
-`postgres` job for shared syntax; Vertica and Netezza have no obtainable container).
+Citus, TimescaleDB, ParadeDB, CedarDB, Presto, DuckLake, Lakesail, Velox and InfluxDB.
 Until added, treat them as gaps with the substitute of their closest executed engine.
+
+### Platform dialects without their own engine
+
+The `netezza`, `greenplum` and `vertica` dialects are thin subclasses of `postgres`
+with no behavior of their own yet, so their identity and transpilation tests
+(`tests/dialects/test_<dialect>.py`) are the evidence for what they add, and the
+`postgres` job executes the shared output they inherit. No engine for them is in CI:
+
+| Platform | Why no engine | Substitute evidence |
+|---|---|---|
+| Netezza | Proprietary appliance; IBM distributes no local engine | Identity and transpile tests; the date arithmetic rewrite executes on the `postgres` job |
+| Greenplum | No official single-container image; a cluster is too heavy for a hosted job | Identity and transpile tests; shared syntax executes on the `postgres` job |
+| Vertica | Not added to CI in this slice | Identity and transpile tests; shared syntax executes on the `postgres` job |
+
+A dialect that later overrides generator or parser behavior must add an engine or
+record why one cannot be obtained.

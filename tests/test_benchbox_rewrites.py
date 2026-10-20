@@ -2,7 +2,10 @@ import unittest
 from decimal import Decimal
 
 from sqlglot import exp, parse_one
-from sqlglot.benchbox.rewrites import fold_between_literal_arithmetic
+from sqlglot.benchbox.rewrites import (
+    date_integer_arithmetic_to_interval,
+    fold_between_literal_arithmetic,
+)
 from tests import engines
 from tests.engines import requires_engine
 
@@ -233,6 +236,66 @@ class TestFoldBetweenExecution(unittest.TestCase):
                 self.assertEqual(fold(sql), canonical(sql))
                 self.assertEqual([v for (v,) in engines.execute("sqlite", sql)], expected)
                 self.assertEqual([v for (v,) in engines.execute("sqlite", fold(sql))], expected)
+
+
+class TestDateIntegerArithmeticToInterval(unittest.TestCase):
+    def rewrite(self, sql, columns=("d_date",), read="netezza", write="postgres"):
+        return date_integer_arithmetic_to_interval(parse_one(sql, read=read), columns).sql(write)
+
+    def test_integer_days_become_day_intervals(self):
+        self.assertEqual(
+            self.rewrite("SELECT d_date + 5, d_date - 30 FROM t"),
+            "SELECT d_date + INTERVAL '5 DAY', d_date - INTERVAL '30 DAY' FROM t",
+        )
+
+    def test_qualified_and_case_insensitive_columns(self):
+        self.assertEqual(
+            self.rewrite("SELECT D1.D_DATE + 7 FROM date_dim AS d1 WHERE d1.d_date - 1 > x"),
+            "SELECT D1.D_DATE + INTERVAL '7 DAY' FROM date_dim AS d1 "
+            "WHERE d1.d_date - INTERVAL '1 DAY' > x",
+        )
+
+    def test_the_column_set_is_the_gate(self):
+        sql = "SELECT d_date + 5, d_date_sk + 5, qty + 5 FROM t"
+        self.assertEqual(
+            self.rewrite(sql),
+            "SELECT d_date + INTERVAL '5 DAY', d_date_sk + 5, qty + 5 FROM t",
+        )
+        self.assertEqual(
+            self.rewrite(sql, columns=()), "SELECT d_date + 5, d_date_sk + 5, qty + 5 FROM t"
+        )
+        self.assertEqual(
+            self.rewrite(sql, columns=["qty"]),
+            "SELECT d_date + 5, d_date_sk + 5, qty + INTERVAL '5 DAY' FROM t",
+        )
+
+    def test_only_a_whole_integer_literal_operand_is_rewritten(self):
+        for sql in (
+            "SELECT d_date + 5 * 2 FROM t",
+            "SELECT d_date + n FROM t",
+            "SELECT d_date + 1.5 FROM t",
+            "SELECT d_date + '5' FROM t",
+            "SELECT 5 + d_date FROM t",
+            "SELECT d_date + d_date FROM t",
+            "SELECT d_date + INTERVAL '5' DAY FROM t",
+        ):
+            with self.subTest(sql=sql):
+                self.assertEqual(self.rewrite(sql), parse_one(sql, read="netezza").sql("postgres"))
+
+    def test_copy_flag(self):
+        tree = parse_one("SELECT d_date + 5", read="netezza")
+        rewritten = date_integer_arithmetic_to_interval(tree, ["d_date"])
+        self.assertIsNot(rewritten, tree)
+        self.assertEqual(tree.sql("postgres"), "SELECT d_date + 5")
+        same = date_integer_arithmetic_to_interval(tree, ["d_date"], copy=False)
+        self.assertIs(same, tree)
+        self.assertIsNotNone(tree.find(exp.Interval))
+
+    def test_other_write_dialects(self):
+        self.assertEqual(
+            self.rewrite("SELECT d_date + 5", write="duckdb"),
+            "SELECT d_date + INTERVAL '5' DAY",
+        )
 
 
 if __name__ == "__main__":

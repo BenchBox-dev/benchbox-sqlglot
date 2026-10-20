@@ -106,3 +106,49 @@ def fold_between_literal_arithmetic(
             between.set("low", exp.Literal.number(format(folded[0], "f")))
             between.set("high", exp.Literal.number(format(folded[1], "f")))
     return expression
+
+
+def date_integer_arithmetic_to_interval(
+    expression: E,
+    date_columns: t.Iterable[str],
+    copy: bool = True,
+) -> E:
+    """Rewrite ``date_column +/- <integer>`` into ``date_column +/- INTERVAL '<integer>' DAY``.
+
+    Netezza adds and subtracts a number of days with a plain integer. Other
+    engines, such as PostgreSQL when the column is a timestamp or DataFusion
+    for any date, need an explicit day interval. Only the pattern
+    ``<date column> + <integer literal>`` or ``<date column> - <integer literal>``
+    is rewritten; the integer must be the whole right operand, so
+    ``d + 5 * 2`` and ``d - n`` are left untouched, as is any expression whose
+    left operand is not one of the named columns.
+
+    Which columns hold dates is data the caller owns, for example from a schema.
+
+    Args:
+        expression: the expression to rewrite.
+        date_columns: names (case-insensitive, qualifier ignored) of the columns
+            known to hold dates.
+        copy: rewrite a copy instead of mutating ``expression``.
+
+    Returns:
+        The rewritten expression.
+    """
+    column_names = {name.lower() for name in date_columns}
+    if copy:
+        expression = expression.copy()
+    if not column_names:
+        return expression
+
+    for node in list(expression.find_all(exp.Add, exp.Sub)):
+        column, days = node.this, node.expression
+        if (
+            isinstance(column, exp.Column)
+            and column.name.lower() in column_names
+            and isinstance(days, exp.Literal)
+            and days.is_int
+        ):
+            node.set(
+                "expression", exp.Interval(this=exp.Literal.string(days.name), unit=exp.var("DAY"))
+            )
+    return expression

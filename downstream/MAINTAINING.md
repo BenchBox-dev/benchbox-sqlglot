@@ -141,6 +141,21 @@ chooses the read and write dialects, and it never names a benchmark, table or
 column. Behavior that belongs to one dialect's output (for example the SQLite
 date lowering) is a generator change and a carried patch instead.
 
+## Platform dialects
+
+The fork adds `netezza`, `greenplum`, `vertica`, `datafusion` and `questdb`, each a
+subclass of `postgres` (upstream has no dialect with these names). A dialect starts
+as a thin subclass and gains behavior only when it is proved against the engine.
+Registration (the `Dialects` enum, `DIALECTS` and the README table) edits
+upstream-owned files and is the carried patch `platform-dialects`; the dialect
+modules and their tests are the `original` entry `platform-dialect-modules`.
+
+`ansi` and `standard` are not dialects the fork provides, and the fork has no alias
+dialects. The caller resolves them before calling SQLGlot: BenchBox's platform
+registry maps `ansi` and `standard` (and every platform name) to a dialect that
+exists. `Dialect.get_or_raise` raises `ValueError` for an unknown name, and the
+fork never falls back to `postgres` silently.
+
 ## Upstream refresh
 
 The maintainer reviews upstream monthly and promptly for correctness or
