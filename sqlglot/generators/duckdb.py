@@ -4489,6 +4489,24 @@ class DuckDBGenerator(generator.Generator):
         # UNHEX('FF') correctly produces blob \xFF in DuckDB
         return super().hexstring_sql(expression, binary_function_repr="UNHEX")
 
+    def column_sql(self, expression: exp.Column) -> str:
+        # ORDER BY ALL is a keyword in DuckDB. Dialects that cannot spell it (e.g. Postgres)
+        # parse it as a column named ALL, which would be quoted below as a reserved word.
+        this = expression.this
+        ordered = expression.parent
+        order = ordered.parent if isinstance(ordered, exp.Ordered) else None
+        if (
+            isinstance(this, exp.Identifier)
+            and not this.quoted
+            and this.name.upper() == "ALL"
+            and not expression.table
+            and isinstance(order, exp.Order)
+            and isinstance(order.parent, exp.Query)
+            and len(order.expressions) == 1
+        ):
+            return "ALL"
+        return super().column_sql(expression)
+
     def datetrunc_sql(self, expression: exp.DateTrunc) -> str:
         unit = expression.args.get("unit")
         date = expression.this

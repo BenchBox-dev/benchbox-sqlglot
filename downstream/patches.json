@@ -154,6 +154,37 @@
       ],
       "reason": "Lower whole month/year offsets on a DATE that cannot overflow a month end, EXTRACT of YEAR..SECOND from inputs of unknown type, and DATE_TRUNC to STRFTIME; keep month-end rollover, CAST to TIMESTAMP, time zones and other units Unsupported.",
       "patch": "downstream/patches/sqlite-temporal-lowering.patch"
+    },
+    {
+      "id": "duckdb-order-by-all-keyword",
+      "source": "0e0e27da679d7c807a2ffafbdf87a95b01820e65",
+      "status": "carried",
+      "depends": [],
+      "paths": [
+        "sqlglot/generators/duckdb.py",
+        "tests/dialects/test_duckdb.py"
+      ],
+      "tests": [
+        "tests.dialects.test_duckdb"
+      ],
+      "reason": "Emit the ORDER BY ALL keyword in DuckDB when a dialect without it (PostgreSQL) parsed ALL as a column, instead of quoting it as a reserved word; an upstream-submission candidate that does not depend on any other fork file.",
+      "patch": "downstream/patches/duckdb-order-by-all-keyword.patch"
+    },
+    {
+      "id": "duckdb-all-keyword-execution",
+      "source": "e4db7d0ea1c6331d4d9bb2b78be1d5271b4a1749",
+      "status": "original",
+      "depends": [
+        "real-engine-ci",
+        "duckdb-order-by-all-keyword"
+      ],
+      "paths": [
+        "tests/test_duckdb_all_keyword.py"
+      ],
+      "tests": [
+        "tests.test_duckdb_all_keyword"
+      ],
+      "reason": "Execute the transpiled GROUP BY ALL and ORDER BY ALL on DuckDB."
     }
   ]
 }
