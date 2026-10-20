@@ -2,6 +2,8 @@ import sqlite3
 from datetime import datetime, timedelta
 
 from sqlglot import ErrorLevel, UnsupportedError, exp, parse_one
+from tests import engines
+from tests.engines import requires_engine
 from sqlglot.generator import logger as generator_logger
 from sqlglot.helper import logger as helper_logger
 from tests.dialects.test_dialect import Validator
@@ -70,7 +72,7 @@ class TestSQLite(Validator):
             "EXTRACT(YEAR FROM TIMESTAMP '2020-06-01 12:00:00')",
             "EXTRACT(HOUR FROM DATE '2020-06-01')",
             "EXTRACT(YEAR FROM INTERVAL '1' YEAR)",
-            "EXTRACT(YEAR FROM d)",
+            "EXTRACT(EPOCH FROM d)",
             "DATE_PART('year', DATE '2020-06-01')",
         ):
             with self.subTest(source=source), self.assertRaises(UnsupportedError):
@@ -154,6 +156,223 @@ class TestSQLite(Validator):
                     "sqlite", unsupported_level=ErrorLevel.RAISE
                 )
         self.validate_identity("SELECT a + 1, b - 2 FROM t")
+        for source in (
+            "CAST(d AS DATE) + INTERVAL '1' MONTH",
+            "DATE '2023-01-29' + INTERVAL '1' MONTH",
+            "DATE '2024-03-31' - INTERVAL '1' MONTH",
+            "DATE '2024-01-01' + INTERVAL '1' QUARTER",
+            "DATE '2024-01-01' + INTERVAL '1' WEEK",
+        ):
+            with self.subTest(source=source), self.assertRaises(UnsupportedError):
+                self.parse_one(source, dialect="postgres").sql(
+                    "sqlite", unsupported_level=ErrorLevel.RAISE
+                )
+
+    def test_date_interval_month_year(self):
+        self.validate_all(
+            "SELECT DATE('1994-01-01', '+1 year')",
+            read={
+                "postgres": "SELECT DATE '1994-01-01' + INTERVAL '1' YEAR",
+                "duckdb": "SELECT DATE '1994-01-01' + INTERVAL '1' YEAR",
+            },
+        )
+        self.validate_all(
+            "SELECT DATE('1994-01-01', '-3 month')",
+            read={"postgres": "SELECT DATE '1994-01-01' - INTERVAL '3' MONTH"},
+        )
+        self.validate_all(
+            "SELECT DATE('1994-03-10', '+2 month')",
+            read={"postgres": "SELECT DATE '1994-03-10' - INTERVAL '-2' MONTH"},
+        )
+        self.validate_all(
+            "SELECT DATE('1994-01-01', '+2 month')",
+            read={"postgres": "SELECT INTERVAL '2' MONTH + CAST('1994-01-01' AS DATE)"},
+        )
+        self.validate_all(
+            "SELECT DATE('1998-09-01', '+10 month')",
+            read={"duckdb": "SELECT DATE('1998-09-01') + INTERVAL '10' MONTH"},
+        )
+        self.validate_all(
+            "SELECT DATE(NULL, '+1 month')",
+            read={"postgres": "SELECT CAST(NULL AS DATE) + INTERVAL '1' MONTH"},
+        )
+        # The function form of a DATE is typed like a DATE literal.
+        self.validate_all(
+            "SELECT DATETIME(DATE('1998-09-01'), '10 DAY') FROM t",
+            read={"duckdb": "SELECT DATE('1998-09-01') + INTERVAL '10' DAY FROM t"},
+        )
+
+    @requires_engine("sqlite")
+    def test_date_interval_month_year_execution(self):
+        # SQLite rolls an overflowing month end into the next month, so a month or
+        # year offset is lowered only for a day of month that cannot overflow: those
+        # inputs must agree with calendar arithmetic, the others are Unsupported.
+        cases = (
+            ("DATE '1994-01-01' + INTERVAL '1' YEAR", "1995-01-01"),
+            ("DATE '1994-12-01' + INTERVAL '3' MONTH", "1995-03-01"),
+            ("DATE '1996-02-28' + INTERVAL '1' YEAR", "1997-02-28"),
+            ("DATE '2024-01-28' + INTERVAL '1' MONTH", "2024-02-28"),
+            ("DATE '1994-01-01' - INTERVAL '1' MONTH", "1993-12-01"),
+            ("DATE '1994-01-15' - INTERVAL '2' MONTH", "1993-11-15"),
+            ("DATE '1994-03-10' - INTERVAL '-2' MONTH", "1994-05-10"),
+            ("DATE '2024-03-01' - INTERVAL '1' YEAR", "2023-03-01"),
+            ("CAST('1994-01-01' AS DATE) + INTERVAL '1' YEAR", "1995-01-01"),
+            ("CAST(NULL AS DATE) + INTERVAL '1' MONTH", None),
+        )
+        with engines.connect("sqlite") as connection:
+            for dialect in ("postgres", "duckdb"):
+                for source, expected in cases:
+                    with self.subTest(dialect=dialect, source=source):
+                        sql = parse_one(f"SELECT {source}", read=dialect).sql(
+                            "sqlite", unsupported_level=ErrorLevel.RAISE
+                        )
+                        rows = connection.execute(sql)
+                        self.assertEqual(rows, [(expected,)])
+                        self.assertIs(type(rows[0][0]), type(expected))
+
+    @requires_engine("sqlite")
+    def test_date_interval_text_comparison_execution(self):
+        with engines.connect("sqlite") as connection:
+            connection.execute("CREATE TABLE items (ship_date TEXT)")
+            for value in ("1993-12-31", "1994-01-01", "1994-06-15", "1994-12-31", "1995-01-01"):
+                connection.execute(f"INSERT INTO items VALUES ('{value}')")
+            sql = parse_one(
+                "SELECT ship_date FROM items WHERE ship_date >= DATE '1994-01-01' "
+                "AND ship_date < DATE '1994-01-01' + INTERVAL '1' YEAR ORDER BY 1",
+                read="postgres",
+            ).sql("sqlite", unsupported_level=ErrorLevel.RAISE)
+            self.assertEqual(
+                connection.execute(sql), [("1994-01-01",), ("1994-06-15",), ("1994-12-31",)]
+            )
+
+    def test_extract_time_parts_and_unknown_input(self):
+        for part, fmt in (
+            ("YEAR", "%Y"),
+            ("MONTH", "%m"),
+            ("DAY", "%d"),
+            ("HOUR", "%H"),
+            ("MINUTE", "%M"),
+            ("SECOND", "%S"),
+        ):
+            self.validate_all(
+                f"SELECT CAST(STRFTIME('{fmt}', d) AS INTEGER) FROM t",
+                read={
+                    "postgres": f"SELECT EXTRACT({part} FROM d) FROM t",
+                    "duckdb": f"SELECT EXTRACT({part} FROM d) FROM t",
+                    "clickhouse": f"SELECT EXTRACT({part} FROM d) FROM t",
+                },
+            )
+        self.validate_all(
+            "SELECT CAST(CAST(STRFTIME('%Y', d) AS INTEGER) AS REAL) / 3 FROM t",
+            read={"postgres": "SELECT EXTRACT(YEAR FROM d) / 3 FROM t"},
+        )
+        self.validate_all(
+            "SELECT CAST(STRFTIME('%H', event_time) AS INTEGER), "
+            "CAST(STRFTIME('%M', event_time) AS INTEGER), "
+            "STRFTIME('%Y-%m-%d %H:%M:00', event_time) FROM events",
+            read={
+                "clickhouse": "SELECT EXTRACT(HOUR FROM event_time), "
+                "EXTRACT(MINUTE FROM event_time), DATE_TRUNC('MINUTE', event_time) FROM events"
+            },
+        )
+        for source in (
+            "EXTRACT(YEAR FROM CAST(d AS TIMESTAMP))",
+            "EXTRACT(SECOND FROM TIMESTAMP '2020-06-01 12:30:45.5')",
+            "EXTRACT(MINUTE FROM DATE '2020-06-01')",
+            "EXTRACT(WEEK FROM d)",
+            "DATE_PART('hour', d)",
+        ):
+            with self.subTest(source=source), self.assertRaises(UnsupportedError):
+                parse_one(source, read="postgres").sql("sqlite", unsupported_level=ErrorLevel.RAISE)
+
+    @requires_engine("sqlite")
+    def test_extract_time_parts_and_unknown_input_execution(self):
+        with engines.connect("sqlite") as connection:
+            connection.execute("CREATE TABLE t (d TEXT, ts TEXT)")
+            connection.execute(
+                "INSERT INTO t VALUES ('2024-02-29', '2024-02-29 13:45:07'), "
+                "('1999-12-31', '1999-12-31 23:59:59.5'), (NULL, NULL)"
+            )
+            cases = (
+                (
+                    "SELECT EXTRACT(YEAR FROM d), EXTRACT(MONTH FROM d), EXTRACT(DAY FROM d) FROM t",
+                    [(2024, 2, 29), (1999, 12, 31), (None, None, None)],
+                ),
+                (
+                    "SELECT EXTRACT(HOUR FROM ts), EXTRACT(MINUTE FROM ts), EXTRACT(SECOND FROM ts) FROM t",
+                    [(13, 45, 7), (23, 59, 59), (None, None, None)],
+                ),
+                ("SELECT EXTRACT(YEAR FROM d) / 3 FROM t", [(2024 / 3,), (1999 / 3,), (None,)]),
+            )
+            for dialect in ("postgres", "duckdb"):
+                for source, expected in cases:
+                    with self.subTest(dialect=dialect, source=source):
+                        sql = parse_one(source, read=dialect).sql(
+                            "sqlite", unsupported_level=ErrorLevel.RAISE
+                        )
+                        rows = connection.execute(sql)
+                        self.assertEqual(rows, expected)
+                        self.assertEqual(
+                            [tuple(map(type, row)) for row in rows],
+                            [tuple(map(type, row)) for row in expected],
+                        )
+
+    def test_date_trunc(self):
+        for unit, fmt in (
+            ("YEAR", "%Y-01-01 00:00:00"),
+            ("MONTH", "%Y-%m-01 00:00:00"),
+            ("DAY", "%Y-%m-%d 00:00:00"),
+            ("HOUR", "%Y-%m-%d %H:00:00"),
+            ("MINUTE", "%Y-%m-%d %H:%M:00"),
+            ("SECOND", "%Y-%m-%d %H:%M:%S"),
+        ):
+            self.validate_all(
+                f"SELECT STRFTIME('{fmt}', ts) FROM t",
+                read={
+                    dialect: f"SELECT DATE_TRUNC('{unit.lower()}', ts) FROM t"
+                    for dialect in ("postgres", "duckdb", "clickhouse")
+                },
+            )
+        self.validate_all(
+            "SELECT STRFTIME('%Y-%m-%d 00:00:00', DATE('2020-03-17'))",
+            read={"postgres": "SELECT DATE_TRUNC('day', DATE '2020-03-17')"},
+        )
+        for source in (
+            "DATE_TRUNC('week', ts)",
+            "DATE_TRUNC('quarter', ts)",
+            "DATE_TRUNC('year', ts, 'UTC')",
+            "DATE_TRUNC('day', CAST(ts AS TIMESTAMP))",
+        ):
+            with self.subTest(source=source), self.assertRaises(UnsupportedError):
+                parse_one(source, read="postgres").sql("sqlite", unsupported_level=ErrorLevel.RAISE)
+
+    @requires_engine("sqlite")
+    def test_date_trunc_execution(self):
+        with engines.connect("sqlite") as connection:
+            connection.execute("CREATE TABLE t (ts TEXT)")
+            connection.execute(
+                "INSERT INTO t VALUES ('2024-02-29 13:45:07'), ('1999-12-31 23:59:59'), (NULL)"
+            )
+            expected = {
+                "year": ("2024-01-01 00:00:00", "1999-01-01 00:00:00", None),
+                "month": ("2024-02-01 00:00:00", "1999-12-01 00:00:00", None),
+                "day": ("2024-02-29 00:00:00", "1999-12-31 00:00:00", None),
+                "hour": ("2024-02-29 13:00:00", "1999-12-31 23:00:00", None),
+                "minute": ("2024-02-29 13:45:00", "1999-12-31 23:59:00", None),
+                "second": ("2024-02-29 13:45:07", "1999-12-31 23:59:59", None),
+            }
+            for dialect in ("postgres", "duckdb", "clickhouse"):
+                for unit, values in expected.items():
+                    source = f"SELECT DATE_TRUNC('{unit}', ts) FROM t"
+                    with self.subTest(dialect=dialect, source=source):
+                        sql = parse_one(source, read=dialect).sql(
+                            "sqlite", unsupported_level=ErrorLevel.RAISE
+                        )
+                        rows = connection.execute(sql)
+                        self.assertEqual(rows, [(value,) for value in values])
+                        self.assertEqual(
+                            [type(row[0]) for row in rows], [type(value) for value in values]
+                        )
 
     def test_date_interval_execution(self):
         with sqlite3.connect(":memory:") as connection:
