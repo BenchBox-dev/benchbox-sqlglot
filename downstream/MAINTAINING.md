@@ -165,6 +165,12 @@ Q10/Q35 override is `correlated_exists_to_in` with `expected` set, and the Q58 a
 identifier patterns and the settings values are BenchBox data. `tests/test_engine_rewrites_execution.py`
 runs them on chDB, DuckDB, StarRocks and Doris.
 
+`sqlglot.benchbox.compat` follows the same rules for the engine-compatibility rewrites (FILTER removal,
+alias inlining, column qualification, one-row sources for FROM-less selects, literal-subquery naming, grouped
+scalar subqueries, ordered list aggregates, window NULL ordering). Behavior that belongs to one dialect's output is generator behavior and
+a carried patch: `empty-group-by-generator` (a `SUPPORTS_EMPTY_GROUP_BY` flag in the base generator, off for
+Snowflake and Spark). The DataFusion generator is a new file, so it needs no patch. `tests/test_benchbox_compat_engines.py` proves each piece on the engines in ENGINE-GAPS.md.
+
 ## Platform dialects
 
 The fork adds `netezza`, `greenplum`, `vertica`, `datafusion` and `questdb`, each a

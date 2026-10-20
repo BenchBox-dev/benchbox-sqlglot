@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from sqlglot.dialects.postgres import Postgres
+from sqlglot.generators.datafusion import DataFusionGenerator
 
 
 class DataFusion(Postgres):
     """Apache DataFusion, whose SQL follows PostgreSQL conventions.
 
-    Behaves as `Postgres` until a difference is proved against the engine; its own
-    class gives callers an explicit key to read and write.
+    Behaves as `Postgres` except where the engine differs: it rejects `GROUP BY ()`, so
+    the generator drops that clause from a global aggregate.
     """
+
+    Generator = DataFusionGenerator

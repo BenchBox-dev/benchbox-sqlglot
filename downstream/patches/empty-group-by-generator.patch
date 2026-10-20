@@ -1,0 +1,70 @@
+diff --git a/sqlglot/generator.py b/sqlglot/generator.py
+index fcea6f6a..0660e848 100644
+--- a/sqlglot/generator.py
++++ b/sqlglot/generator.py
+@@ -358,6 +358,9 @@ class Generator:
+     # Whether GROUPING SETS can follow GROUP BY expressions without a comma
+     SUPPORTS_GROUPING_SETS_AS_SUFFIX = False
+ 
++    # Whether GROUP BY () is accepted
++    SUPPORTS_EMPTY_GROUP_BY = True
++
+     # The string used for creating an index on a table
+     INDEX_ON = "ON"
+ 
+@@ -2864,7 +2867,31 @@ class Generator:
+         expressions = self.expressions(expression, indent=False)
+         return f"CUBE {self.wrap(expressions)}" if expressions else "WITH CUBE"
+ 
++    def _is_droppable_empty_group_by(self, expression: exp.Group) -> bool:
++        select = expression.parent
++        only = expression.expressions[0] if len(expression.expressions) == 1 else None
++        if (
++            not isinstance(select, exp.Select)
++            or not isinstance(only, exp.Tuple)
++            or only.expressions
++            or any(
++                expression.args.get(key) for key in ("grouping_sets", "cube", "rollup", "totals")
++            )
++        ):
++            return False
++        return bool(select.args.get("having")) or any(
++            not isinstance(aggregate.parent, exp.Window)
++            for projection in select.expressions
++            for aggregate in projection.find_all(exp.AggFunc)
++        )
++
+     def group_sql(self, expression: exp.Group) -> str:
++        if not self.SUPPORTS_EMPTY_GROUP_BY:
++            if self._is_droppable_empty_group_by(expression):
++                return ""
++            if any(isinstance(e, exp.Tuple) and not e.expressions for e in expression.expressions):
++                self.unsupported("GROUP BY () is not supported")
++
+         group_by_all = expression.args.get("all")
+         if group_by_all is True:
+             modifier = " ALL"
+diff --git a/sqlglot/generators/snowflake.py b/sqlglot/generators/snowflake.py
+index 05259cdd..de514fc9 100644
+--- a/sqlglot/generators/snowflake.py
++++ b/sqlglot/generators/snowflake.py
+@@ -417,6 +417,7 @@ def _eliminate_dot_variant_lookup(expression: exp.Expr) -> exp.Expr:
+ 
+ 
+ class SnowflakeGenerator(generator.Generator):
++    SUPPORTS_EMPTY_GROUP_BY = False
+     BYTE_STRING_FUNCTION = "HEX_DECODE_BINARY"
+     SELECT_KINDS: tuple[str, ...] = ()
+     PARAMETER_TOKEN = "$"
+diff --git a/sqlglot/generators/spark2.py b/sqlglot/generators/spark2.py
+index ceec4216..ddfef971 100644
+--- a/sqlglot/generators/spark2.py
++++ b/sqlglot/generators/spark2.py
+@@ -130,6 +130,7 @@ def temporary_storage_provider(expression: exp.Expr) -> exp.Expr:
+ 
+ 
+ class Spark2Generator(HiveGenerator):
++    SUPPORTS_EMPTY_GROUP_BY = False
+     QUERY_HINTS = True
+     NVL2_SUPPORTED = True
+     CAN_IMPLEMENT_ARRAY_ANY = True

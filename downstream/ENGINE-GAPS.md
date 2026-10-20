@@ -49,6 +49,13 @@ from `transpile_ddl` on SQLite, DuckDB and Postgres and compares columns and con
 table on DuckDB, and checks the types a `type_map` produces on DuckDB and Postgres. SingleStore
 `SHARD KEY`, `SORT KEY` and `REFERENCE TABLE` output is a golden-output test only (the SingleStore row
 below); the key clauses are not part of any other engine's grammar, so they cannot run elsewhere.
+`tests/test_benchbox_compat_engines.py` runs in the `in-process` and `postgres` jobs: alias inlining,
+column qualification, `FILTER` removal (windowed and not), literal-subquery naming, grouped scalar
+subqueries and ordered list aggregates execute on Postgres, DuckDB, DataFusion and PySpark; the `GROUP BY ()`
+drop runs on all four (DataFusion and PySpark also assert the engine rejects the original); the ClickHouse `FILTER` combinators run on chDB. The BigQuery `COUNTIF`/`IF` shapes execute as
+BigQuery text transpiled to each engine, because BigQuery itself is a gap above; Trino and Presto get
+the same generic `IF` form executed on the four engines, not on Trino. The Snowflake `GROUP BY ()` drop and
+the BigQuery window NULL-ordering reset have only AST tests, because Snowflake and BigQuery are gaps.
 `tests/test_questdb_execution.py` runs in the `questdb` job: it executes the QuestDB
 generator's comma-join expansion, `DATEADD`, `SUBSTRING` and CTE column list output.
 
