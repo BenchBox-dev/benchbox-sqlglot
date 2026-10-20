@@ -150,19 +150,13 @@ def _strip_constraints(create: exp.Create, kinds: tuple[type[exp.Expr], ...]) ->
                 item.pop()
 
 
-def _parameters(parameters: Sequence[exp.Expr], dialect: Dialect) -> str:
-    return (
-        f"({', '.join(parameter.sql(dialect) for parameter in parameters)})" if parameters else ""
-    )
-
-
 def _data_type_key(data_type: exp.DataType) -> str:
     if data_type.is_type(exp.DType.USERDEFINED):
         return str(data_type.args.get("kind") or "").upper()
     return data_type.this.name
 
 
-def _map_types(create: exp.Create, options: DdlOptions, dialect: Dialect) -> None:
+def _map_types(create: exp.Create, options: DdlOptions) -> None:
     schema = create.this
     if not isinstance(schema, exp.Schema) or not options.type_map:
         return
@@ -176,9 +170,11 @@ def _map_types(create: exp.Create, options: DdlOptions, dialect: Dialect) -> Non
             if target is None:
                 continue
             parameters = (
-                [] if target.upper() in options.drop_type_parameters else data_type.expressions
+                []
+                if target.upper() in options.drop_type_parameters
+                else [parameter.copy() for parameter in data_type.expressions]
             )
-            data_type.replace(exp.Var(this=target + _parameters(parameters, dialect)))
+            data_type.replace(exp.DataType(this=target, expressions=parameters))
 
 
 def _is_permanent_table(create: exp.Create) -> bool:
@@ -272,7 +268,7 @@ def transpile_ddl(
                     kinds.extend(classes)
             if kinds:
                 _strip_constraints(tree, tuple(kinds))
-            _map_types(tree, options, target)
+            _map_types(tree, options)
             _replace(tree, options)
             if options.singlestore is not None:
                 _singlestore(tree, options.singlestore, target, opts)
