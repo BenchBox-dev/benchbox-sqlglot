@@ -1,0 +1,171 @@
+name: BenchBox real engines
+
+# Executes SQL translated by this fork on real engines. Each job names the
+# engines it must have in BENCHBOX_ENGINES_REQUIRED, so a missing package or an
+# unreachable service fails the job instead of skipping its tests. Engines with
+# no hosted-runner option are listed in downstream/ENGINE-GAPS.md.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  in-process:
+    name: in-process (sqlite, duckdb, datafusion, chdb, pyspark)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BENCHBOX_ENGINES_REQUIRED: sqlite,duckdb,datafusion,chdb,pyspark
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install engines
+        run: |
+          uv venv
+          uv pip install -e ".[engines]"
+      - name: PySpark needs Java 17
+        run: echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+      - run: .venv/bin/python -m tests.engines status
+      - run: .venv/bin/python -m unittest tests.test_engines -v
+
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BENCHBOX_ENGINES_REQUIRED: postgres
+      BENCHBOX_ENGINE_POSTGRES: 127.0.0.1:5432
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: |
+          uv venv
+          uv pip install -e ".[engines]"
+      - run: .venv/bin/python -m tests.engines wait postgres 120
+      - run: .venv/bin/python -m unittest tests.test_engines -v
+
+  trino:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BENCHBOX_ENGINES_REQUIRED: trino
+      BENCHBOX_ENGINE_TRINO: 127.0.0.1:8080
+    services:
+      trino:
+        image: trinodb/trino:484
+        ports:
+          - 8080:8080
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: |
+          uv venv
+          uv pip install -e ".[engines]"
+      - run: .venv/bin/python -m tests.engines wait trino 300
+      - run: .venv/bin/python -m unittest tests.test_engines -v
+
+  questdb:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BENCHBOX_ENGINES_REQUIRED: questdb
+      BENCHBOX_ENGINE_QUESTDB: 127.0.0.1:8812
+    services:
+      questdb:
+        image: questdb/questdb:10.0.1
+        ports:
+          - 8812:8812
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: |
+          uv venv
+          uv pip install -e ".[engines]"
+      - run: .venv/bin/python -m tests.engines wait questdb 180
+      - run: .venv/bin/python -m unittest tests.test_engines -v
+
+  starrocks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BENCHBOX_ENGINES_REQUIRED: starrocks
+      BENCHBOX_ENGINE_STARROCKS: 127.0.0.1:9030
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Start StarRocks all-in-one
+        run: docker run -d --name starrocks -p 9030:9030 -p 8030:8030 starrocks/allin1-ubuntu:4.0.16
+      - run: |
+          uv venv
+          uv pip install -e ".[engines]"
+      - run: .venv/bin/python -m tests.engines wait starrocks 600
+      - run: .venv/bin/python -m unittest tests.test_engines -v
+      - name: Container log
+        if: failure()
+        run: docker logs --tail 200 starrocks
+
+  doris:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BENCHBOX_ENGINES_REQUIRED: doris
+      BENCHBOX_ENGINE_DORIS: 127.0.0.1:9030
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Start Doris all-in-one
+        run: |
+          sudo sysctl -w vm.max_map_count=2000000
+          docker run -d --name doris -p 9030:9030 -p 8030:8030 apache/doris:all-in-one-4.1.3
+      - run: |
+          uv venv
+          uv pip install -e ".[engines]"
+      - run: .venv/bin/python -m tests.engines wait doris 600
+      - run: .venv/bin/python -m unittest tests.test_engines -v
+      - name: Container log
+        if: failure()
+        run: docker logs --tail 200 doris
