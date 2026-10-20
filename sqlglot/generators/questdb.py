@@ -91,7 +91,7 @@ def _expand_comma_joins(expression: exp.Expr) -> exp.Expr:
     return expression
 
 
-def _name_projections(query: exp.Expr | None, columns: list[exp.Expr]) -> bool:
+def _name_projections(query: exp.Expr | None, columns: list[exp.Identifier]) -> bool:
     """Alias the projections of ``query`` with ``columns``; False if its shape does not allow it."""
     while isinstance(query, (exp.Subquery, exp.SetOperation)):
         # The first branch of a set operation names its columns.
@@ -105,7 +105,7 @@ def _name_projections(query: exp.Expr | None, columns: list[exp.Expr]) -> bool:
     query.set(
         "expressions",
         [
-            exp.alias_(projection.unalias(), column.copy())
+            exp.alias_(projection.unalias(), exp.to_identifier(column.name, quoted=column.quoted))
             for projection, column in zip(query.expressions, columns)
         ],
     )

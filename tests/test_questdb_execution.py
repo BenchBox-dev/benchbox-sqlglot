@@ -80,8 +80,7 @@ class TestCommaJoins(QuestDBExecutionCase):
 
     def test_two_tables_match_the_comma_join(self):
         sql = (
-            "SELECT a.id, b.m FROM qx_a a, qx_b b WHERE a.k = b.k AND a.v > 1.5 "
-            "ORDER BY a.id, b.m"
+            "SELECT a.id, b.m FROM qx_a a, qx_b b WHERE a.k = b.k AND a.v > 1.5 ORDER BY a.id, b.m"
         )
         generated, rows = self.run_rewritten(sql)
         self.assertIn("JOIN qx_b AS b ON a.k = b.k", generated)
@@ -123,9 +122,7 @@ class TestCommaJoins(QuestDBExecutionCase):
         self.assertEqual(rows, self.rows(sql))
 
     def test_columns_without_a_qualifier(self):
-        sql = (
-            "SELECT p_id, r_z FROM qx_p, qx_q, qx_r WHERE q_m = r_m AND p_k = q_k ORDER BY p_id"
-        )
+        sql = "SELECT p_id, r_z FROM qx_p, qx_q, qx_r WHERE q_m = r_m AND p_k = q_k ORDER BY p_id"
         generated, rows = self.run_rewritten(sql)
         self.assertIn("JOIN qx_q ON q_m = r_m JOIN qx_r ON p_k = q_k", generated)
         self.assertEqual(rows, [(1, 7), (2, 8)])
@@ -233,7 +230,9 @@ class TestSubstring(QuestDBExecutionCase):
 
 class TestCteColumnList(QuestDBExecutionCase):
     def test_column_list_is_not_accepted_as_written(self):
-        error = rejected(self.connection, "WITH r (p, q) AS (SELECT k, v FROM qx_a) SELECT * FROM r")
+        error = rejected(
+            self.connection, "WITH r (p, q) AS (SELECT k, v FROM qx_a) SELECT * FROM r"
+        )
         self.assertIsNotNone(error)
         self.assertIn("'as' expected", error)
 

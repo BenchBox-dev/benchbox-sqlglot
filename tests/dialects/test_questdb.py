@@ -88,7 +88,9 @@ class TestQuestDB(Validator):
         )
         self.validate_all(
             "SELECT t.x FROM t WHERE EXISTS(SELECT * FROM a JOIN b ON a.id = b.id)",
-            read={"postgres": "SELECT t.x FROM t WHERE EXISTS(SELECT * FROM a, b WHERE a.id = b.id)"},
+            read={
+                "postgres": "SELECT t.x FROM t WHERE EXISTS(SELECT * FROM a, b WHERE a.id = b.id)"
+            },
         )
         # Explicit joins and single tables are untouched.
         self.validate_identity("SELECT l.x FROM a AS l JOIN b AS o ON l.id = o.id WHERE l.q > 5")
@@ -125,7 +127,9 @@ class TestQuestDB(Validator):
             read={"postgres": "SELECT * FROM a, b WHERE a.k < b.k OR a.v = 1 AND a.k + 1 = b.k"},
         )
         # Joins that are not bare comma joins are left alone.
-        self.validate_identity("SELECT x FROM a CROSS JOIN b, LATERAL (SELECT 1) AS l WHERE a.k = 1")
+        self.validate_identity(
+            "SELECT x FROM a CROSS JOIN b, LATERAL (SELECT 1) AS l WHERE a.k = 1"
+        )
         self.validate_identity("SELECT x FROM a LEFT JOIN b ON a.k = b.k WHERE b.k IS NULL")
 
     def test_interval_arithmetic(self):
@@ -163,7 +167,9 @@ class TestQuestDB(Validator):
         # keep the PostgreSQL spelling.
         self.validate_all(
             "SELECT x + INTERVAL '1 WEEK', x + INTERVAL '2 HOUR', x + n * INTERVAL '1 DAY'",
-            read={"postgres": "SELECT x + INTERVAL '1' WEEK, x + INTERVAL '2' HOUR, x + n * INTERVAL '1' DAY"},
+            read={
+                "postgres": "SELECT x + INTERVAL '1' WEEK, x + INTERVAL '2' HOUR, x + n * INTERVAL '1' DAY"
+            },
         )
         self.validate_identity("SELECT x + 5, x - y")
 
@@ -201,7 +207,9 @@ class TestQuestDB(Validator):
         # Only the first branch of a set operation names the columns.
         self.validate_all(
             "WITH r AS (SELECT 1 AS p, 2 AS q UNION ALL SELECT 3, 4) SELECT p FROM r",
-            read={"postgres": "WITH r (p, q) AS (SELECT 1, 2 UNION ALL SELECT 3, 4) SELECT p FROM r"},
+            read={
+                "postgres": "WITH r (p, q) AS (SELECT 1, 2 UNION ALL SELECT 3, 4) SELECT p FROM r"
+            },
         )
         self.validate_all(
             "WITH r AS ((SELECT 1 AS p) UNION ALL (SELECT 2)) SELECT p FROM r",
