@@ -22,9 +22,7 @@ def rewrite_for_postgres(sql, read="netezza", **kwargs):
 
 def as_dates(rows):
     """Compare dates whether the engine returned a DATE or a midnight TIMESTAMP."""
-    return [
-        tuple(v.date() if isinstance(v, datetime.datetime) else v for v in row) for row in rows
-    ]
+    return [tuple(v.date() if isinstance(v, datetime.datetime) else v for v in row) for row in rows]
 
 
 @requires_engine("postgres")
@@ -100,7 +98,9 @@ class TestDateArithmeticOnPostgres(unittest.TestCase):
 @requires_engine("datafusion")
 class TestDataFusionDialectExecution(unittest.TestCase):
     def run_dialect(self, sql, read="postgres"):
-        return engines.execute("datafusion", sqlglot.transpile(sql, read=read, write="datafusion")[0])
+        return engines.execute(
+            "datafusion", sqlglot.transpile(sql, read=read, write="datafusion")[0]
+        )
 
     def test_postgres_syntax_runs_through_the_datafusion_dialect(self):
         rows = self.run_dialect(
@@ -128,7 +128,9 @@ class TestDataFusionDialectExecution(unittest.TestCase):
             "WITH t AS (SELECT CAST('2000-02-27' AS DATE) AS d_date) "
             "SELECT d_date + 3, d_date - 60 FROM t"
         )
-        tree = date_integer_arithmetic_to_interval(sqlglot.parse_one(sql, read="netezza"), DATE_COLUMNS)
+        tree = date_integer_arithmetic_to_interval(
+            sqlglot.parse_one(sql, read="netezza"), DATE_COLUMNS
+        )
         rewritten = tree.sql("datafusion")
         self.assertIn("INTERVAL '3 DAY'", rewritten)
         self.assertEqual(
