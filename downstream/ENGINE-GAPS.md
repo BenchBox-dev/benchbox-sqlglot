@@ -28,6 +28,15 @@ so a missing package or an unreachable container fails the job.
 `tests/test_platform_dialects_engines.py` runs in the `in-process` and `postgres` jobs
 next to the seed tests: it executes DataFusion dialect output and the date
 arithmetic rewrite.
+`tests/test_benchbox_adapter_rewrites_engines.py` runs in the same two jobs and in addition
+uses `chdb` and `pyspark`: it executes the division rewrite's BigQuery, Databricks and Snowflake
+shapes on Postgres and DuckDB, the Databricks `TRY_DIVIDE` form and ANSI division failure on
+PySpark, the ClickHouse `NULLIF` form on chDB, alias deduplication on Postgres, DuckDB and
+PySpark, table qualification on Postgres and DuckDB, and flag folding on Postgres and DuckDB.
+BigQuery `SAFE_DIVIDE` and Snowflake's `NULLIF` form are not executed in their own dialect
+(see the BigQuery and Snowflake rows above); Databricks `PRIMARY KEY` is checked only for
+syntax on PySpark, which parses it and then rejects it as an unsupported constraint, so
+Delta constraint enforcement stays a managed-service gap.
 `tests/test_questdb_execution.py` runs in the `questdb` job: it executes the QuestDB
 generator's comma-join expansion, `DATEADD`, `SUBSTRING` and CTE column list output.
 
