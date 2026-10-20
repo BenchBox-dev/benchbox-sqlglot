@@ -1,0 +1,159 @@
+diff --git a/sqlglot/generators/snowflake.py b/sqlglot/generators/snowflake.py
+index b84086a7..05259cdd 100644
+--- a/sqlglot/generators/snowflake.py
++++ b/sqlglot/generators/snowflake.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import re
+ import typing as t
+ from collections import defaultdict
+ 
+@@ -42,6 +43,52 @@ if t.TYPE_CHECKING:
+     from sqlglot._typing import E
+ 
+ 
++_NAMED_GROUP = re.compile(r"\(\?(?:P?<[A-Za-z_]|')")
++_GROUP_REFERENCE = re.compile(r"\\(\\|\d)")
++
++
++def _capture_non_capturing_groups(pattern: str) -> tuple[str, dict[int, int]] | None:
++    result: list[str] = []
++    groups: dict[int, int] = {}
++    original = captured = 0
++    converted = False
++    in_class = False
++    i = 0
++    while i < len(pattern):
++        char = pattern[i]
++        if char == "\\":
++            result.append(pattern[i : i + 2])
++            i += 2
++        elif in_class:
++            in_class = char != "]"
++            result.append(char)
++            i += 1
++        elif char == "[":
++            end = i + 1
++            if pattern.startswith("^", end):
++                end += 1
++            if pattern.startswith("]", end):
++                end += 1
++            result.append(pattern[i:end])
++            in_class = True
++            i = end
++        elif pattern.startswith("(?:", i):
++            captured += 1
++            converted = True
++            result.append("(")
++            i += 3
++        elif char == "(" and (not pattern.startswith("(?", i) or _NAMED_GROUP.match(pattern, i)):
++            original += 1
++            captured += 1
++            groups[original] = captured
++            result.append(char)
++            i += 1
++        else:
++            result.append(char)
++            i += 1
++    return ("".join(result), groups) if converted else None
++
++
+ def _build_datediff(args: list) -> exp.DateDiff:
+     return exp.DateDiff(
+         this=seq_get(args, 2),
+@@ -1156,6 +1203,38 @@ class SnowflakeGenerator(generator.Generator):
+             expression.set("spec", None)
+         return super().window_sql(expression)
+ 
++    def regexpreplace_sql(self, expression: exp.RegexpReplace) -> str:
++        pattern = expression.expression
++        replacement = expression.args.get("replacement")
++        if (
++            isinstance(pattern, exp.Literal)
++            and pattern.is_string
++            and (
++                replacement is None
++                or (isinstance(replacement, exp.Literal) and replacement.is_string)
++            )
++        ):
++            captured = _capture_non_capturing_groups(pattern.name)
++            if captured:
++                new_pattern, groups = captured
++                expression = expression.copy()
++                expression.set("expression", exp.Literal.string(new_pattern))
++                if replacement is not None:
++                    expression.set(
++                        "replacement",
++                        exp.Literal.string(
++                            _GROUP_REFERENCE.sub(
++                                lambda m: (
++                                    m.group(0)
++                                    if m.group(1) in ("\\", "0")
++                                    else f"\\{groups.get(int(m.group(1)), int(m.group(1)))}"
++                                ),
++                                replacement.name,
++                            )
++                        ),
++                    )
++        return self.function_fallback_sql(expression)
++
+     def withingroup_sql(self, expression: exp.WithinGroup) -> str:
+         # Snowflake's MODE doesn't support the ordered-set syntax, i.e. it only
+         # accepts the value to aggregate as an argument: MODE(<expr>)
+diff --git a/tests/dialects/test_snowflake.py b/tests/dialects/test_snowflake.py
+index 116ae9f0..a0117fc6 100644
+--- a/tests/dialects/test_snowflake.py
++++ b/tests/dialects/test_snowflake.py
+@@ -7079,3 +7079,51 @@ FROM SEMANTIC_VIEW(
+         self.validate_identity("UNDROP TABLE db.schema.my_table")
+         self.validate_identity("UNDROP SNAPSHOT IDENTIFIER('my_snap')")
+         self.validate_identity("UNDROP SNAPSHOT my_snap RENAME TO new_snap")
++
++    def test_regexp_replace_non_capturing_groups(self):
++        self.validate_all(
++            r"REGEXP_REPLACE(s, '^https?://(www\\.)?([^/]+)/.*$', '\\2')",
++            read={
++                "clickhouse": r"REGEXP_REPLACE(s, '^https?://(?:www\\.)?([^/]+)/.*$', '\\1')",
++                "snowflake": r"REGEXP_REPLACE(s, '^https?://(www\\.)?([^/]+)/.*$', '\\2')",
++            },
++            write={
++                "snowflake": r"REGEXP_REPLACE(s, '^https?://(www\\.)?([^/]+)/.*$', '\\2')",
++                "clickhouse": r"REGEXP_REPLACE(s, '^https?://(www\\.)?([^/]+)/.*$', '\\2')",
++            },
++        )
++
++        for source, expected in (
++            (
++                r"REGEXP_REPLACE(s, '(?:a)(b)(?:c)(d)', '\\2\\1')",
++                r"REGEXP_REPLACE(s, '(a)(b)(c)(d)', '\\4\\2')",
++            ),
++            (
++                r"REGEXP_REPLACE(s, '(a)(?:b)', '\\1\\\\1\\0')",
++                r"REGEXP_REPLACE(s, '(a)(b)', '\\1\\\\1\\0')",
++            ),
++            (r"REGEXP_REPLACE(s, '(?:a)+')", r"REGEXP_REPLACE(s, '(a)+', '')"),
++            (
++                r"REGEXP_REPLACE(s, '[(?:]\\((?:x)\\)(y)', '\\1')",
++                r"REGEXP_REPLACE(s, '[(?:]\\((x)\\)(y)', '\\2')",
++            ),
++            (
++                r"REGEXP_REPLACE(s, '(?i)(?:a)(?=b)(?<!c)(?<n>d)', '\\1')",
++                r"REGEXP_REPLACE(s, '(?i)(a)(?=b)(?<!c)(?<n>d)', '\\2')",
++            ),
++            (
++                r"REGEXP_REPLACE(s, '[^](?:]+(?:a)', '\\1')",
++                r"REGEXP_REPLACE(s, '[^](?:]+(a)', '\\1')",
++            ),
++        ):
++            with self.subTest(source=source):
++                self.assertEqual(parse_one(source, read="snowflake").sql("snowflake"), expected)
++
++        for unchanged in (
++            r"REGEXP_REPLACE(s, '(a)(b)', '\\2\\1')",
++            r"REGEXP_REPLACE(s, '(?i)a', 'b')",
++            r"REGEXP_REPLACE(s, pattern, '\\1')",
++            r"REGEXP_REPLACE(s, '(?:a)(b)', replacement)",
++        ):
++            with self.subTest(unchanged=unchanged):
++                self.assertEqual(parse_one(unchanged, read="snowflake").sql("snowflake"), unchanged)
