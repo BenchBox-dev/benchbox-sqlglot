@@ -48,7 +48,7 @@
         "tests.dialects.test_sqlite",
         "tests.test_optimizer"
       ],
-      "reason": "Lower YEAR/MONTH/DAY extraction from typed DATE inputs, preserving source-aware division; reject unproved timestamp, unknown-input and DATE_PART lowering.",
+      "reason": "Lower YEAR/MONTH/DAY extraction from typed DATE inputs, preserving source-aware division; reject unproved timestamp and DATE_PART lowering. Inputs of unknown type and time fields are lowered by sqlite-temporal-lowering.",
       "patch": "downstream/patches/sqlite-date-extraction.patch"
     },
     {
@@ -63,7 +63,7 @@
       "tests": [
         "tests.dialects.test_sqlite"
       ],
-      "reason": "Lower typed DATE plus/minus whole DAY/HOUR/MINUTE/SECOND intervals; reject month/year, fractional, timestamp and unknown-input cases whose semantics are unproved.",
+      "reason": "Lower typed DATE plus/minus whole DAY/HOUR/MINUTE/SECOND intervals; reject fractional, timestamp and unknown-input cases whose semantics are unproved. Month/year offsets are lowered by sqlite-temporal-lowering.",
       "patch": "downstream/patches/sqlite-date-interval-arithmetic.patch"
     },
     {
@@ -119,6 +119,41 @@
         "tests.test_engines"
       ],
       "reason": "Execute translated SQL on real engines in CI, with a lazy unittest helper and a recorded gap list for platforms that have no obtainable engine."
+    },
+    {
+      "id": "benchbox-rewrites",
+      "source": "2d4f97d6c9143f51fe54424959578661b6dcfb27",
+      "status": "original",
+      "depends": [],
+      "paths": [
+        "sqlglot/benchbox/__init__.py",
+        "sqlglot/benchbox/rewrites.py",
+        "tests/test_benchbox_rewrites.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_rewrites"
+      ],
+      "reason": "Engine-neutral expression rewrites in a new package. The first member folds literal sum/difference BETWEEN bounds to exact decimals so engines that evaluate decimal literals as binary floats keep rows equal to a bound; the column and table gates are arguments."
+    },
+    {
+      "id": "sqlite-temporal-lowering",
+      "source": "5b2282616d5490b0a548771074385b0df3a849c9",
+      "status": "carried",
+      "depends": [
+        "postgres-extract-return-types",
+        "sqlite-date-extraction",
+        "sqlite-date-interval-arithmetic",
+        "real-engine-ci"
+      ],
+      "paths": [
+        "sqlglot/generators/sqlite.py",
+        "tests/dialects/test_sqlite.py"
+      ],
+      "tests": [
+        "tests.dialects.test_sqlite"
+      ],
+      "reason": "Lower whole month/year offsets on a DATE that cannot overflow a month end, EXTRACT of YEAR..SECOND from inputs of unknown type, and DATE_TRUNC to STRFTIME; keep month-end rollover, CAST to TIMESTAMP, time zones and other units Unsupported.",
+      "patch": "downstream/patches/sqlite-temporal-lowering.patch"
     }
   ]
 }

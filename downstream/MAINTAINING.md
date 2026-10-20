@@ -131,6 +131,16 @@ Every downstream change is a `downstream/patches.json` entry:
 A path belongs to exactly one entry. The contract test checks this and that
 original paths are absent upstream.
 
+## The `sqlglot.benchbox` package
+
+`sqlglot/benchbox/` holds engine-neutral expression rewrites that BenchBox calls
+with its own gates (column names, table names) as arguments. The package and its
+tests are `original` manifest entries because none of the files exist upstream.
+A rewrite takes and returns an expression (`copy=True` by default), so the caller
+chooses the read and write dialects, and it never names a benchmark, table or
+column. Behavior that belongs to one dialect's output (for example the SQLite
+date lowering) is a generator change and a carried patch instead.
+
 ## Upstream refresh
 
 The maintainer reviews upstream monthly and promptly for correctness or

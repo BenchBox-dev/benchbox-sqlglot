@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import typing as t
 
 from sqlglot import exp, generator, transforms
@@ -19,6 +20,24 @@ from sqlglot.generator import unsupported_args
 from sqlglot.errors import OptimizeError
 from sqlglot.helper import is_int
 from sqlglot.tokens import TokenType
+
+EXTRACT_FORMATS = {
+    "YEAR": "%Y",
+    "MONTH": "%m",
+    "DAY": "%d",
+    "HOUR": "%H",
+    "MINUTE": "%M",
+    "SECOND": "%S",
+}
+DATE_PARTS = {"YEAR", "MONTH", "DAY"}
+TRUNC_FORMATS = {
+    "YEAR": "%Y-01-01 00:00:00",
+    "MONTH": "%Y-%m-01 00:00:00",
+    "DAY": "%Y-%m-%d 00:00:00",
+    "HOUR": "%Y-%m-%d %H:00:00",
+    "MINUTE": "%Y-%m-%d %H:%M:00",
+    "SECOND": "%Y-%m-%d %H:%M:%S",
+}
 
 
 def _transform_create(expression: exp.Expr) -> exp.Expr:
@@ -281,31 +300,47 @@ class SQLiteGenerator(generator.Generator):
                     self.unsupported("SQLite extraction division requires known operand types")
         return super().div_sql(expression)
 
-    def extract_sql(self, expression: exp.Extract) -> str:
-        formats = {"YEAR": "%Y", "MONTH": "%m", "DAY": "%d"}
-        format_string = formats.get(expression.name.upper())
-        value = expression.expression
-        return_type = expression.args.get("return_type")
-        if format_string and not value.type:
-            from sqlglot.optimizer.annotate_types import annotate_types
+    def _annotated(self, node: exp.Expr) -> exp.Expr:
+        if node.type:
+            return node
+        from sqlglot.optimizer.annotate_types import annotate_types
 
-            value = annotate_types(value.copy(), dialect=self.dialect, overwrite_types=False)
+        return annotate_types(node.copy(), dialect=self.dialect, overwrite_types=False)
+
+    def _strftime_input(self, node: exp.Expr, date_ok: bool) -> bool:
+        # SQLite keeps temporal values as text, which STRFTIME reads for a column or
+        # expression of unknown type and for a DATE. A CAST to TIMESTAMP yields a
+        # number instead, so a value typed as anything else is not lowered.
+        node = self._annotated(node)
+        return (
+            not node.type
+            or node.is_type(exp.DType.UNKNOWN)
+            or (date_ok and node.is_type(exp.DType.DATE))
+        )
+
+    def extract_sql(self, expression: exp.Extract) -> str:
+        part = expression.name.upper()
+        format_string = EXTRACT_FORMATS.get(part)
+        return_type = expression.args.get("return_type")
         if (
             format_string
-            and value.is_type(exp.DType.DATE)
             and (
                 not return_type
                 or return_type.is_type(exp.DType.DECIMAL, *exp.DataType.INTEGER_TYPES)
             )
+            and self._strftime_input(expression.expression, part in DATE_PARTS)
         ):
             return self.sql(
                 exp.cast(
-                    exp.TimeToStr(this=value.copy(), format=exp.Literal.string(format_string)),
+                    exp.TimeToStr(
+                        this=expression.expression.copy(), format=exp.Literal.string(format_string)
+                    ),
                     exp.DType.INT,
                 )
             )
         self.unsupported(
-            "SQLite EXTRACT requires YEAR/MONTH/DAY from DATE with integer or decimal return semantics"
+            "SQLite EXTRACT requires a YEAR to SECOND field of an input of unknown type "
+            "(YEAR/MONTH/DAY for a DATE) with integer or decimal return semantics"
         )
         return super().extract_sql(expression)
 
@@ -371,19 +406,33 @@ class SQLiteGenerator(generator.Generator):
         date, interval = expression.this, expression.expression
         if isinstance(expression, exp.Add) and isinstance(date, exp.Interval):
             date, interval = interval, date
-        if (
-            date.is_type(exp.DType.DATE)
-            and isinstance(interval, exp.Interval)
+        if not (
+            isinstance(interval, exp.Interval)
             and interval.unit
-            and interval.unit.name.upper() in ("DAY", "HOUR", "MINUTE", "SECOND")
             and isinstance(interval.this, exp.Literal)
             and is_int(interval.this.name)
+            and self._annotated(date).is_type(exp.DType.DATE)
         ):
-            amount = int(interval.this.name)
-            if isinstance(expression, exp.Sub):
-                amount = -amount
-            modifier = exp.Literal.string(f"{amount} {interval.unit.name}")
+            return None
+        amount = int(interval.this.name)
+        if isinstance(expression, exp.Sub):
+            amount = -amount
+        unit = interval.unit.name.upper()
+        if unit in ("DAY", "HOUR", "MINUTE", "SECOND"):
+            modifier = exp.Literal.string(f"{amount} {unit}")
             return self.func("DATETIME", date, modifier)
+        if unit in ("MONTH", "YEAR") and isinstance(date, (exp.Cast, exp.Date)):
+            # SQLite carries an overflowing month end into the next month, while the
+            # source engines clamp it, so only inputs that cannot overflow are lowered:
+            # a NULL, or a literal whose day of month is at most 28.
+            literal = date.this
+            if isinstance(literal, exp.Null) or (
+                isinstance(literal, exp.Literal)
+                and literal.is_string
+                and re.fullmatch(r"\d{4}-\d{2}-(0[1-9]|1\d|2[0-8])", literal.name)
+            ):
+                modifier = exp.Literal.string(f"{amount:+d} {unit.lower()}")
+                return self.func("DATE", literal, modifier)
         return None
 
     def add_sql(self, expression: exp.Add) -> str:
@@ -395,6 +444,27 @@ class SQLiteGenerator(generator.Generator):
     def interval_sql(self, expression: exp.Interval) -> str:
         self.unsupported("SQLite does not support this INTERVAL expression")
         return super().interval_sql(expression)
+
+    def _truncate_sql(self, expression: exp.DateTrunc | exp.TimestampTrunc) -> str:
+        unit = expression.args.get("unit")
+        format_string = TRUNC_FORMATS.get(unit.name.upper()) if unit else None
+        if (
+            format_string
+            and not expression.args.get("zone")
+            and self._strftime_input(expression.this, True)
+        ):
+            return self.func("STRFTIME", exp.Literal.string(format_string), expression.this)
+        self.unsupported(
+            "SQLite date truncation requires a YEAR to SECOND unit, no time zone and an input "
+            "of unknown type or a DATE"
+        )
+        return self.function_fallback_sql(expression)
+
+    def datetrunc_sql(self, expression: exp.DateTrunc) -> str:
+        return self._truncate_sql(expression)
+
+    def timestamptrunc_sql(self, expression: exp.TimestampTrunc) -> str:
+        return self._truncate_sql(expression)
 
     def cast_sql(self, expression: exp.Cast, safe_prefix: str | None = None) -> str:
         if expression.is_type("date"):
