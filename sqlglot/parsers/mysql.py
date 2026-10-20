@@ -12,6 +12,7 @@ from sqlglot.dialects.dialect import (
     isnull_to_is_null,
 )
 from sqlglot.helper import seq_get
+from sqlglot.parser import IsPredicatePrecedence
 from sqlglot.tokens import TokenType
 
 
@@ -52,6 +53,8 @@ def _show_parser(*args: t.Any, **kwargs: t.Any) -> t.Callable[[MySQLParser], exp
 
 
 class MySQLParser(parser.Parser):
+    IS_PREDICATE_PRECEDENCE = IsPredicatePrecedence.COMPARISON
+
     NO_PAREN_FUNCTIONS = {
         **parser.Parser.NO_PAREN_FUNCTIONS,
         TokenType.LOCALTIME: exp.Localtime,
@@ -72,12 +75,20 @@ class MySQLParser(parser.Parser):
     CONJUNCTION = {
         **parser.Parser.CONJUNCTION,
         TokenType.DAMP: exp.And,
-        TokenType.XOR: exp.Xor,
     }
 
     DISJUNCTION = {
         **parser.Parser.DISJUNCTION,
         TokenType.DPIPE: exp.Or,
+    }
+
+    UNARY_PARSERS = {
+        **parser.Parser.UNARY_PARSERS,
+        TokenType.NOT: lambda self: self._parse_not(),
+    }
+
+    EXPONENT = {
+        TokenType.CARET: exp.BitwiseXor,
     }
 
     TABLE_ALIAS_TOKENS = (
@@ -130,6 +141,8 @@ class MySQLParser(parser.Parser):
         ),
         "SCHEMA": exp.CurrentSchema.from_arg_list,
         "DATABASE": exp.CurrentSchema.from_arg_list,
+        "STD": exp.StddevPop.from_arg_list,
+        "STDDEV": exp.StddevPop.from_arg_list,
         "STR_TO_DATE": _str_to_date,
         "TIMESTAMPDIFF": build_date_delta(exp.TimestampDiff),
         "TO_DAYS": lambda args: exp.paren(
@@ -140,6 +153,7 @@ class MySQLParser(parser.Parser):
             )
             + 1
         ),
+        "VARIANCE": exp.VariancePop.from_arg_list,
         "VERSION": exp.CurrentVersion.from_arg_list,
         "WEEK": lambda args: exp.Week(
             this=exp.TsOrDsToDate(this=seq_get(args, 0)), mode=seq_get(args, 1)
@@ -315,6 +329,60 @@ class MySQLParser(parser.Parser):
     VALUES_FOLLOWED_BY_PAREN = False
     SUPPORTS_PARTITION_SELECTION = True
 
+    def _parse_conjunction(self) -> exp.Expr | None:
+        this = super()._parse_conjunction()
+        while self._match(TokenType.XOR):
+            comments = self._prev_comments
+            this = self.expression(
+                exp.Xor(this=this, expression=super()._parse_conjunction()),
+                comments=comments,
+            )
+        return this
+
+    def _parse_not(self) -> exp.Expr:
+        if self._prev.text == "!":
+            # ! binds more tightly than NOT, so preserve its grouping when generating NOT.
+            return self.expression(
+                exp.Paren(this=self.expression(exp.Not(this=self._parse_unary())))
+            )
+        return self.expression(exp.Not(this=self._parse_equality()))
+
+    def _parse_bitwise(self) -> exp.Expr | None:
+        this = self._parse_bitwise_and()
+        while self._match(TokenType.PIPE):
+            comments = self._prev_comments
+            this = self.expression(
+                exp.BitwiseOr(this=this, expression=self._parse_bitwise_and()),
+                comments=comments,
+            )
+        return this
+
+    def _parse_bitwise_and(self) -> exp.Expr | None:
+        this = self._parse_bitwise_shift()
+        while self._match(TokenType.AMP):
+            comments = self._prev_comments
+            this = self.expression(
+                exp.BitwiseAnd(this=this, expression=self._parse_bitwise_shift()),
+                comments=comments,
+            )
+        return this
+
+    def _parse_bitwise_shift(self) -> exp.Expr | None:
+        this = self._parse_term()
+        while True:
+            if self._match_pair(TokenType.LT, TokenType.LT):
+                klass: type[exp.BitwiseLeftShift | exp.BitwiseRightShift] = exp.BitwiseLeftShift
+            elif self._match_pair(TokenType.GT, TokenType.GT):
+                klass = exp.BitwiseRightShift
+            else:
+                break
+
+            comments = self._prev_comments
+            this = self.expression(
+                klass(this=this, expression=self._parse_term()), comments=comments
+            )
+        return this
+
     def _parse_column_constraint(self) -> exp.Expr | None:
         # SIGNED is the default for numeric types, so MySQL ignores it
         self._match_text_seq("SIGNED")
@@ -323,7 +391,7 @@ class MySQLParser(parser.Parser):
 
         return super()._parse_column_constraint()
 
-    def _parse_range(self, this: exp.Expr | None = None) -> exp.Expr | None:
+    def _parse_range(self, this: exp.Expr | None = None, parse_is: bool = False) -> exp.Expr | None:
         this = this or self._parse_bitwise()
 
         if self._match_text_seq("SOUNDS", "LIKE"):
@@ -337,7 +405,7 @@ class MySQLParser(parser.Parser):
             if self._match(TokenType.IS, advance=False):
                 this = self.expression(exp.Paren(this=this))
 
-        return super()._parse_range(this)
+        return super()._parse_range(this, parse_is=parse_is)
 
     def _parse_alter_table_rename(self):
         if self._match_texts(("INDEX", "KEY")):

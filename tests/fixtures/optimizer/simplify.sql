@@ -235,6 +235,14 @@ A XOR A;
 A XOR A;
 
 # dialect: mysql
+TRUE XOR FALSE AND FALSE;
+FALSE XOR TRUE;
+
+# dialect: mysql
+TRUE OR TRUE XOR TRUE;
+TRUE;
+
+# dialect: mysql
 SELECT DISTINCT GREATEST(EXISTS(SELECT 1 WHERE FALSE), (EXISTS(SELECT 1 WHERE FALSE)) XOR ((0.08) IN ((t1.c0) XOR (t1.c0)))) AS ref0 FROM (SELECT NULL AS c0 UNION ALL SELECT 1 AS c0) AS t1, (SELECT 0.01 AS c1) AS t0;
 SELECT DISTINCT GREATEST(EXISTS(SELECT 1 WHERE FALSE), 0.08 IN (t1.c0 XOR t1.c0) XOR EXISTS(SELECT 1 WHERE FALSE)) AS ref0 FROM (SELECT NULL AS c0 UNION ALL SELECT 1 AS c0) AS t1, (SELECT 0.01 AS c1) AS t0;
 
@@ -798,6 +806,18 @@ CAST('1998-12-01' AS DATE) - INTERVAL x DAY;
 
 date '1998-12-01' - interval '90' day;
 CAST('1998-09-02' AS DATE);
+
+CAST('2020-01-01' AS DATE) + INTERVAL '3000000.0' DAY;
+CAST('2020-01-01' AS DATE) + INTERVAL '3000000.0' DAY;
+
+CAST('2020-01-01' AS DATE) + INTERVAL '10000.0' YEAR;
+CAST('2020-01-01' AS DATE) + INTERVAL '10000.0' YEAR;
+
+CAST('2020-01-01' AS DATE) - INTERVAL '2500' YEAR;
+CAST('2020-01-01' AS DATE) - INTERVAL '2500' YEAR;
+
+x + INTERVAL '10000.0' YEAR = CAST('2020-01-01' AS DATE);
+x + INTERVAL '10000.0' YEAR = CAST('2020-01-01' AS DATE);
 
 date '1998-12-01' + interval '1' week;
 CAST('1998-12-08' AS DATE);
@@ -2052,3 +2072,47 @@ SELECT 100;
 # schema: {"o": {"id": "INT", "observed_date": "DATE"}, "e": {"id": "INT", "metric_date": "DATE"}}
 SELECT * FROM o ASOF JOIN e MATCH_CONDITION (o.observed_date >= e.metric_date) ON o.id = e.id;
 SELECT * FROM o ASOF JOIN e MATCH_CONDITION (o.observed_date >= e.metric_date) ON e.id = o.id;
+
+# dialect: postgres
+NULL = NULL IS NULL;
+(NULL = NULL) IS NULL;
+
+# dialect: postgres
+FALSE = FALSE IS NULL;
+(FALSE = FALSE) IS NULL;
+
+# dialect: postgres
+NULL = (NULL IS NULL);
+NULL = TRUE;
+
+# dialect: snowflake
+NULL = NULL IS NULL;
+NULL = TRUE;
+
+# dialect: redshift
+NULL = NULL IS NULL;
+NULL = TRUE;
+
+# dialect: sqlite
+NULL IS NULL BETWEEN 0 AND 0;
+0 <= TRUE AND 0 >= TRUE;
+
+# dialect: sqlite
+NULL NOT NULL IN (0, 1);
+FALSE IN (0, 1);
+
+# dialect: postgres
+NULL IS NOT DISTINCT FROM NULL BETWEEN 2 AND 3;
+NULL IS NOT DISTINCT FROM (2 <= NULL AND 3 >= NULL);
+
+# dialect: sqlite
+a IS b BETWEEN 0 AND 1;
+(a IS b) <= 1 AND (a IS b) >= 0;
+
+# dialect: sqlite
+a IS DISTINCT FROM b BETWEEN 0 AND 1;
+(a IS DISTINCT FROM b) <= 1 AND (a IS DISTINCT FROM b) >= 0;
+
+# dialect: sqlite
+a IS NOT DISTINCT FROM b NOT BETWEEN 0 AND 1;
+(a IS NOT DISTINCT FROM b) < 0 OR (a IS NOT DISTINCT FROM b) > 1;

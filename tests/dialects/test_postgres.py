@@ -1,4 +1,5 @@
 from sqlglot import ParseError, UnsupportedError, exp, parse_one, transpile
+from sqlglot.generator import logger as generator_logger
 from sqlglot.helper import logger as helper_logger
 from sqlglot.optimizer.annotate_types import annotate_types
 from tests.dialects.test_dialect import Validator
@@ -7,6 +8,79 @@ from tests.dialects.test_dialect import Validator
 class TestPostgres(Validator):
     maxDiff = None
     dialect = "postgres"
+
+    def test_is_precedence(self):
+        for predicate in (
+            "NULL IN (0)",
+            "NULL NOT IN (0)",
+            "NULL BETWEEN 2 AND 3",
+            "NULL NOT BETWEEN 2 AND 3",
+            "NULL LIKE 'x'",
+            "NULL NOT LIKE 'x'",
+            "NULL LIKE '0' ESCAPE '!'",
+            "NULL NOT LIKE '0' ESCAPE '!'",
+        ):
+            for operator in ("IS DISTINCT FROM", "IS NOT DISTINCT FROM"):
+                rhs = self.parse_one(predicate).sql("postgres")
+                self.validate_all(
+                    f"SELECT NULL {operator} {predicate}",
+                    write={
+                        dialect: f"SELECT NULL {operator} ({rhs})"
+                        for dialect in ("postgres", "sqlite", "duckdb", "snowflake", "redshift")
+                    },
+                )
+        self.validate_all(
+            "SELECT a = b IS NULL FROM t",
+            write={
+                dialect: "SELECT (a = b) IS NULL FROM t"
+                for dialect in (
+                    "postgres",
+                    "duckdb",
+                    "mysql",
+                    "sqlite",
+                    "clickhouse",
+                    "hive",
+                    "spark",
+                    "snowflake",
+                    "redshift",
+                    "bigquery",
+                    "presto",
+                    "trino",
+                    "athena",
+                )
+            },
+        )
+        self.validate_all(
+            "SELECT a = (b IS NULL) FROM t",
+            read={
+                "snowflake": "SELECT a = b IS NULL FROM t",
+                "redshift": "SELECT a = b IS NULL FROM t",
+            },
+        )
+        self.validate_all(
+            "SELECT FALSE IS DISTINCT FROM NULL = NULL",
+            write={
+                "postgres": "SELECT FALSE IS DISTINCT FROM (NULL = NULL)",
+                "sqlite": "SELECT FALSE IS DISTINCT FROM (NULL = NULL)",
+                "snowflake": "SELECT FALSE IS DISTINCT FROM (NULL = NULL)",
+            },
+        )
+        self.validate_identity("SELECT NULL IS NULL = FALSE", "SELECT (NULL IS NULL) = FALSE")
+        self.validate_identity(
+            "SELECT a = b IS NOT NULL FROM t", "SELECT (a = b) IS NOT NULL FROM t"
+        )
+        self.validate_identity("SELECT a = b NOTNULL FROM t", "SELECT (a = b) IS NOT NULL FROM t")
+        self.validate_identity("SELECT a = (b IS NULL) FROM t")
+        self.validate_identity("SELECT a IS NOT NULL IS NULL FROM t")
+        self.validate_identity("SELECT a IS NULL IS NOT NULL FROM t")
+        self.validate_identity("SELECT NULL IS NOT NULL IS FALSE")
+        self.validate_identity(
+            "CREATE TABLE t (a INT, b BOOLEAN GENERATED ALWAYS AS (a IS NULL) STORED)"
+        )
+        self.validate_identity(
+            "CREATE TABLE t (a INT, b BOOLEAN GENERATED ALWAYS AS (a = 1 IS NULL) STORED)",
+            "CREATE TABLE t (a INT, b BOOLEAN GENERATED ALWAYS AS ((a = 1) IS NULL) STORED)",
+        )
 
     def test_json_value(self):
         self.validate_identity("SELECT JSON_VALUE(j, '$.a' RETURNING BIGINT) FROM t")
@@ -559,6 +633,11 @@ FROM json_data, field_ids""",
                 "postgres": "SELECT CURRENT_TIMESTAMP - MAKE_INTERVAL(years => 1, months => 2, days => 3)",
             },
         )
+        interval = parse_one("INTERVAL '1' QUARTER")
+        interval.set("this", exp.Literal.number("1e1000000000"))
+        with self.assertLogs(generator_logger, level="WARNING") as cm:
+            self.assertEqual(interval.sql("postgres"), "INTERVAL '1e1000000000 QUARTER'")
+        self.assertIn("Postgres intervals need a whole number of quarters", cm.output[0])
         self.validate_all(
             "SELECT CURRENT_TIMESTAMP + INTERVAL '-3 MONTH'",
             read={
@@ -1086,6 +1165,17 @@ FROM json_data, field_ids""",
             write={
                 "duckdb": "SELECT CAST(STRPTIME('01/01/2000', '%m/%d/%Y') AS DATE)",
                 "postgres": "SELECT TO_DATE('01/01/2000', 'MM/DD/YYYY')",
+            },
+        )
+        self.validate_all(
+            "SELECT TO_CHAR(x, 'IYYY-IW')",
+            read={
+                "duckdb": "SELECT STRFTIME(x, '%G-%V')",
+                "postgres": "SELECT TO_CHAR(x, 'iyyy-iw')",
+            },
+            write={
+                "duckdb": "SELECT STRFTIME(x, '%G-%V')",
+                "postgres": "SELECT TO_CHAR(x, 'IYYY-IW')",
             },
         )
 

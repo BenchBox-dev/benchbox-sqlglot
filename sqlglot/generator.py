@@ -2178,6 +2178,7 @@ class Generator:
         property_name = exp.Properties.PROPERTY_TO_NAME.get(property_cls)
         if not property_name:
             self.unsupported(f"Unsupported property {expression.key}")
+            return ""
 
         return f"{property_name}={self.sql(expression, 'this')}"
 
@@ -2318,6 +2319,10 @@ class Generator:
         lock_type = expression.args.get("lock_type")
         override = " OVERRIDE" if expression.args.get("override") else ""
         return f"LOCKING {kind}{this}{for_or_in} {lock_type}{override}"
+
+    def lockingstatement_sql(self, expression: exp.LockingStatement) -> str:
+        self.unsupported("LOCKING request modifier is not supported")
+        return self.sql(expression, "expression")
 
     def withdataproperty_sql(self, expression: exp.WithDataProperty) -> str:
         data_sql = f"WITH {'NO ' if expression.args.get('no') else ''}DATA"
@@ -2561,6 +2566,10 @@ class Generator:
         expression: exp.TableSample,
         tablesample_keyword: str | None = None,
     ) -> str:
+        if expression.expressions:
+            self.unsupported("Multiple sample sets are not supported")
+            return ""
+
         method = self.sql(expression, "method")
         method = f"{method} " if method and self.TABLESAMPLE_WITH_METHOD else ""
         numerator = self.sql(expression, "bucket_numerator")
@@ -3638,6 +3647,9 @@ class Generator:
         partition = self.expressions(expression, key="partition_by", flat=True)
         return f"PARTITION BY {partition}" if partition else ""
 
+    def partitionbyexcluding_sql(self, expression: exp.PartitionByExcluding) -> str:
+        return f"EXCLUDING {self.expressions(expression, flat=True)}"
+
     def windowspec_sql(self, expression: exp.WindowSpec) -> str:
         kind = self.sql(expression, "kind")
         start = csv(self.sql(expression, "start"), self.sql(expression, "start_side"), sep=" ")
@@ -4517,6 +4529,9 @@ class Generator:
     def addconstraint_sql(self, expression: exp.AddConstraint) -> str:
         return f"ADD {self.expressions(expression, indent=False)}"
 
+    def replacecolumns_sql(self, expression: exp.ReplaceColumns) -> str:
+        return f"REPLACE COLUMNS ({self.expressions(expression, flat=True)})"
+
     def addpartition_sql(self, expression: exp.AddPartition) -> str:
         exists = "IF NOT EXISTS " if expression.args.get("exists") else ""
         location = self.sql(expression, "location")
@@ -4771,14 +4786,22 @@ class Generator:
         sqls: list[str] = []
         stack: list[None | str | exp.Expr] = [expression]
         binary_type = type(expression)
+        is_is = binary_type is exp.Is and op in ("IS", "IS NOT")
+        negate = expression.args.get("negate")
 
         while stack:
             node = stack.pop()
 
-            if type(node) is binary_type:
+            if type(node) is binary_type and (
+                node is expression
+                or (is_is and not isinstance(node.expression, exp.Boolean))
+                or node.args.get("negate") == negate
+            ):
                 op_func = node.args.get("operator")
                 if op_func:
                     op = f"OPERATOR({self.sql(op_func)})"
+                elif is_is:
+                    op = "IS NOT" if node.args.get("negate") else "IS"
 
                 stack.append(node.args.get("expression"))
                 stack.append(f" {self.maybe_comment(op, comments=node.comments)} ")
@@ -6052,6 +6075,13 @@ class Generator:
         return self.sql(
             exp.TimestampDiff(this=expression.this, expression=start_ts, unit=exp.var("SECONDS"))
         )
+
+    def arraysort_sql(self, expression: exp.ArraySort) -> str:
+        asc = expression.args.get("asc")
+        nulls_first = expression.args.get("nulls_first")
+        if (asc and asc != exp.true()) or (nulls_first and nulls_first != exp.false()):
+            self.unsupported("ARRAY_SORT only sorts ascending with NULLs last")
+        return self.func("ARRAY_SORT", expression.this, expression.expression)
 
     def arraysize_sql(self, expression: exp.ArraySize) -> str:
         dim = expression.expression

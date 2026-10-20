@@ -7,6 +7,7 @@ import typing as t
 
 from sqlglot import exp, generator, transforms
 from sqlglot.dialects.dialect import (
+    array_sort_order,
     DATETIME_DELTA,
     JSON_EXTRACT_TYPE,
     approx_count_distinct_sql,
@@ -548,9 +549,22 @@ def _array_remove_at_sql(self: DuckDBGenerator, expression: exp.ArrayRemoveAt) -
     )
 
 
-@unsupported_args(("expression", "DuckDB's ARRAY_SORT does not support a comparator."))
+@unsupported_args(("expression", "DuckDB's LIST_SORT does not support a comparator."))
 def _array_sort_sql(self: DuckDBGenerator, expression: exp.ArraySort) -> str:
-    return self.func("ARRAY_SORT", expression.this)
+    order = array_sort_order(expression)
+    if order is None:
+        self.unsupported("LIST_SORT only takes literal orders")
+        return self.func("LIST_SORT", expression.this)
+
+    asc, nulls_first = order
+    if not nulls_first:
+        return self.func("LIST_SORT" if asc else "ARRAY_REVERSE_SORT", expression.this)
+    return self.func(
+        "LIST_SORT",
+        expression.this,
+        exp.Literal.string("ASC" if asc else "DESC"),
+        exp.Literal.string("NULLS FIRST"),
+    )
 
 
 def _array_contains_sql(self: DuckDBGenerator, expression: exp.ArrayContains) -> str:
@@ -1858,16 +1872,16 @@ class DuckDBGenerator(generator.Generator):
         "union",
         "all",
         "when",
-        "in_p",
+        "in",
         "default",
-        "create_p",
+        "create",
         "window",
         "asymmetric",
         "to",
         "else",
         "localtime",
         "from",
-        "end_p",
+        "end",
         "select",
         "current_date",
         "foreign",
@@ -1879,7 +1893,7 @@ class DuckDBGenerator(generator.Generator):
         "references",
         "fetch",
         "limit",
-        "group_p",
+        "group",
         "leading",
         "into",
         "collate",
@@ -1887,13 +1901,13 @@ class DuckDBGenerator(generator.Generator):
         "do",
         "then",
         "localtimestamp",
-        "check_p",
-        "lateral_p",
+        "check",
+        "lateral",
         "current_role",
         "where",
-        "asc_p",
+        "asc",
         "placing",
-        "desc_p",
+        "desc",
         "user",
         "unique",
         "initially",
@@ -1904,9 +1918,9 @@ class DuckDBGenerator(generator.Generator):
         "any",
         "only",
         "deferrable",
-        "null_p",
+        "null",
         "current_time",
-        "true_p",
+        "true",
         "table",
         "case",
         "trailing",
@@ -1914,7 +1928,7 @@ class DuckDBGenerator(generator.Generator):
         "for",
         "on",
         "distinct",
-        "false_p",
+        "false",
         "not",
         "constraint",
         "current_timestamp",
@@ -1930,6 +1944,15 @@ class DuckDBGenerator(generator.Generator):
         "using",
         "order",
         "current_catalog",
+        "describe",
+        "lambda",
+        "pivot",
+        "pivot_longer",
+        "pivot_wider",
+        "qualify",
+        "show",
+        "summarize",
+        "unpivot",
     }
 
     UNWRAPPED_INTERVAL_VALUES = (exp.Literal, exp.Paren)
@@ -2673,33 +2696,6 @@ class DuckDBGenerator(generator.Generator):
     def soundex_sql(self, expression: exp.Soundex) -> str:
         self.unsupported("SOUNDEX is not supported in DuckDB")
         return self.func("SOUNDEX", expression.this)
-
-    def sortarray_sql(self, expression: exp.SortArray) -> str:
-        arr = expression.this
-        asc = expression.args.get("asc")
-        nulls_first = expression.args.get("nulls_first")
-
-        if not isinstance(asc, exp.Boolean) and not isinstance(nulls_first, exp.Boolean):
-            return self.func("LIST_SORT", arr, asc, nulls_first)
-
-        nulls_are_first = nulls_first == exp.true()
-        nulls_first_sql = exp.Literal.string("NULLS FIRST") if nulls_are_first else None
-
-        if not isinstance(asc, exp.Boolean):
-            return self.func("LIST_SORT", arr, asc, nulls_first_sql)
-
-        descending = asc == exp.false()
-
-        if not descending and not nulls_are_first:
-            return self.func("LIST_SORT", arr)
-        if not nulls_are_first:
-            return self.func("ARRAY_REVERSE_SORT", arr)
-        return self.func(
-            "LIST_SORT",
-            arr,
-            exp.Literal.string("DESC" if descending else "ASC"),
-            exp.Literal.string("NULLS FIRST"),
-        )
 
     def install_sql(self, expression: exp.Install) -> str:
         force = "FORCE " if expression.args.get("force") else ""

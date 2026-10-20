@@ -18,16 +18,33 @@ class StarRocks(MySQL):
     }
 
     class Tokenizer(MySQL.Tokenizer):
+        # Unlike MySQL, "#" doesn't start a comment
+        COMMENTS = ["--", ("/*", "*/")]
         DASH_COMMENT_REQUIRES_BOUNDARY = False
         COMMENTS_TERMINATE_AT_NEWLINE_ONLY = False
 
         KEYWORDS = {
             **MySQL.Tokenizer.KEYWORDS,
+            "ADMIN": TokenType.COMMAND,
+            "BACKUP": TokenType.COMMAND,
+            "CANCEL": TokenType.COMMAND,
+            "DEALLOCATE": TokenType.COMMAND,
+            "EXPORT": TokenType.COMMAND,
             "HLL": TokenType.HLLSKETCH,
+            "INSTALL": TokenType.COMMAND,
             "LARGEINT": TokenType.INT128,
+            "PAUSE": TokenType.COMMAND,
+            "RECOVER": TokenType.COMMAND,
             "REFRESH": TokenType.REFRESH,
+            "RESTORE": TokenType.COMMAND,
+            "RESUME": TokenType.COMMAND,
+            "STOP": TokenType.COMMAND,
+            "SUBMIT": TokenType.COMMAND,
+            "UNINSTALL": TokenType.COMMAND,
         }
         KEYWORDS.pop("IGNORE")
+        KEYWORDS.pop("#>")
+        KEYWORDS.pop("#>>")
 
     Parser = StarRocksParser
 

@@ -1407,7 +1407,6 @@ class TestDialect(Validator):
                 write={
                     dialect: f"{unit}(x)"
                     for dialect in (
-                        "bigquery",
                         "drill",
                         "duckdb",
                         "mysql",
@@ -1439,6 +1438,20 @@ class TestDialect(Validator):
                     )
                 },
             )
+
+    def _validate_array_sort(self, read: str, sql: str, write: dict) -> None:
+        expression = parse_one(sql, read=read)
+        for dialect, expected in write.items():
+            with self.subTest(f"{read}: {sql} -> {dialect}"):
+                if isinstance(expected, tuple):
+                    expected, warning = expected
+                    with self.assertLogs(generator_logger, level="WARNING") as cm:
+                        self.assertEqual(expression.sql(dialect), expected)
+                    self.assertIn(warning, cm.output[0])
+                else:
+                    self.assertEqual(
+                        expression.sql(dialect, unsupported_level=ErrorLevel.RAISE), expected
+                    )
 
     def test_array(self):
         self.validate_all(
@@ -1550,16 +1563,177 @@ class TestDialect(Validator):
             },
         )
 
-        self.validate_all(
-            "SORT_ARRAY(x)",
-            write={
-                "duckdb": "LIST_SORT(x)",
-                "hive": "SORT_ARRAY(x)",
-                "presto": "ARRAY_SORT(x)",
-                "snowflake": "ARRAY_SORT(x)",
-                "spark": "SORT_ARRAY(x)",
+        # Each source's NULL placement, e.g. Trino puts NULLs last and Spark's SORT_ARRAY first
+        hive = ("SORT_ARRAY(x)", "Hive's SORT_ARRAY only sorts ascending with NULLs first")
+        trino_order = (
+            "ARRAY_SORT can't sort ascending with NULLs first or descending with NULLs last"
+        )
+        risingwave = ("ARRAY_SORT(x)", "ARRAY_SORT only sorts ascending with NULLs last")
+        asc_nulls_last = {
+            "duckdb": "LIST_SORT(x)",
+            "hive": hive,
+            "risingwave": "ARRAY_SORT(x)",
+            "snowflake": "ARRAY_SORT(x)",
+            "spark": "ARRAY_SORT(x)",
+            "trino": "ARRAY_SORT(x)",
+        }
+        asc_nulls_first = {
+            "duckdb": "LIST_SORT(x, 'ASC', 'NULLS FIRST')",
+            "hive": "SORT_ARRAY(x)",
+            "risingwave": risingwave,
+            "snowflake": "ARRAY_SORT(x, TRUE, TRUE)",
+            "spark": "SORT_ARRAY(x)",
+            "trino": ("ARRAY_SORT(x)", trino_order),
+        }
+        desc_nulls_last = {
+            "duckdb": "ARRAY_REVERSE_SORT(x)",
+            "hive": hive,
+            "risingwave": risingwave,
+            "snowflake": "ARRAY_SORT(x, FALSE, FALSE)",
+            "spark": "SORT_ARRAY(x, FALSE)",
+            "trino": ("REVERSE(ARRAY_SORT(x))", trino_order),
+        }
+        desc_nulls_first = {
+            "duckdb": "LIST_SORT(x, 'DESC', 'NULLS FIRST')",
+            "hive": hive,
+            "risingwave": risingwave,
+            "snowflake": "ARRAY_SORT(x, FALSE)",
+            "spark": "REVERSE(ARRAY_SORT(x))",
+            "trino": "REVERSE(ARRAY_SORT(x))",
+        }
+        for read, sql, write in (
+            ("trino", "ARRAY_SORT(x)", asc_nulls_last),
+            ("spark", "ARRAY_SORT(x)", asc_nulls_last),
+            ("snowflake", "ARRAY_SORT(x)", asc_nulls_last),
+            ("duckdb", "LIST_SORT(x)", asc_nulls_last),
+            ("spark", "SORT_ARRAY(x)", asc_nulls_first),
+            ("hive", "SORT_ARRAY(x)", asc_nulls_first),
+            ("duckdb", "LIST_SORT(x, 'ASC', 'NULLS FIRST')", asc_nulls_first),
+            ("spark", "SORT_ARRAY(x, FALSE)", desc_nulls_last),
+            ("duckdb", "LIST_SORT(x, 'DESC')", desc_nulls_last),
+            ("duckdb", "ARRAY_REVERSE_SORT(x)", desc_nulls_last),
+            ("snowflake", "ARRAY_SORT(x, FALSE)", desc_nulls_first),
+            ("duckdb", "LIST_SORT(x, 'DESC', 'NULLS FIRST')", desc_nulls_first),
+        ):
+            self._validate_array_sort(read, sql, write)
+
+        # A non-literal order is only kept where the target reads it the same way
+        unsupported = {
+            "duckdb": ("LIST_SORT(x)", "LIST_SORT only takes literal orders"),
+            "hive": hive,
+            "risingwave": risingwave,
+            "trino": ("ARRAY_SORT(x)", trino_order),
+        }
+        spark_nulls = "SORT_ARRAY puts NULLs first exactly when ascending"
+        self._validate_array_sort(
+            "spark",
+            "SORT_ARRAY(x, y)",
+            {**unsupported, "snowflake": "ARRAY_SORT(x, y, y)", "spark": "SORT_ARRAY(x, y)"},
+        )
+        self._validate_array_sort(
+            "snowflake",
+            "ARRAY_SORT(x, y)",
+            {
+                **unsupported,
+                "snowflake": "ARRAY_SORT(x, y)",
+                "spark": ("SORT_ARRAY(x, y)", spark_nulls),
             },
         )
+        self._validate_array_sort(
+            "snowflake",
+            "ARRAY_SORT(x, TRUE, y)",
+            {
+                **unsupported,
+                "snowflake": "ARRAY_SORT(x, TRUE, y)",
+                "spark": ("SORT_ARRAY(x, TRUE)", spark_nulls),
+            },
+        )
+        self._validate_array_sort(
+            "snowflake",
+            "ARRAY_SORT(x, y, FALSE)",
+            {
+                **unsupported,
+                "snowflake": "ARRAY_SORT(x, y, FALSE)",
+                "spark": ("SORT_ARRAY(x, y)", spark_nulls),
+            },
+        )
+        self._validate_array_sort(
+            "trino",
+            "ARRAY_SORT(x, (a, b) -> a - b)",
+            {
+                "duckdb": ("LIST_SORT(x)", "DuckDB's LIST_SORT does not support a comparator."),
+                "hive": ("SORT_ARRAY(x)", "Hive's SORT_ARRAY does not support a comparator."),
+                "snowflake": (
+                    "ARRAY_SORT(x)",
+                    "Snowflake's ARRAY_SORT does not support a comparator.",
+                ),
+                "spark": "ARRAY_SORT(x, (a, b) -> a - b)",
+                "trino": "ARRAY_SORT(x, (a, b) -> a - b)",
+            },
+        )
+
+        # BigQuery can't sort an aggregate's result, so the sort folds into the ARRAY_AGG
+        distinct_nulls = "ARRAY_AGG(DISTINCT) only puts NULLs first when ascending"
+        unfoldable = (
+            "is only supported on an ARRAY_AGG without ORDER BY or LIMIT and with a literal order"
+        )
+        for read, sql, expected in (
+            ("trino", "ARRAY_SORT(ARRAY_AGG(x))", "ARRAY_AGG(x ORDER BY x IS NULL, x)"),
+            ("duckdb", "LIST_SORT(LIST(x), 'ASC', 'NULLS FIRST')", "ARRAY_AGG(x ORDER BY x)"),
+            ("duckdb", "ARRAY_REVERSE_SORT(LIST(x))", "ARRAY_AGG(x ORDER BY x DESC)"),
+            (
+                "duckdb",
+                "LIST_SORT(LIST(x), 'DESC', 'NULLS FIRST')",
+                "ARRAY_AGG(x ORDER BY x IS NULL DESC, x DESC)",
+            ),
+            (
+                "duckdb",
+                "LIST_SORT(LIST(DISTINCT x), 'ASC', 'NULLS FIRST')",
+                "ARRAY_AGG(DISTINCT x ORDER BY x)",
+            ),
+            ("trino", "ARRAY_DISTINCT(ARRAY_AGG(x))", "ARRAY_AGG(DISTINCT x)"),
+            (
+                "trino",
+                "ARRAY_SORT(ARRAY_AGG(DISTINCT x))",
+                ("ARRAY_AGG(DISTINCT x ORDER BY x)", distinct_nulls),
+            ),
+            (
+                "trino",
+                "ARRAY_SORT(ARRAY_DISTINCT(ARRAY_AGG(x)))",
+                ("ARRAY_AGG(DISTINCT x ORDER BY x)", distinct_nulls),
+            ),
+            (
+                "duckdb",
+                "LIST_SORT(LIST(DISTINCT x), 'DESC', 'NULLS FIRST')",
+                ("ARRAY_AGG(DISTINCT x ORDER BY x DESC)", distinct_nulls),
+            ),
+            (
+                "spark",
+                "SORT_ARRAY(COLLECT_LIST(x), y)",
+                (
+                    "ARRAY_SORT(ARRAY_AGG(x) FILTER(WHERE x IS NOT NULL))",
+                    f"ARRAY_SORT {unfoldable}",
+                ),
+            ),
+            (
+                "trino",
+                "ARRAY_SORT(ARRAY_AGG(x ORDER BY y))",
+                ("ARRAY_SORT(ARRAY_AGG(x ORDER BY y))", f"ARRAY_SORT {unfoldable}"),
+            ),
+            (
+                "",
+                "ARRAY_SORT(ARRAY_AGG(x LIMIT 2))",
+                ("ARRAY_SORT(ARRAY_AGG(x LIMIT 2))", f"ARRAY_SORT {unfoldable}"),
+            ),
+            (
+                "trino",
+                "ARRAY_SORT(ARRAY_AGG(x), (a, b) -> 0)",
+                ("ARRAY_SORT(ARRAY_AGG(x), (a, b) -> 0)", f"ARRAY_SORT {unfoldable}"),
+            ),
+            ("trino", "ARRAY_SORT(x)", ("ARRAY_SORT(x)", f"ARRAY_SORT {unfoldable}")),
+            ("trino", "ARRAY_DISTINCT(x)", ("ARRAY_DISTINCT(x)", f"ARRAY_DISTINCT {unfoldable}")),
+        ):
+            self._validate_array_sort(read, sql, {"bigquery": expected})
 
         # Test basic syntax transpilation for ARRAY_PREPEND
         self.validate_all(
@@ -3496,6 +3670,16 @@ SELECT
                 "oracle": "SELECT SUM(X) OVER (PARTITION BY x RANGE BETWEEN 1 PRECEDING AND CURRENT ROW)",
             },
         )
+
+    def test_partition_by_excluding(self):
+        window = self.validate_identity(
+            "LAG(revenue) OVER (PARTITION BY EXCLUDING orders.order_date, orders.order_year ORDER BY orders.order_date)"
+        )
+        self.assertIsInstance(window.args["partition_by"][0], exp.PartitionByExcluding)
+
+        for partition in ("excluding", "excluding, a", "excluding.a"):
+            window = self.validate_identity(f"SUM(a) OVER (PARTITION BY {partition} ORDER BY a)")
+            self.assertIsInstance(window.args["partition_by"][0], exp.Column)
 
     def test_nested_ctes(self):
         self.validate_all(

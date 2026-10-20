@@ -1938,6 +1938,10 @@ class WindowSpec(Expression):
     }
 
 
+class PartitionByExcluding(Expression):
+    arg_types = {"expressions": True}
+
+
 class PreWhere(Expression):
     pass
 
@@ -2018,6 +2022,10 @@ class AttachOption(Expression):
 
 class DropPartition(Expression):
     arg_types = {"expressions": True, "exists": False}
+
+
+class ReplaceColumns(Expression):
+    arg_types = {"expressions": True}
 
 
 class ReplacePartition(Expression):

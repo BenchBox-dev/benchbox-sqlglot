@@ -1001,6 +1001,75 @@ class TestOptimizer(unittest.TestCase):
             "IN ((`produce`.`q1`, `produce`.`q2`) AS 'h1', (`produce`.`q3`, `produce`.`q4`) AS 'h2')) AS `produce`",
         )
 
+    def test_starrocks_pivot_columns(self):
+        for aggregation, expected in (
+            ("SUM(price) AS total", ["'prop'", "'rudder'"]),
+            ("SUM(price), MAX(price)", ["*"]),
+            ("SUM(price) AS total, MAX(price)", ["*"]),
+            (
+                "SUM(price) AS total, MAX(price) AS maximum",
+                ["'prop'_total", "'prop'_maximum", "'rudder'_total", "'rudder'_maximum"],
+            ),
+        ):
+            with self.subTest(aggregation=aggregation):
+                expression = parse_one(
+                    "SELECT * FROM (SELECT 'prop' AS partname, 10 AS price) AS t "
+                    f"PIVOT ({aggregation} FOR partname IN ('prop', 'rudder'))",
+                    dialect="starrocks",
+                )
+                self.assertEqual(qualify(expression, dialect="starrocks").named_selects, expected)
+
+    def test_unknown_pivot_columns(self):
+        schema = {"quarterly_sales": {"empid": "INT", "amount": "INT", "quarter": "TEXT"}}
+        expression = qualify(
+            parse_one(
+                "SELECT empid FROM quarterly_sales "
+                "PIVOT(SUM(amount), MAX(amount) FOR quarter IN ('Q1', 'Q2'))",
+                read="starrocks",
+            ),
+            dialect="starrocks",
+            schema=schema,
+        )
+        self.assertTrue(
+            annotate_types(expression, dialect="starrocks", schema=schema)
+            .selects[0]
+            .is_type(exp.DType.INT)
+        )
+
+        for source in ("a CROSS JOIN b", "(a CROSS JOIN b)"):
+            with self.subTest(source=source):
+                expression = parse_one(
+                    "WITH a AS (SELECT 'prop' AS partname, 10 AS price), "
+                    "b AS (SELECT 20 AS quality) "
+                    f"SELECT * FROM {source} "
+                    "PIVOT (AVG(price), MAX(quality) FOR partname IN ('prop'))",
+                    dialect="starrocks",
+                )
+                self.assertEqual(qualify(expression, dialect="starrocks").named_selects, ["*"])
+
+        expression = parse_one(
+            "SELECT * FROM quarterly_sales PIVOT(SUM(amount) AS total FOR quarter IN (ANY))",
+            dialect="snowflake",
+        )
+        passthrough = expression.select("empid", append=False)
+        self.assertEqual(
+            qualify(
+                expression,
+                dialect="snowflake",
+                schema=schema,
+            ).named_selects,
+            ["*"],
+        )
+        self.assertTrue(
+            annotate_types(
+                qualify(passthrough, dialect="snowflake", schema=schema),
+                dialect="snowflake",
+                schema=schema,
+            )
+            .selects[0]
+            .is_type(exp.DType.INT)
+        )
+
     def test_multiple_pivots_annotate_types(self):
         # NOTE: the value column takes the type of the first IN-list entry, so the columns
         # folded by a single operator are kept uniformly typed here
@@ -1298,6 +1367,105 @@ class TestOptimizer(unittest.TestCase):
         )
         self.assertEqual(qualified.selects[0].type.sql("bigquery"), "INT64")
 
+    def test_qualify_positional_references_uncache(self):
+        schema = MappingSchema({"t": {"s": "STRUCT<x INT64>"}}, dialect="bigquery")
+
+        for modifier in ("ORDER BY 1", "GROUP BY 1", "GROUP BY 1 ORDER BY 1"):
+            with self.subTest(modifier=modifier):
+                tree = parse_one(
+                    f"WITH c AS (SELECT s.* FROM t {modifier}) SELECT _PARTITIONTIME FROM t, c",
+                    dialect="bigquery",
+                )
+                # Keep discarded ordinals alive so the check cannot depend on address reuse.
+                ordinals = list(tree.find_all(exp.Literal))
+                annotator = TypeAnnotator(schema)
+                with patch(
+                    "sqlglot.optimizer.qualify_columns.TypeAnnotator", return_value=annotator
+                ):
+                    qualified = qualify(tree, schema=schema, dialect="bigquery")
+
+                for ordinal in ordinals:
+                    self.assertIsNotNone(ordinal.type)
+                    self.assertNotIn(id(ordinal), annotator._visited)
+
+                pseudo = qualified.find(exp.Pseudocolumn)
+                assert pseudo is not None
+                self.assertTrue(pseudo.is_type(exp.DType.UNKNOWN))
+
+    def test_qualify_order_by_alias_nodes(self):
+        qualified = qualify(
+            parse_one(
+                "SELECT a + 1 AS v FROM t GROUP BY 1 ORDER BY a + 1, a + 1 DESC",
+                dialect="duckdb",
+            ),
+            schema={"t": {"a": "INT"}},
+            dialect="duckdb",
+        )
+        first, second = qualified.args["order"].expressions
+        self.assertEqual(first.this, second.this)
+        self.assertIsNot(first.this, second.this)
+        self.assertIs(first.this.parent, first)
+        self.assertIs(second.this.parent, second)
+        first.this.set("this", exp.to_identifier("changed"))
+        self.assertEqual(second.this.name, "v")
+
+    def test_qualify_preserves_unsupported_struct_star_operands(self):
+        for operand in ("IF(TRUE, s, NULL)", "STRUCT(s AS nested)", "(SELECT s FROM t LIMIT 1)"):
+            with self.subTest(operand=operand):
+                qualified = qualify(
+                    parse_one(f"SELECT {operand}.* FROM t", dialect="bigquery"),
+                    schema={"t": {"s": "STRUCT<x INT64>"}},
+                    dialect="bigquery",
+                )
+                self.assertTrue(qualified.selects[0].is_star)
+                self.assertEqual(
+                    qualified.selects[0].this.sql("bigquery"),
+                    qualify(
+                        parse_one(f"SELECT {operand} AS value FROM t", dialect="bigquery"),
+                        schema={"t": {"s": "STRUCT<x INT64>"}},
+                        dialect="bigquery",
+                    )
+                    .selects[0]
+                    .this.sql("bigquery"),
+                )
+
+    def test_qualify_order_by_expression_uncache(self):
+        schema = MappingSchema({"t": {"s": "STRUCT<x INT64>", "a": "INT64"}}, dialect="bigquery")
+        tree = parse_one(
+            "SELECT s.*, a + 1 AS v FROM t GROUP BY 1, 2 ORDER BY a + 1", dialect="bigquery"
+        )
+        discarded = list(tree.args["order"].expressions[0].this.walk())
+        annotator = TypeAnnotator(schema)
+        with patch("sqlglot.optimizer.qualify_columns.TypeAnnotator", return_value=annotator):
+            qualified = qualify(tree, schema=schema, dialect="bigquery")
+
+        for node in discarded:
+            self.assertIsNotNone(node.type)
+            self.assertNotIn(id(node), annotator._visited)
+        self.assertEqual(qualified.args["order"].expressions[0].this.name, "v")
+
+    def test_qualify_order_by_subquery_types(self):
+        schema = {"t": {"x": "STRING", "s": "STRUCT<a INT64>"}, "u": {"x": "INT64"}}
+
+        for table_alias in ("t", "u"):
+            for projection, ordinal in (("x", ""), ("s.*", "1, ")):
+                with self.subTest(table_alias=table_alias, projection=projection):
+                    qualified = qualify(
+                        parse_one(
+                            f"SELECT {table_alias}.{projection} FROM t AS {table_alias} "
+                            f"ORDER BY {ordinal}(SELECT MAX(u.x) FROM u)",
+                            dialect="bigquery",
+                        ),
+                        schema=schema,
+                        dialect="bigquery",
+                    )
+                    subquery = qualified.find(exp.Subquery)
+                    assert subquery is not None
+                    column = subquery.find(exp.Column)
+                    assert column is not None
+                    self.assertTrue(column.is_type(exp.DType.BIGINT))
+                    self.assertTrue(subquery.this.selects[0].is_type(exp.DType.BIGINT))
+
     def test_qualify_snowflake_positional_column_with_visible_schema(self):
         visible_schema = MappingSchema(
             {"t": {"hidden": "INT", "HAS SPACE": "INT"}},
@@ -1450,6 +1618,15 @@ class TestOptimizer(unittest.TestCase):
         union_sql = "SELECT 1 UNION ALL " * 1000 + "SELECT 1"
         expression = parse_one(union_sql)
         self.assertEqual(optimizer.simplify.simplify(expression).sql(), union_sql)
+
+        expression = parse_one(
+            "CAST('2020-01-01' AS DATE) + INTERVAL '1' DAY = CAST('2020-01-02' AS DATE)"
+        )
+        expression.find(exp.Interval).set("this", exp.Literal.number("1e1000000000"))
+        self.assertEqual(
+            simplify(expression).sql(),
+            "CAST('2020-01-01' AS DATE) + INTERVAL 1e1000000000 DAY = CAST('2020-01-02' AS DATE)",
+        )
 
         # Ensure simplify mutates the AST properly
         expression = parse_one("SELECT 1 + 2")
@@ -1655,6 +1832,20 @@ SELECT :with_,WITH :expressions,CTE :this,UNION :this,SELECT :expressions,1,:exp
             "optimize_joins",
             optimizer.optimize_joins.optimize_joins,
         )
+
+    def test_optimize_paste_joins(self):
+        for sql in (
+            "SELECT * FROM x PASTE JOIN y",
+            "SELECT * FROM x PASTE JOIN y JOIN z ON x.a = z.a AND y.a = z.a",
+        ):
+            with self.subTest(sql=sql):
+                expression = parse_one(sql, dialect="clickhouse")
+                self.assertEqual(
+                    optimizer.optimize_joins.optimize_joins(expression.copy()), expression
+                )
+                self.assertEqual(
+                    optimizer.optimize_joins.reorder_joins(expression.copy()), expression
+                )
 
     def test_eliminate_joins(self):
         self.check_file(
@@ -2403,6 +2594,12 @@ SELECT :with_,WITH :expressions,CTE :this,UNION :this,SELECT :expressions,1,:exp
         # Programmatic set operations with VALUES operands must not crash the Query-typed
         # left/right accessors in compiled builds
         annotate_types(exp.select("*").from_(exp.select("1").union("VALUES (2)").subquery("s")))
+
+    def test_annotate_types_reuse(self):
+        annotator = TypeAnnotator(MappingSchema())
+        # Discard each result while retaining the annotator to exercise address reuse.
+        for _ in range(100):
+            self.assertTrue(annotator.annotate(parse_one("1")).is_type(exp.DType.INT))
 
     def test_annotate_untyped_binary_operands(self):
         # Operands that escaped annotation have type None; treat them as UNKNOWN instead

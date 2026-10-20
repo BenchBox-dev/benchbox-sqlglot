@@ -5,6 +5,23 @@ from sqlglot import UnsupportedError, exp
 class TestHive(Validator):
     dialect = "hive"
 
+    def test_is_precedence(self):
+        self.validate_all(
+            "SELECT FALSE IS DISTINCT FROM NULL = NULL",
+            write={
+                "hive": "SELECT (FALSE IS DISTINCT FROM NULL) = NULL",
+                "spark": "SELECT (FALSE IS DISTINCT FROM NULL) = NULL",
+                "postgres": "SELECT (FALSE IS DISTINCT FROM NULL) = NULL",
+            },
+        )
+        self.validate_all(
+            "SELECT FALSE IS DISTINCT FROM NULL < NULL",
+            write={
+                "hive": "SELECT FALSE IS DISTINCT FROM (NULL < NULL)",
+                "spark": "SELECT FALSE IS DISTINCT FROM (NULL < NULL)",
+            },
+        )
+
     def test_bits(self):
         self.validate_all(
             "x & 1",
@@ -212,6 +229,21 @@ class TestHive(Validator):
 
         self.validate_identity("ALTER TABLE X ADD COLUMNS (y INT, z STRING)")
         self.validate_identity("ALTER TABLE X ADD COLUMNS (y INT, z STRING) CASCADE")
+        replace = self.validate_identity(
+            "ALTER TABLE X REPLACE COLUMNS (y INT COMMENT 'c', z STRING) CASCADE"
+        )
+        self.assertIsInstance(replace.args["actions"][0], exp.ReplaceColumns)
+
+        # Column definitions we can't parse yet keep falling back to a Command
+        for sql in (
+            "ALTER TABLE t REPLACE COLUMNS (a INT COMMENT 'it''s')",
+            "ALTER TABLE t REPLACE COLUMNS (a UNIONTYPE<INT, STRING>)",
+            "ALTER TABLE t REPLACE COLUMNS (a TIMESTAMPLOCALTZ)",
+        ):
+            with self.subTest(sql):
+                self.assertIsInstance(
+                    self.validate_identity(sql, check_command_warning=True), exp.Command
+                )
 
         self.validate_identity(
             """CREATE EXTERNAL TABLE x (y INT) ROW FORMAT SERDE 'serde' ROW FORMAT DELIMITED FIELDS TERMINATED BY '1' WITH SERDEPROPERTIES ('input.regex'='')""",
@@ -739,19 +771,6 @@ class TestHive(Validator):
             write={
                 "hive": "SELECT * FROM x.z TABLESAMPLE (10 PERCENT) AS y",
                 "spark": "SELECT * FROM x.z TABLESAMPLE (10 PERCENT) AS y",
-            },
-        )
-        self.validate_all(
-            "SELECT SORT_ARRAY(x, FALSE)",
-            read={
-                "duckdb": "SELECT ARRAY_REVERSE_SORT(x)",
-                "spark": "SELECT SORT_ARRAY(x, FALSE)",
-            },
-            write={
-                "duckdb": "SELECT ARRAY_REVERSE_SORT(x)",
-                "presto": "SELECT ARRAY_SORT(x, (a, b) -> CASE WHEN a < b THEN 1 WHEN a > b THEN -1 ELSE 0 END)",
-                "hive": "SELECT SORT_ARRAY(x, FALSE)",
-                "spark": "SELECT SORT_ARRAY(x, FALSE)",
             },
         )
         self.validate_all(
