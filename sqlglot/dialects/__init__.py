@@ -69,6 +69,7 @@ DIALECTS = [
     "BigQuery",
     "ClickHouse",
     "Databricks",
+    "DataFusion",
     "DAX",
     "Doris",
     "Dremio",
@@ -78,13 +79,16 @@ DIALECTS = [
     "Dune",
     "Exasol",
     "Fabric",
+    "Greenplum",
     "Hive",
     "Materialize",
     "MySQL",
+    "Netezza",
     "Oracle",
     "Postgres",
     "Presto",
     "PRQL",
+    "QuestDB",
     "Redshift",
     "RisingWave",
     "SingleStore",
@@ -98,6 +102,7 @@ DIALECTS = [
     "Teradata",
     "Trino",
     "TSQL",
+    "Vertica",
 ]
 
 MODULE_BY_DIALECT = {name: name.lower() for name in DIALECTS}

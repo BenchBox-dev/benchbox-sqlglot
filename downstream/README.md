@@ -52,3 +52,15 @@ Read `benchbox_provenance.json` with
 commits, commit timestamp, repository, namespace, complete patch manifest and
 per-file SHA256 hashes. This works directly from the zipped wheel. See the
 [maintenance guide](MAINTAINING.md) for refresh, verification and rollback.
+
+## Dialects
+
+The fork provides every upstream dialect plus `netezza`, `greenplum`, `vertica`,
+`datafusion` and `questdb` (each derived from `postgres`). It does not provide
+`ansi` or `standard`: callers resolve those aliases themselves (BenchBox maps them
+in its platform registry) and pass a dialect that exists. An unknown name raises
+instead of falling back.
+
+`sqlglot.benchbox.rewrites` holds expression rewrites whose gates are arguments, for
+example `date_integer_arithmetic_to_interval(expression, date_columns)`, which turns
+`d_date + 5` into a day interval for the columns the caller says hold dates.

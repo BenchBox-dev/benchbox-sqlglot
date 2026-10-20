@@ -1,0 +1,74 @@
+diff --git a/sqlglot/dialects/__init__.py b/sqlglot/dialects/__init__.py
+index 16bcf6c9..f31f6b9e 100644
+--- a/sqlglot/dialects/__init__.py
++++ b/sqlglot/dialects/__init__.py
+@@ -69,6 +69,7 @@ DIALECTS = [
+     "BigQuery",
+     "ClickHouse",
+     "Databricks",
++    "DataFusion",
+     "DAX",
+     "Doris",
+     "Dremio",
+@@ -78,13 +79,16 @@ DIALECTS = [
+     "Dune",
+     "Exasol",
+     "Fabric",
++    "Greenplum",
+     "Hive",
+     "Materialize",
+     "MySQL",
++    "Netezza",
+     "Oracle",
+     "Postgres",
+     "Presto",
+     "PRQL",
++    "QuestDB",
+     "Redshift",
+     "RisingWave",
+     "SingleStore",
+@@ -98,6 +102,7 @@ DIALECTS = [
+     "Teradata",
+     "Trino",
+     "TSQL",
++    "Vertica",
+ ]
+ 
+ MODULE_BY_DIALECT = {name: name.lower() for name in DIALECTS}
+diff --git a/sqlglot/dialects/dialect.py b/sqlglot/dialects/dialect.py
+index 8e5f6611..c7f05f86 100644
+--- a/sqlglot/dialects/dialect.py
++++ b/sqlglot/dialects/dialect.py
+@@ -91,6 +91,7 @@ class Dialects(str, Enum):
+     BIGQUERY = "bigquery"
+     CLICKHOUSE = "clickhouse"
+     DATABRICKS = "databricks"
++    DATAFUSION = "datafusion"
+     DAX = "dax"
+     DORIS = "doris"
+     DREMIO = "dremio"
+@@ -99,13 +100,16 @@ class Dialects(str, Enum):
+     DUCKDB = "duckdb"
+     DUNE = "dune"
+     FABRIC = "fabric"
++    GREENPLUM = "greenplum"
+     HIVE = "hive"
+     MATERIALIZE = "materialize"
+     MYSQL = "mysql"
++    NETEZZA = "netezza"
+     ORACLE = "oracle"
+     POSTGRES = "postgres"
+     PRESTO = "presto"
+     PRQL = "prql"
++    QUESTDB = "questdb"
+     REDSHIFT = "redshift"
+     RISINGWAVE = "risingwave"
+     SNOWFLAKE = "snowflake"
+@@ -118,6 +122,7 @@ class Dialects(str, Enum):
+     TERADATA = "teradata"
+     TRINO = "trino"
+     TSQL = "tsql"
++    VERTICA = "vertica"
+     EXASOL = "exasol"
+ 
+ 
