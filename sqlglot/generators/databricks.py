@@ -93,6 +93,11 @@ class DatabricksGenerator(SparkGenerator):
 
         return super().columndef_sql(expression, sep)
 
+    def ordered_sql(self, expression: exp.Ordered) -> str:
+        if isinstance(expression.parent, exp.PrimaryKey):
+            return self.sql(expression, "this")
+        return super().ordered_sql(expression)
+
     def timeserieskey_sql(self, expression: exp.TimeseriesKey) -> str:
         return f"{self.sql(expression, 'this')} TIMESERIES"
 

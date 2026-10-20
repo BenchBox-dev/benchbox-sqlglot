@@ -68,6 +68,11 @@ class DatabricksParser(SparkParser):
         this = super()._parse_primary_key_part()
         if this and self._match_text_seq("TIMESERIES"):
             return self.expression(exp.TimeseriesKey(this=this))
+        if this and (
+            self._match_set((TokenType.ASC, TokenType.DESC), advance=False)
+            or self._match_text_seq("NULLS", advance=False)
+        ):
+            return self._parse_ordered(lambda: this)
         return this
 
     def _parse_cluster_property(self):
