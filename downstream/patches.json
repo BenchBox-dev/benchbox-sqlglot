@@ -116,7 +116,8 @@
         "tests/test_engines.py"
       ],
       "tests": [
-        "tests.test_engines"
+        "tests.test_engines",
+        "tests.test_platform_dialects_engines"
       ],
       "reason": "Execute translated SQL on real engines in CI, with a lazy unittest helper and a recorded gap list for platforms that have no obtainable engine."
     },
@@ -133,7 +134,7 @@
       "tests": [
         "tests.test_benchbox_rewrites"
       ],
-      "reason": "Engine-neutral expression rewrites in a new package. The first member folds literal sum/difference BETWEEN bounds to exact decimals so engines that evaluate decimal literals as binary floats keep rows equal to a bound; the column and table gates are arguments."
+      "reason": "Engine-neutral expression rewrites in a new package. The first member folds literal sum/difference BETWEEN bounds to exact decimals so engines that evaluate decimal literals as binary floats keep rows equal to a bound; the column and table gates are arguments.; date_integer_arithmetic_to_interval rewrites `date_column +/- <integer>` into a day interval for caller-named date columns."
     },
     {
       "id": "sqlite-temporal-lowering",
@@ -185,6 +186,61 @@
         "tests.test_duckdb_all_keyword"
       ],
       "reason": "Execute the transpiled GROUP BY ALL and ORDER BY ALL on DuckDB."
+    },
+    {
+      "id": "platform-dialect-modules",
+      "source": "6cd7d11ac482a130621d7f3e1b463aff99c3f029",
+      "status": "original",
+      "depends": [
+        "real-engine-ci",
+        "benchbox-rewrites"
+      ],
+      "paths": [
+        "sqlglot/dialects/datafusion.py",
+        "sqlglot/dialects/greenplum.py",
+        "sqlglot/dialects/netezza.py",
+        "sqlglot/dialects/questdb.py",
+        "sqlglot/dialects/vertica.py",
+        "sqlglot/generators/questdb.py",
+        "sqlglot/parsers/questdb.py",
+        "tests/dialects/test_datafusion.py",
+        "tests/dialects/test_greenplum.py",
+        "tests/dialects/test_netezza.py",
+        "tests/dialects/test_questdb.py",
+        "tests/dialects/test_vertica.py",
+        "tests/test_platform_dialects_engines.py"
+      ],
+      "tests": [
+        "tests.dialects.test_netezza",
+        "tests.dialects.test_greenplum",
+        "tests.dialects.test_vertica",
+        "tests.dialects.test_datafusion",
+        "tests.dialects.test_questdb",
+        "tests.test_platform_dialects_engines"
+      ],
+      "reason": "Explicit Netezza, Greenplum, Vertica, DataFusion and QuestDB dialects, each a thin subclass of postgres (BenchBox substituted postgres for them), with QuestDB's parser and generator modules as the home of its generation rules; execution tests run DataFusion dialect output and the date arithmetic rewrite on real engines."
+    },
+    {
+      "id": "platform-dialects",
+      "source": "88f7bc5d28118bc1f3dfa7b01c3975c515c1697e",
+      "status": "carried",
+      "depends": [
+        "platform-dialect-modules"
+      ],
+      "paths": [
+        "sqlglot/dialects/__init__.py",
+        "sqlglot/dialects/dialect.py"
+      ],
+      "tests": [
+        "tests.dialects.test_netezza",
+        "tests.dialects.test_greenplum",
+        "tests.dialects.test_vertica",
+        "tests.dialects.test_datafusion",
+        "tests.dialects.test_questdb",
+        "tests.test_dialect_imports"
+      ],
+      "reason": "Register the platform dialects in the Dialects enum and the lazy-import list so Dialect.get_or_raise resolves them; ansi and standard are not dialects the fork provides. The README, already fork-edited and unowned, is left as is.",
+      "patch": "downstream/patches/platform-dialects.patch"
     }
   ]
 }

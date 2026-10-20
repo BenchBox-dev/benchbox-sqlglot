@@ -146,7 +146,7 @@ date lowering) is a generator change and a carried patch instead.
 The fork adds `netezza`, `greenplum`, `vertica`, `datafusion` and `questdb`, each a
 subclass of `postgres` (upstream has no dialect with these names). A dialect starts
 as a thin subclass and gains behavior only when it is proved against the engine.
-Registration (the `Dialects` enum, `DIALECTS` and the README table) edits
+Registration (the `Dialects` enum and `DIALECTS`) edits
 upstream-owned files and is the carried patch `platform-dialects`; the dialect
 modules and their tests are the `original` entry `platform-dialect-modules`.
 
