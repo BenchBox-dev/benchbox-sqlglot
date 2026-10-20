@@ -102,6 +102,38 @@ StarRocks and Doris need no generator change: both already quote the reserved wo
 `SUBSTRING(x, a, b)` and quote identifiers with backticks. The Netezza parser reads `<expr> + N days` and
 `<expr> - N days` (also `DAY`) as day intervals.
 
+`sqlglot.benchbox.compat` holds the engine-compatibility rewrites. Each takes an expression, leaves
+every gate (which columns, which alias, which keys) to the caller and returns a copy by default:
+
+- `inline_select_aliases(expression, clauses=("having", "where"))` replaces a reference to a
+  projection alias in `HAVING` or `WHERE` with the aliased expression, for engines that resolve
+  aliases only in `ORDER BY`.
+- `qualify_columns_by_name(expression, tables, clauses=None, quoted=False)` qualifies unqualified columns by
+  a column-to-table map the caller passes, optionally only inside the named clauses (`("having",)`).
+- `add_row_source_to_fromless_selects(expression, source, dialect)` adds a one-row `FROM` source the caller
+  passes (BigQuery's `UNNEST([1])`) to every `SELECT ... WHERE` that has no `FROM`.
+- `filtered_aggregates_to_conditional(expression, dialect, windows_only=False)` removes `FILTER
+  (WHERE ...)`: `COUNTIF` and `agg(IF(cond, x, NULL))` for `bigquery`, `countIf`, `uniqExactIf` and
+  the `...OrNullIf` combinators for `clickhouse` (other aggregates raise `NotImplementedError`),
+  `agg(IF(cond, x, NULL))` for everything else; `windows_only=True` leaves ordinary aggregates alone. The
+  BigQuery generator already writes this form without a rewrite.
+- `literal_subquery_to_values(expression, alias, column)` turns `(SELECT 1) AS alias` into
+  `(VALUES (1)) AS alias(column)`; `name_literal_subquery_columns(expression, column)` aliases the
+  literal of an unnamed one-column derived table instead.
+- `wrap_grouped_scalar_subqueries(expression, aggregate=exp.First)` wraps a scalar subquery projected
+  by a `GROUP BY` select in an aggregate.
+- `order_list_aggregates(expression, order_by, dialect)` turns `LIST(x)` and unordered `ARRAY_AGG(x)`
+  into `ARRAY_AGG(x ORDER BY keys)`, or on Spark, Spark 2 and Databricks into
+  `TRANSFORM(SORT_ARRAY(COLLECT_LIST(STRUCT(keys..., x AS _v))), r -> r._v)`; `dialect` picks the NULL ordering
+  that needs no clause.
+- `strip_window_null_ordering(expression, dialect, columns)` resets named window ordering columns to
+  the dialect's default NULL ordering, so the generator writes no `NULLS FIRST`/`NULLS LAST`; the
+  caller decides which columns may hold no NULLs.
+
+Generator behavior needs no rewrite call: `GROUP BY ()` is dropped from a global aggregate (one with an
+aggregate or `HAVING`) for `snowflake`, `spark`, `databricks` and `datafusion`, which reject it; any other
+`GROUP BY ()` for those dialects warns as unsupported.
+
 The Databricks generator also drops ordering (`ASC`, `DESC`, `NULLS FIRST`, `NULLS LAST`) from
 `PRIMARY KEY` columns, which Databricks rejects, and its parser accepts that ordering.
 
