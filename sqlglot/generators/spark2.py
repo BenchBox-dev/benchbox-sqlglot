@@ -130,6 +130,7 @@ def temporary_storage_provider(expression: exp.Expr) -> exp.Expr:
 
 
 class Spark2Generator(HiveGenerator):
+    SUPPORTS_EMPTY_GROUP_BY = False
     QUERY_HINTS = True
     NVL2_SUPPORTED = True
     CAN_IMPLEMENT_ARRAY_ANY = True
