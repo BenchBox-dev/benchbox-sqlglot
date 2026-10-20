@@ -2140,7 +2140,10 @@ def is_parse_json(expression: exp.Expr) -> bool:
 
 
 def isnull_to_is_null(args: BuilderArgs) -> exp.Expr:
-    return exp.Paren(this=exp.Is(this=seq_get(args, 0), expression=exp.null()))
+    this = seq_get(args, 0)
+    if isinstance(this, (exp.Predicate, exp.Connector, exp.Not)):
+        this = exp.Paren(this=this)
+    return exp.Paren(this=exp.Is(this=this, expression=exp.null()))
 
 
 def generatedasidentitycolumnconstraint_sql(
@@ -2772,6 +2775,17 @@ def build_timetostr_or_tochar(
             return build_formatted_time(exp.TimeToStr, default=True)(args, t.cast(Dialect, dialect))
 
     return exp.ToChar.from_arg_list(args)
+
+
+def array_sort_order(expression: exp.ArraySort) -> tuple[bool, bool | None] | None:
+    """Whether an ArraySort is ascending and puts NULLs first, or None if either isn't a literal."""
+    asc = expression.args.get("asc") or exp.true()
+    nulls_first = expression.args.get("nulls_first")
+    if not isinstance(asc, exp.Boolean):
+        return None
+    if nulls_first is None:
+        return asc.this, None
+    return (asc.this, nulls_first.this) if isinstance(nulls_first, exp.Boolean) else None
 
 
 def build_replace_with_optional_replacement(args: BuilderArgs) -> exp.Replace:

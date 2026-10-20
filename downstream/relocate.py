@@ -19,6 +19,7 @@ SUITE_EXCLUSIONS = {
     "test_downstream_distribution.py": "Checks release tooling in the source repository.",
     "test_downstream_refresh.py": "Checks source Git refresh operations.",
     "test_integration_loader.py": "Loads the optional private upstream integration repository.",
+    "test_sqlglotc.py": "Exercises the source tree's sqlglotc build script with setuptools, absent from the runtime wheel.",
     "sqlglot": "Private integration discovery shim.",
     "gen_fixtures.py": "Source fixture generator, not a test module.",
 }

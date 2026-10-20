@@ -877,11 +877,13 @@ def _traverse_ctes(scope: Scope) -> Iterator[Scope]:
 def _is_derived_table(expression: exp.Expr) -> bool:
     """
     We represent (tbl1 JOIN tbl2) as a Subquery, but it's not really a "derived table",
-    as it doesn't introduce a new scope. If an alias is present, it shadows all names
-    under the Subquery, so that's one exception to this rule.
+    as it doesn't introduce a new scope. An alias shadows the names under the Subquery,
+    and a pivot changes its output columns, so both require a separate scope.
     """
     return isinstance(expression, exp.Subquery) and bool(
-        expression.alias or isinstance(expression.this, exp.UNWRAPPED_QUERIES)
+        expression.alias
+        or expression.args.get("pivots")
+        or isinstance(expression.this, exp.UNWRAPPED_QUERIES)
     )
 
 
@@ -926,13 +928,12 @@ def _traverse_tables(scope: Scope) -> Iterator[Scope]:
             source_name = expression.alias_or_name
 
             if table_name in scope.sources and not expression.db:
-                # This is a reference to a parent source (e.g. a CTE), not an actual table, unless
-                # it is pivoted, because then we get back a new table and hence a new source.
+                # This is a reference to a parent source (e.g. a CTE), not an actual table. If
+                # it is pivoted, we also register the pivot's alias as a new table source.
+                sources[source_name] = scope.sources[table_name]
                 pivots = expression.args.get("pivots")
                 if pivots:
                     sources[pivots[-1].alias] = expression
-                else:
-                    sources[source_name] = scope.sources[table_name]
             elif source_name in sources:
                 sources[find_new_name(sources, table_name)] = expression
             else:

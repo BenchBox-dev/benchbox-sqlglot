@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index 88afcb2..0838212 100644
+index 88afcb29..08382126 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
 @@ -17,6 +17,7 @@ from sqlglot.dialects.dialect import (
@@ -49,7 +49,7 @@ index 88afcb2..0838212 100644
      def cast_sql(self, expression: exp.Cast, safe_prefix: str | None = None) -> str:
          if expression.is_type("date"):
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index f432b16..087f753 100644
+index b300aa54..3b684138 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
 @@ -1,4 +1,5 @@
@@ -58,7 +58,7 @@ index f432b16..087f753 100644
  
  from sqlglot import ErrorLevel, UnsupportedError, exp, parse_one
  from sqlglot.generator import logger as generator_logger
-@@ -82,7 +83,60 @@ class TestSQLite(Validator):
+@@ -122,6 +123,61 @@ class TestSQLite(Validator):
          finally:
              connection.close()
  
@@ -93,7 +93,7 @@ index f432b16..087f753 100644
 +                    "sqlite", unsupported_level=ErrorLevel.RAISE
 +                )
 +        self.validate_identity("SELECT a + 1, b - 2 FROM t")
- 
++
 +    def test_date_interval_execution(self):
 +        with sqlite3.connect(":memory:") as connection:
 +            for dialect in ("postgres", "duckdb"):
@@ -116,6 +116,7 @@ index f432b16..087f753 100644
 +                    "sqlite", unsupported_level=ErrorLevel.RAISE
 +                )
 +                self.assertEqual(connection.execute(sql).fetchone(), (None,))
- 
++
      def test_sqlite(self):
          # Range operators (IN/LIKE) are left-associative and can be chained.
+         self.validate_identity("SELECT 1 IN (0) IN (1)")

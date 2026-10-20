@@ -9,6 +9,100 @@ from tests.dialects.test_dialect import Validator
 class TestMySQL(Validator):
     dialect = "mysql"
 
+    def test_xor_precedence(self):
+        for sql, root, left, right in (
+            ("TRUE XOR FALSE AND FALSE", exp.Xor, exp.Boolean, exp.And),
+            ("TRUE AND FALSE XOR TRUE", exp.Xor, exp.And, exp.Boolean),
+            ("TRUE OR TRUE XOR TRUE", exp.Or, exp.Boolean, exp.Xor),
+            ("TRUE XOR TRUE OR TRUE", exp.Or, exp.Xor, exp.Boolean),
+            ("TRUE XOR FALSE XOR TRUE", exp.Xor, exp.Xor, exp.Boolean),
+            ("(TRUE XOR FALSE) AND FALSE", exp.And, exp.Paren, exp.Boolean),
+            ("TRUE XOR (TRUE OR FALSE)", exp.Xor, exp.Boolean, exp.Paren),
+            ("TRUE XOR FALSE && FALSE", exp.Xor, exp.Boolean, exp.And),
+            ("TRUE || TRUE XOR TRUE", exp.Or, exp.Boolean, exp.Xor),
+        ):
+            with self.subTest(sql=sql):
+                expression = self.parse_one(f"SELECT {sql}").expressions[0]
+                self.assertIsInstance(expression, root)
+                self.assertIsInstance(expression.this, left)
+                self.assertIsInstance(expression.expression, right)
+
+        self.validate_all(
+            "SELECT TRUE XOR FALSE AND FALSE",
+            write={
+                "mysql": "SELECT TRUE XOR FALSE AND FALSE",
+                "snowflake": "SELECT BOOLXOR(TRUE, FALSE AND FALSE)",
+            },
+        )
+
+    def test_not_precedence(self):
+        self.validate_all(
+            "SELECT !2 + 1",
+            write={
+                "mysql": "SELECT (NOT 2) + 1",
+                "sqlite": "SELECT (NOT 2) + 1",
+            },
+        )
+        for sql, expected in (
+            ("SELECT 1 + !2", "SELECT 1 + (NOT 2)"),
+            ("SELECT !0 * 2", "SELECT (NOT 0) * 2"),
+            ("SELECT !2 ^ 1", "SELECT (NOT 2) ^ 1"),
+            ("SELECT !2 = 1", "SELECT (NOT 2) = 1"),
+            ("SELECT !2 != 1", "SELECT (NOT 2) <> 1"),
+            ("SELECT !NULL IS NULL", "SELECT (NOT NULL) IS NULL"),
+            ("SELECT !2 IN (0, 1)", "SELECT (NOT 2) IN (0, 1)"),
+            ("SELECT !2 BETWEEN 0 AND 1", "SELECT (NOT 2) BETWEEN 0 AND 1"),
+            ("SELECT -!0", "SELECT -(NOT 0)"),
+            ("SELECT !-2 + 1", "SELECT (NOT -2) + 1"),
+            ("SELECT ~!0", "SELECT ~(NOT 0)"),
+            ("SELECT ! !2 + 1", "SELECT (NOT (NOT 2)) + 1"),
+            ("SELECT !(2 + 1)", "SELECT (NOT (2 + 1))"),
+            ("SELECT NOT !2 + 1", "SELECT NOT (NOT 2) + 1"),
+        ):
+            with self.subTest(sql=sql):
+                expression = self.validate_identity(sql, expected)
+                self.assertEqual(expression, self.parse_one(expected))
+
+        self.validate_identity("SELECT NOT 2 + 1")
+
+    def test_bitwise_precedence(self):
+        for sql, snowflake in (
+            ("1 | 2 & 4", "BITOR(1, BITAND(2, 4))"),
+            ("1 & 2 | 4", "BITOR(BITAND(1, 2), 4)"),
+            ("1 | 2 << 1", "BITOR(1, BITSHIFTLEFT(2, 1))"),
+            ("1 & 2 << 1", "BITAND(1, BITSHIFTLEFT(2, 1))"),
+            ("8 >> 1 & 3", "BITAND(BITSHIFTRIGHT(8, 1), 3)"),
+            ("8 >> 1 << 1", "BITSHIFTLEFT(BITSHIFTRIGHT(8, 1), 1)"),
+            ("1 << 1 + 1", "BITSHIFTLEFT(1, 1 + 1)"),
+            ("1 + 1 << 1", "BITSHIFTLEFT(1 + 1, 1)"),
+            ("2 ^ 3 * 4", "BITXOR(2, 3) * 4"),
+            ("4 * 2 ^ 3", "4 * BITXOR(2, 3)"),
+            ("2 ^ 3 ^ 4", "BITXOR(BITXOR(2, 3), 4)"),
+            ("~2 ^ 3", "BITXOR(BITNOT(2), 3)"),
+            ("2 ^ ~3", "BITXOR(2, BITNOT(3))"),
+            ("(1 | 2) & 4", "BITAND((BITOR(1, 2)), 4)"),
+            ("2 ^ (3 * 4)", "BITXOR(2, (3 * 4))"),
+        ):
+            self.validate_all(
+                f"SELECT {sql}",
+                write={"mysql": f"SELECT {sql}", "snowflake": f"SELECT {snowflake}"},
+            )
+
+    def test_statistical_aggregates(self):
+        self.validate_all(
+            "SELECT STDDEV_POP(x), STDDEV_POP(x), VAR_POP(x) FROM t",
+            read={
+                "mysql": "SELECT STD(x), STDDEV(x), VARIANCE(x) FROM t",
+                "starrocks": "SELECT STD(x), STDDEV(x), VARIANCE(x) FROM t",
+                "doris": "SELECT STD(x), STDDEV(x), VARIANCE(x) FROM t",
+                "singlestore": "SELECT STD(x), STDDEV(x), VARIANCE(x) FROM t",
+            },
+            write={"duckdb": "SELECT STDDEV_POP(x), STDDEV_POP(x), VAR_POP(x) FROM t"},
+        )
+        self.validate_identity(
+            "SELECT STDDEV_POP(x), VAR_POP(x), STDDEV_SAMP(x), VAR_SAMP(x) FROM t"
+        )
+
     def test_insert_value(self):
         self.validate_identity("INSERT INTO t VALUE (1)", "INSERT INTO t VALUES (1)")
         self.validate_identity(
@@ -1903,6 +1997,14 @@ COMMENT='客户账户表'"""
         self.validate_identity("SELECT JSON_OBJECT('id', 87, 'name', 'carrot')")
 
     def test_is_null(self):
+        for argument in ("NULL = NULL", "NOT TRUE"):
+            self.validate_all(
+                f"SELECT ISNULL({argument})",
+                write={
+                    dialect: f"SELECT (({argument}) IS NULL)"
+                    for dialect in ("mysql", "postgres", "sqlite", "snowflake", "redshift")
+                },
+            )
         self.validate_all(
             "SELECT ISNULL(x)", write={"": "SELECT (x IS NULL)", "mysql": "SELECT (x IS NULL)"}
         )

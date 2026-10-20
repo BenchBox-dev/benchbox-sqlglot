@@ -10,6 +10,37 @@ from tests.dialects.test_dialect import Validator
 class TestDuckDB(Validator):
     dialect = "duckdb"
 
+    def test_is_precedence(self):
+        self.validate_identity(
+            "SELECT NULL IS NOT NULL IS NULL", "SELECT (NOT NULL IS NULL) IS NULL"
+        )
+
+    def test_reserved_keyword_identifiers(self):
+        # DuckDB keywords whose sqlglot entries used to carry the Postgres grammar's _p suffix,
+        # plus DuckDB-specific reserved keywords (see duckdb_keywords())
+        for keyword in (
+            "asc",
+            "check",
+            "create",
+            "desc",
+            "describe",
+            "end",
+            "false",
+            "group",
+            "in",
+            "lambda",
+            "lateral",
+            "null",
+            "pivot",
+            "qualify",
+            "show",
+            "summarize",
+            "true",
+            "unpivot",
+        ):
+            with self.subTest(keyword=keyword):
+                self.assertEqual(exp.column(keyword).sql("duckdb"), f'"{keyword}"')
+
     def test_duckdb(self):
         self.validate_identity("TRUNC(3.14)").assert_is(exp.Trunc)
         self.validate_all(
@@ -974,6 +1005,10 @@ class TestDuckDB(Validator):
             write={
                 "": "VARIANCE_POP(x)",
                 "duckdb": "VAR_POP(x)",
+                "mysql": "VAR_POP(x)",
+                "starrocks": "VAR_POP(x)",
+                "doris": "VAR_POP(x)",
+                "singlestore": "VAR_POP(x)",
             },
         )
         self.validate_all(
@@ -1183,40 +1218,30 @@ class TestDuckDB(Validator):
                 "spark": "STRUCT('value1' AS key1, 42 AS key2)",
             },
         )
-        self.validate_all(
-            "ARRAY_REVERSE_SORT(x)",
-            write={
-                "duckdb": "ARRAY_REVERSE_SORT(x)",
-                "presto": "ARRAY_SORT(x, (a, b) -> CASE WHEN a < b THEN 1 WHEN a > b THEN -1 ELSE 0 END)",
-                "hive": "SORT_ARRAY(x, FALSE)",
-                "spark": "SORT_ARRAY(x, FALSE)",
-            },
-        )
-        self.validate_all(
-            "LIST_REVERSE_SORT(x)",
-            write={
-                "duckdb": "ARRAY_REVERSE_SORT(x)",
-                "presto": "ARRAY_SORT(x, (a, b) -> CASE WHEN a < b THEN 1 WHEN a > b THEN -1 ELSE 0 END)",
-                "hive": "SORT_ARRAY(x, FALSE)",
-                "spark": "SORT_ARRAY(x, FALSE)",
-            },
-        )
-        self.validate_all(
-            "LIST_SORT(x)",
-            write={
-                "duckdb": "LIST_SORT(x)",
-                "presto": "ARRAY_SORT(x)",
-                "hive": "SORT_ARRAY(x)",
-                "spark": "SORT_ARRAY(x)",
-            },
-        )
-        self.validate_identity("SELECT LIST_SORT(x, 'ASC')")
-        self.validate_identity("SELECT LIST_SORT(x, 'DESC')")
+        self.validate_identity("SELECT LIST_SORT(x, 'ASC')", "SELECT LIST_SORT(x)")
+        self.validate_identity("SELECT LIST_SORT(x, 'DESC')", "SELECT ARRAY_REVERSE_SORT(x)")
         self.validate_identity("SELECT LIST_SORT(x, 'ASC', 'NULLS FIRST')")
-        self.validate_identity("SELECT LIST_SORT(x, 'ASC', 'NULLS LAST')")
+        self.validate_identity("SELECT LIST_SORT(x, 'ASC', 'NULLS LAST')", "SELECT LIST_SORT(x)")
         self.validate_identity("SELECT LIST_SORT(x, 'DESC', 'NULLS FIRST')")
-        self.validate_identity("SELECT LIST_SORT(x, 'DESC', 'NULLS LAST')")
+        self.validate_identity(
+            "SELECT LIST_SORT(x, 'DESC', 'NULLS LAST')", "SELECT ARRAY_REVERSE_SORT(x)"
+        )
+        self.validate_identity(
+            "SELECT LIST_SORT(x, 'desc', 'nulls first')",
+            "SELECT LIST_SORT(x, 'DESC', 'NULLS FIRST')",
+        )
+        self.validate_identity(
+            "SELECT ARRAY_REVERSE_SORT(x, 'NULLS FIRST')",
+            "SELECT LIST_SORT(x, 'DESC', 'NULLS FIRST')",
+        )
+        self.validate_identity("SELECT LIST_REVERSE_SORT(x)", "SELECT ARRAY_REVERSE_SORT(x)")
         self.validate_identity("SELECT LIST_SORT(x, 'DE' || 'SC')")
+        self.validate_identity("SELECT LIST_SORT(x, 'foo')")
+        self.validate_identity('SELECT LIST_SORT(x, "asc")')
+        self.validate_identity("SELECT ARRAY_SORT(x, 'ASC', 'bad')")
+        self.validate_all(
+            "LIST_SORT(x, 'DE' || 'SC')", write={"snowflake": "LIST_SORT(x, 'DE' || 'SC')"}
+        )
         self.validate_identity("SELECT LIST_SORT(x, 'DESC', 'NULLS' || ' FIRST')")
         self.validate_identity("SELECT LIST_SORT(x, 'DE' || 'SC', 'NULLS' || ' FIRST')")
         self.validate_all(
@@ -1390,6 +1415,10 @@ class TestDuckDB(Validator):
             "VARIANCE(a)",
             write={
                 "duckdb": "VARIANCE(a)",
+                "mysql": "VAR_SAMP(a)",
+                "starrocks": "VAR_SAMP(a)",
+                "doris": "VAR_SAMP(a)",
+                "singlestore": "VAR_SAMP(a)",
                 "clickhouse": "varSamp(a)",
             },
         )
@@ -1397,6 +1426,10 @@ class TestDuckDB(Validator):
             "STDDEV(a)",
             write={
                 "duckdb": "STDDEV(a)",
+                "mysql": "STDDEV_SAMP(a)",
+                "starrocks": "STDDEV_SAMP(a)",
+                "doris": "STDDEV_SAMP(a)",
+                "singlestore": "STDDEV_SAMP(a)",
                 "clickhouse": "stddevSamp(a)",
             },
         )
@@ -2822,6 +2855,7 @@ class TestDuckDB(Validator):
         self.validate_identity("RESET SESSION default_collation", check_command_warning=True)
 
     def test_map_struct(self):
+        self.validate_identity("SELECT MAP {t.k: t.v} FROM (SELECT 'a' AS k, 10 AS v) AS t")
         self.validate_identity("MAP {1: 'a', 2: 'b'}")
         self.validate_identity("MAP {'1': 'a', '2': 'b'}")
         self.validate_identity("MAP {[1, 2]: 'a', [3, 4]: 'b'}")

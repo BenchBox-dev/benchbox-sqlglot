@@ -1,4 +1,4 @@
-from sqlglot import exp
+from sqlglot import ErrorLevel, UnsupportedError, exp
 from tests.dialects.test_dialect import Validator
 
 
@@ -20,6 +20,34 @@ class TestTeradata(Validator):
             "SELECT * FROM tbl SAMPLE 0.33, .25, .1",
             "SELECT * FROM tbl SAMPLE 0.33, 0.25, 0.1",
         )
+        self.validate_all(
+            "SELECT * FROM t SAMPLE 100",
+            write={
+                "teradata": "SELECT * FROM t SAMPLE 100",
+                "snowflake": "SELECT * FROM t TABLESAMPLE (100 ROWS)",
+            },
+        )
+        self.validate_all(
+            "SELECT * FROM t SAMPLE 0.25",
+            read={
+                "snowflake": "SELECT * FROM t TABLESAMPLE (25)",
+            },
+            write={
+                "teradata": "SELECT * FROM t SAMPLE 0.25",
+                "snowflake": "SELECT * FROM t TABLESAMPLE (25)",
+            },
+        )
+        self.validate_all(
+            "SELECT * FROM t SAMPLE 0.6, 0.25",
+            write={
+                "teradata": "SELECT * FROM t SAMPLE 0.6, 0.25",
+                "snowflake": "SELECT * FROM t",
+            },
+        )
+        with self.assertRaises(UnsupportedError):
+            self.parse_one("SELECT * FROM t SAMPLE 10, 20").sql(
+                "snowflake", unsupported_level=ErrorLevel.RAISE
+            )
 
         self.validate_all(
             "DATABASE tduser",
@@ -58,6 +86,15 @@ class TestTeradata(Validator):
         )
         self.validate_identity(
             "LOCKING TABLE table1 FOR ACCESS SELECT * FROM table1 JOIN table2 ON table1.id = table2.id"
+        )
+
+        self.validate_all(
+            "LOCKING ROW FOR ACCESS SELECT * FROM t",
+            write={
+                "teradata": "LOCKING ROW FOR ACCESS SELECT * FROM t",
+                "duckdb": "SELECT * FROM t",
+                "snowflake": "SELECT * FROM t",
+            },
         )
 
         # Test that it still works in CREATE VIEW context (regression test)

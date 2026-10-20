@@ -19,6 +19,8 @@ class TestStarrocks(Validator):
         self.validate_identity("SELECT ST_POINT(10, 20)")
         self.validate_identity("SELECT ST_DISTANCE_SPHERE(10.1, 20.2, 30.3, 40.4)")
         self.validate_identity("ARRAY_FLATTEN(arr)").assert_is(exp.Flatten)
+        self.validate_identity("SELECT LIKE('xyz', 'x%')", "SELECT 'xyz' LIKE 'x%'")
+        self.validate_identity("SELECT TO_DAYS(dt) FROM t")
 
         self.validate_all(
             "SELECT * FROM t WHERE cond",
@@ -369,6 +371,8 @@ class TestStarrocks(Validator):
             },
         )
 
+        self.validate_identity("SELECT * FROM TABLE(UNNEST([1, 2], ['a', 'b'])) AS t(x, y)")
+
         # Use UNNEST to convert into multiple columns
         # see: https://docs.starrocks.io/docs/sql-reference/sql-functions/array-functions/unnest/
         self.validate_all(
@@ -405,6 +409,15 @@ class TestStarrocks(Validator):
                         "spark": "SELECT id, t.col FROM tbl LATERAL VIEW EXPLODE(scores) t AS col",
                     },
                 )
+
+        # Every column of a multi-array UNNEST is named "unnest", so no column alias is added
+        self.validate_identity(
+            "SELECT * FROM (SELECT 1 AS id) AS s, UNNEST([1, 2], ['a', 'b'])",
+            "SELECT * FROM (SELECT 1 AS id) AS s, UNNEST([1, 2], ['a', 'b']) AS unnest",
+        )
+        self.validate_identity(
+            "SELECT * FROM (SELECT 1 AS id) AS s, UNNEST([1, 2], ['a', 'b']) AS t"
+        )
 
     def test_ignore_respect_nulls(self):
         for func in ("FIRST_VALUE", "LAST_VALUE", "LAG", "LEAD"):
@@ -587,3 +600,106 @@ class TestStarrocks(Validator):
         self.validate_identity(
             "CREATE TABLE t (k1 INT, v1 HLL HLL_UNION) AGGREGATE KEY (k1) DISTRIBUTED BY HASH (k1)"
         ).assert_is(exp.Create)
+
+    def test_datediff(self):
+        # DATEDIFF compares only the date parts, unlike DATE_DIFF('DAY', ...)
+        # https://docs.starrocks.io/docs/sql-reference/sql-functions/date-time-functions/datediff/
+        self.validate_all(
+            "SELECT DATEDIFF(CAST('2026-03-11 01:00:00' AS DATETIME), CAST('2026-03-10 23:00:00' AS DATETIME))",
+            write={
+                "starrocks": "SELECT DATEDIFF(CAST('2026-03-11 01:00:00' AS DATETIME), CAST('2026-03-10 23:00:00' AS DATETIME))",
+                "duckdb": "SELECT DATE_DIFF('DAY', CAST('2026-03-10 23:00:00' AS TIMESTAMP), CAST('2026-03-11 01:00:00' AS TIMESTAMP))",
+            },
+        )
+        self.validate_identity(
+            "SELECT DATE_DIFF('DAY', CAST('2026-03-11 01:00:00' AS DATETIME), CAST('2026-03-10 23:00:00' AS DATETIME))"
+        )
+
+    def test_comments(self):
+        # Reject bare hashes instead of emulating StarRocks' lexer error recovery.
+        for sql in (
+            "SELECT 1 AS a # hello world",
+            "SELECT 1#2",
+            "SELECT 1 AS a # , 2 AS b",
+            "SELECT 3 #> 2",
+            "SELECT 3 #>> 2",
+        ):
+            with self.subTest(sql), self.assertRaises(ParseError):
+                self.parse_one(sql)
+
+        self.validate_identity("SELECT 'a#b' AS c")
+        self.validate_identity("SELECT 1 AS `a#b`")
+        self.validate_identity("SELECT 1 AS a -- , 2 AS b", "SELECT 1 AS a /* , 2 AS b */")
+
+    def test_pivot(self):
+        # https://docs.starrocks.io/docs/sql-reference/sql-statements/table_bucket_part_index/SELECT/SELECT_PIVOT/
+        self.validate_identity(
+            "SELECT * FROM t1 PIVOT (SUM(c1) AS sum_c1, AVG(c2) AS avg_c2 FOR c3 IN (1, 2, 3, 4, 5))",
+            "SELECT * FROM t1 PIVOT(SUM(c1) AS sum_c1, AVG(c2) AS avg_c2 FOR c3 IN (1, 2, 3, 4, 5))",
+        )
+        self.validate_identity("SELECT * FROM t1 PIVOT(SUM(c1) FOR c3 IN (1 AS one, 2 AS two))")
+        self.validate_identity("SELECT * FROM t1 PIVOT(SUM(c1) FOR (c2, c3) IN ((1, 1), (2, 2)))")
+
+        self.validate_all(
+            "SELECT * FROM t1 UNPIVOT(c FOR k IN (c1, c2))",
+            write={"starrocks": UnsupportedError},
+        )
+
+    def test_command_statements(self):
+        for sql in (
+            "ADMIN SET FRONTEND CONFIG ('disable_balance' = 'true')",
+            "ADMIN SHOW FRONTEND CONFIG LIKE 'disable_balance'",
+            "BACKUP SNAPSHOT example_db.snapshot1 TO example_repo ON (example_tbl)",
+            "RESTORE SNAPSHOT example_db.snapshot1 FROM example_repo ON (example_tbl) PROPERTIES ('backup_timestamp' = '2018-05-04-16-45-08')",
+            "RECOVER TABLE example_db.example_tbl",
+            "CANCEL LOAD FROM example_db WHERE LABEL = 'example_label'",
+            "EXPORT TABLE example_db.example_tbl TO 's3://bucket/export/'",
+            "SUBMIT TASK AS INSERT INTO t2 SELECT * FROM t1",
+            "PAUSE ROUTINE LOAD FOR example_db.example_job",
+            "RESUME ROUTINE LOAD FOR example_db.example_job",
+            "STOP ROUTINE LOAD FOR example_db.example_job",
+            "DEALLOCATE PREPARE stmt1",
+            "INSTALL PLUGIN FROM '/home/users/plugin.zip'",
+            "UNINSTALL PLUGIN auditdemo",
+        ):
+            with self.subTest(sql):
+                self.validate_identity(sql, check_command_warning=True)
+
+        self.validate_identity("SELECT admin, cancel, export, stop FROM t")
+
+    def test_map_literal(self):
+        # https://docs.starrocks.io/docs/sql-reference/data-types/semi_structured/Map/
+        self.validate_identity("SELECT MAP{1:1, 2:2, 3:3} AS numbers").selects[0].this.assert_is(
+            exp.ToMap
+        )
+        self.validate_identity(
+            'SELECT map{1:"apple", 2:"orange", 3:"pear"} AS fruit',
+            "SELECT MAP{1:'apple', 2:'orange', 3:'pear'} AS fruit",
+        )
+        self.validate_identity(
+            'SELECT map{true:map{3.13:"abc"}, false:map{}} AS nest',
+            "SELECT MAP{TRUE:MAP{3.13:'abc'}, FALSE:MAP{}} AS nest",
+        )
+        self.validate_identity("SELECT MAP{1:NULL}")
+        self.validate_identity("SELECT MAP{1:2, 3:NULL}[1]")
+        self.validate_identity("SELECT MAP{1:MAP{2:1}, 3:NULL}[1][2]")
+        self.validate_identity("SELECT map, t.map, map[1] FROM t")
+
+        self.validate_all(
+            "SELECT MAP{'a':1, 'b':2}['a'] AS x",
+            write={"duckdb": "SELECT MAP {'a': 1, 'b': 2}['a'] AS x"},
+        )
+        self.validate_all(
+            "SELECT MAP{'a':1, 'b':2} AS m",
+            read={"duckdb": "SELECT MAP {'a': 1, 'b': 2} AS m"},
+        )
+
+        self.validate_identity(
+            "SELECT MAP{t.k:10}[1] FROM (SELECT 1 AS k) AS t CROSS JOIN (SELECT 2 AS k) AS u"
+        )
+        self.validate_all(
+            "SELECT MAP{k:v}['a'] FROM (SELECT 'a' AS k, 10 AS v) AS t",
+            write={
+                "duckdb": "SELECT MAP {k: v}['a'] FROM (SELECT 'a' AS k, 10 AS v) AS t",
+            },
+        )

@@ -13,13 +13,34 @@ from sqlglot.dialects.dialect import (
     pivot_column_names,
 )
 from sqlglot.helper import seq_get
-from sqlglot.parser import binary_range_parser
+from sqlglot.parser import IsPredicatePrecedence, binary_range_parser
 from sqlglot.tokens import TokenType
 from collections.abc import Collection
 
 
-def _build_sort_array_desc(args: list) -> exp.Expr:
-    return exp.SortArray(this=seq_get(args, 0), asc=exp.false())
+def _build_list_sort(name: str, desc: bool = False) -> t.Callable[[list], exp.Expr]:
+    # Orders are case-insensitive strings, e.g. LIST_SORT(x, 'desc', 'nulls first'), and NULLs default to last
+    def _builder(args: list) -> exp.Expr:
+        orders = [exp.Literal.string("DESC"), *args[1:]] if desc else args[1:]
+        order_name = _list_sort_order_name(seq_get(orders, 0), "ASC")
+        null_order_name = _list_sort_order_name(seq_get(orders, 1), "NULLS LAST")
+        valid = order_name in ("ASC", "DESC") and null_order_name in ("NULLS FIRST", "NULLS LAST")
+        if not valid:
+            return exp.Anonymous(this=name, expressions=args)
+
+        return exp.ArraySort(
+            this=seq_get(args, 0),
+            asc=exp.false() if order_name == "DESC" else None,
+            nulls_first=exp.Boolean(this=null_order_name == "NULLS FIRST"),
+        )
+
+    return _builder
+
+
+def _list_sort_order_name(order: exp.Expr | None, default: str) -> str | None:
+    if order is None:
+        return default
+    return order.name.upper() if order.is_string else None
 
 
 def _build_array_prepend(args: list) -> exp.Expr:
@@ -72,6 +93,8 @@ def _convert_text_type(dtype: exp.DataType) -> exp.DataType:
 
 
 class DuckDBParser(parser.Parser):
+    IS_PREDICATE_PRECEDENCE = IsPredicatePrecedence.LOW
+
     MAP_KEYS_ARE_ARBITRARY_EXPRESSIONS = True
     PIVOT_COLUMN_NAMING = "agg_name_if_aliased_or_multiple"
 
@@ -117,11 +140,15 @@ class DuckDBParser(parser.Parser):
 
     FUNCTIONS = {
         **{k: v for k, v in parser.Parser.FUNCTIONS.items() if k not in ("DATE_SUB", "GLOB")},
+        **dict.fromkeys(
+            ("ARRAY_DISTINCT", "LIST_DISTINCT"),
+            lambda args: exp.ArrayDistinct(this=seq_get(args, 0), check_null=False),
+        ),
         "ANY_VALUE": lambda args: exp.IgnoreNulls(this=exp.AnyValue.from_arg_list(args)),
         "ARRAY_PREPEND": _build_array_prepend,
-        "ARRAY_REVERSE_SORT": _build_sort_array_desc,
+        "ARRAY_REVERSE_SORT": _build_list_sort("ARRAY_REVERSE_SORT", desc=True),
         "ARRAY_INTERSECT": lambda args: exp.ArrayIntersect(expressions=args),
-        "ARRAY_SORT": exp.SortArray.from_arg_list,
+        "ARRAY_SORT": _build_list_sort("ARRAY_SORT"),
         "ARRAY_SLICE": lambda args: exp.ArraySlice(
             this=seq_get(args, 0),
             start=seq_get(args, 1),
@@ -158,7 +185,6 @@ class DuckDBParser(parser.Parser):
         "JSON_EXTRACT_PATH": parser.build_extract_json_with_path(exp.JSONExtract),
         "JSON_EXTRACT_STRING": parser.build_extract_json_with_path(exp.JSONExtractScalar),
         "LIST": exp.ArrayAgg.from_arg_list,
-        "LIST_DISTINCT": exp.ArrayDistinct.from_arg_list,
         "LIST_APPEND": exp.ArrayAppend.from_arg_list,
         "LIST_CONCAT": parser.build_array_concat,
         "LIST_CONTAINS": exp.ArrayContains.from_arg_list,
@@ -170,8 +196,8 @@ class DuckDBParser(parser.Parser):
         "LIST_MAX": exp.ArrayMax.from_arg_list,
         "LIST_MIN": exp.ArrayMin.from_arg_list,
         "LIST_PREPEND": _build_array_prepend,
-        "LIST_REVERSE_SORT": _build_sort_array_desc,
-        "LIST_SORT": exp.SortArray.from_arg_list,
+        "LIST_REVERSE_SORT": _build_list_sort("LIST_REVERSE_SORT", desc=True),
+        "LIST_SORT": _build_list_sort("LIST_SORT"),
         "LIST_TRANSFORM": exp.Transform.from_arg_list,
         "LIST_VALUE": lambda args: exp.Array(
             expressions=args, value_constructor=len(args) == 1 and isinstance(args[0], exp.Query)
