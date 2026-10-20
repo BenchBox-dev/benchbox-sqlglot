@@ -7079,3 +7079,51 @@ FROM SEMANTIC_VIEW(
         self.validate_identity("UNDROP TABLE db.schema.my_table")
         self.validate_identity("UNDROP SNAPSHOT IDENTIFIER('my_snap')")
         self.validate_identity("UNDROP SNAPSHOT my_snap RENAME TO new_snap")
+
+    def test_regexp_replace_non_capturing_groups(self):
+        self.validate_all(
+            r"REGEXP_REPLACE(s, '^https?://(www\\.)?([^/]+)/.*$', '\\2')",
+            read={
+                "clickhouse": r"REGEXP_REPLACE(s, '^https?://(?:www\\.)?([^/]+)/.*$', '\\1')",
+                "snowflake": r"REGEXP_REPLACE(s, '^https?://(www\\.)?([^/]+)/.*$', '\\2')",
+            },
+            write={
+                "snowflake": r"REGEXP_REPLACE(s, '^https?://(www\\.)?([^/]+)/.*$', '\\2')",
+                "clickhouse": r"REGEXP_REPLACE(s, '^https?://(www\\.)?([^/]+)/.*$', '\\2')",
+            },
+        )
+
+        for source, expected in (
+            (
+                r"REGEXP_REPLACE(s, '(?:a)(b)(?:c)(d)', '\\2\\1')",
+                r"REGEXP_REPLACE(s, '(a)(b)(c)(d)', '\\4\\2')",
+            ),
+            (
+                r"REGEXP_REPLACE(s, '(a)(?:b)', '\\1\\\\1\\0')",
+                r"REGEXP_REPLACE(s, '(a)(b)', '\\1\\\\1\\0')",
+            ),
+            (r"REGEXP_REPLACE(s, '(?:a)+')", r"REGEXP_REPLACE(s, '(a)+', '')"),
+            (
+                r"REGEXP_REPLACE(s, '[(?:]\\((?:x)\\)(y)', '\\1')",
+                r"REGEXP_REPLACE(s, '[(?:]\\((x)\\)(y)', '\\2')",
+            ),
+            (
+                r"REGEXP_REPLACE(s, '(?i)(?:a)(?=b)(?<!c)(?<n>d)', '\\1')",
+                r"REGEXP_REPLACE(s, '(?i)(a)(?=b)(?<!c)(?<n>d)', '\\2')",
+            ),
+            (
+                r"REGEXP_REPLACE(s, '[^](?:]+(?:a)', '\\1')",
+                r"REGEXP_REPLACE(s, '[^](?:]+(a)', '\\1')",
+            ),
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(parse_one(source, read="snowflake").sql("snowflake"), expected)
+
+        for unchanged in (
+            r"REGEXP_REPLACE(s, '(a)(b)', '\\2\\1')",
+            r"REGEXP_REPLACE(s, '(?i)a', 'b')",
+            r"REGEXP_REPLACE(s, pattern, '\\1')",
+            r"REGEXP_REPLACE(s, '(?:a)(b)', replacement)",
+        ):
+            with self.subTest(unchanged=unchanged):
+                self.assertEqual(parse_one(unchanged, read="snowflake").sql("snowflake"), unchanged)
