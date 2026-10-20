@@ -20,10 +20,10 @@ so a missing package or an unreachable container fails the job.
 | chDB (ClickHouse) | `clickhouse` | in-process (`chdb`) | `in-process` |
 | PySpark | `spark` | local mode, Java 17 from the runner image | `in-process` |
 | PostgreSQL | `postgres` | service container `postgres:16` | `postgres` |
-| Trino | `trino` | service container `trinodb/trino`, memory catalog | `trino` |
-| QuestDB | `postgres` (no fork dialect yet) | service container `questdb/questdb`, PG wire port | `questdb` |
-| StarRocks | `starrocks` | `starrocks/allin1-ubuntu` started with `docker run` | `starrocks` |
-| Doris | `doris` | `apache/doris:all-in-one` started with `docker run` | `doris` |
+| Trino | `trino` | service container `trinodb/trino:484`, memory catalog | `trino` |
+| QuestDB | `postgres` (no fork dialect yet) | service container `questdb/questdb:10.0.1`, PG wire port | `questdb` |
+| StarRocks | `starrocks` | `starrocks/allin1-ubuntu:4.0.16` started with `docker run` | `starrocks` |
+| Doris | `doris` | `apache/doris:all-in-one-4.1.3` started with `docker run` | `doris` |
 
 Engines whose dialect row says "no fork dialect yet" switch to their own dialect
 when that dialect lands; the seed tests then exercise it without other changes.
