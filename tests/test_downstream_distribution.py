@@ -43,7 +43,7 @@ class TestDownstreamDistribution(unittest.TestCase):
         git("config", "tag.gpgsign", "false")
         git("add", ".")
         git("commit", "-m", "Fixture upstream")
-        git("tag", "v30.23.0")
+        git("tag", "v30.24.0")
         manifest = json.loads((ROOT / "downstream/patches.json").read_text(encoding="utf-8"))
         manifest["upstream"]["sha"] = git("rev-parse", "HEAD")
         (cls.root / "downstream").mkdir()

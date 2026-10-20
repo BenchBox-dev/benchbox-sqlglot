@@ -75,7 +75,7 @@ def smoke(*, coexist: bool = False, upstream_first: bool = False) -> None:
         assert not isinstance(expression, upstream.exp.Expression)
         assert not isinstance(upstream.parse_one("SELECT 1"), fork.exp.Expression)
         assert upstream.parse_one("SELECT 1").__class__.__module__.startswith("sqlglot.")
-        assert importlib.metadata.version("sqlglot") == "30.23.0"
+        assert importlib.metadata.version("sqlglot") == "30.24.0"
         assert fork.Dialect.get("forkfixture") is not None
         assert fork.Dialect.get("upstreamfixture") is None
         assert upstream.Dialect.get("upstreamfixture") is not None
