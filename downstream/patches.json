@@ -218,7 +218,7 @@
         "tests.dialects.test_questdb",
         "tests.test_platform_dialects_engines"
       ],
-      "reason": "Explicit Netezza, Greenplum, Vertica, DataFusion and QuestDB dialects, each a thin subclass of postgres (BenchBox substituted postgres for them), with QuestDB's parser and generator modules as the home of its generation rules; execution tests run DataFusion dialect output and the date arithmetic rewrite on real engines."
+      "reason": "Explicit Netezza, Greenplum, Vertica, DataFusion and QuestDB dialects, each a thin subclass of postgres (BenchBox substituted postgres for them), with QuestDB's generator (comma joins, DATEADD, SUBSTRING and CTE column lists written in forms QuestDB runs) in its own module; execution tests run DataFusion dialect output and the date arithmetic rewrite on real engines."
     },
     {
       "id": "platform-dialects",
@@ -241,6 +241,22 @@
       ],
       "reason": "Register the platform dialects in the Dialects enum and the lazy-import list so Dialect.get_or_raise resolves them; ansi and standard are not dialects the fork provides. The README, already fork-edited and unowned, is left as is.",
       "patch": "downstream/patches/platform-dialects.patch"
+    },
+    {
+      "id": "questdb-generator",
+      "source": "400eb23d8223f0034f0b92f7e09f1eb154b1c12a",
+      "status": "original",
+      "depends": [
+        "real-engine-ci",
+        "platform-dialect-modules"
+      ],
+      "paths": [
+        "tests/test_questdb_execution.py"
+      ],
+      "tests": [
+        "tests.test_questdb_execution"
+      ],
+      "reason": "Execute the QuestDB generator's output on QuestDB and compare rows; the generator itself is in platform-dialect-modules' sqlglot/generators/questdb.py, which needs no carried patch because it edits no upstream-owned file."
     }
   ]
 }
