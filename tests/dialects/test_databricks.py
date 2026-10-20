@@ -594,6 +594,35 @@ class TestDatabricks(Validator):
             },
         )
 
+    def test_primary_key_drops_ordering(self):
+        primary_key = exp.PrimaryKey(
+            expressions=[
+                exp.Ordered(this=exp.column("a"), desc=False, nulls_first=False),
+                exp.Ordered(this=exp.column("b"), desc=True, nulls_first=False),
+                exp.Ordered(this=exp.column("c"), desc=True, nulls_first=True),
+            ]
+        )
+        create = self.parse_one("CREATE TABLE t (a INT, b INT, c INT)")
+        create.this.append("expressions", primary_key)
+
+        self.assertEqual(
+            create.sql("databricks"), "CREATE TABLE t (a INT, b INT, c INT, PRIMARY KEY (a, b, c))"
+        )
+        self.assertEqual(
+            create.sql("postgres"),
+            "CREATE TABLE t (a INT, b INT, c INT, PRIMARY KEY (a ASC, b DESC NULLS LAST, c DESC))",
+        )
+        for ordering in ("a NULLS LAST", "a NULLS FIRST", "a ASC", "a DESC NULLS LAST"):
+            with self.subTest(ordering=ordering):
+                self.validate_identity(
+                    f"CREATE TABLE t (a INT, b INT, PRIMARY KEY ({ordering}, b TIMESERIES))",
+                    "CREATE TABLE t (a INT, b INT, PRIMARY KEY (a, b TIMESERIES))",
+                )
+        self.assertEqual(
+            parse_one("SELECT a FROM t ORDER BY a NULLS LAST", read="postgres").sql("databricks"),
+            "SELECT a FROM t ORDER BY a NULLS LAST",
+        )
+
     def test_declare(self):
         self.validate_identity("DECLARE VAR x INT", "DECLARE x INT")
         self.validate_identity("DECLARE x INT")

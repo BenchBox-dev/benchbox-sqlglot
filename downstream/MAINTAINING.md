@@ -141,6 +141,15 @@ chooses the read and write dialects, and it never names a benchmark, table or
 column. Behavior that belongs to one dialect's output (for example the SQLite
 date lowering) is a generator change and a carried patch instead.
 
+Adapter rewrites in the same module follow the same rule: `safe_division` is opt-in and
+never default, `deduplicate_output_aliases` and `flag_comparisons_to_boolean` take their
+gates (the flag column names) as arguments, and `unqualified_tables` only finds the nodes;
+the dataset or project that qualifies them stays with the caller. The Databricks generator
+drops the ordering of `PRIMARY KEY` columns (Databricks accepts neither `ASC`/`DESC` nor
+`NULLS FIRST`/`LAST` there); that edit to an upstream-owned generator is the carried patch
+`databricks-primary-key-ordering`. `tests/test_benchbox_adapter_rewrites_engines.py` proves
+each rewrite on the engines listed in ENGINE-GAPS.md.
+
 ## Platform dialects
 
 The fork adds `netezza`, `greenplum`, `vertica`, `datafusion` and `questdb`, each a

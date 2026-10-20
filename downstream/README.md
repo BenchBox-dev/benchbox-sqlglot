@@ -64,3 +64,20 @@ instead of falling back.
 `sqlglot.benchbox.rewrites` holds expression rewrites whose gates are arguments, for
 example `date_integer_arithmetic_to_interval(expression, date_columns)`, which turns
 `d_date + 5` into a day interval for the columns the caller says hold dates.
+
+The adapter rewrites in the same module are:
+
+- `safe_division(expression, dialect)` turns every `/` into `SAFE_DIVIDE(a, b)` (`bigquery`),
+  `TRY_DIVIDE(a, b)` (`databricks`) or `a / NULLIF(b, 0)` (`snowflake`, `clickhouse`). It is
+  opt-in and never applied by `transpile`: it changes results, because a zero divisor then
+  yields NULL instead of an error or infinity. Any other dialect raises `ValueError`.
+- `deduplicate_output_aliases(expression, nested=True)` suffixes repeated output names
+  (`x`, `x_2`, ...) in every `SELECT`, except where `*` or an `ORDER BY`/`GROUP BY` reference
+  to the repeated name makes renaming unsafe.
+- `unqualified_tables(expression)` returns the `Table` nodes with no schema or catalog that are
+  not CTE references, so a caller holding a dataset can set `db` on them.
+- `flag_comparisons_to_boolean(expression, columns, use_is=False)` rewrites `flag = 1` and
+  `flag = 0` for the named columns into `= TRUE`/`= FALSE` (or `IS TRUE`/`IS FALSE`).
+
+The Databricks generator also drops ordering (`ASC`, `DESC`, `NULLS FIRST`, `NULLS LAST`) from
+`PRIMARY KEY` columns, which Databricks rejects, and its parser accepts that ordering.

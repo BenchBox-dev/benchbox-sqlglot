@@ -12,6 +12,7 @@ import typing as t
 from decimal import Context, Decimal, DecimalException, Inexact
 
 from sqlglot import exp
+from sqlglot.dialects.dialect import Dialect, DialectType
 
 E = t.TypeVar("E", bound=exp.Expr)
 
@@ -150,5 +151,260 @@ def date_integer_arithmetic_to_interval(
         ):
             node.set(
                 "expression", exp.Interval(this=exp.Literal.string(days.name), unit=exp.var("DAY"))
+            )
+    return expression
+
+
+def _division_form(dialect: DialectType) -> str:
+    from sqlglot.dialects.bigquery import BigQuery
+    from sqlglot.dialects.clickhouse import ClickHouse
+    from sqlglot.dialects.databricks import Databricks
+    from sqlglot.dialects.snowflake import Snowflake
+
+    resolved = Dialect.get_or_raise(dialect)
+    if isinstance(resolved, (BigQuery, Databricks)):
+        return "function"
+    if isinstance(resolved, Snowflake):
+        return "nullif"
+    if isinstance(resolved, ClickHouse):
+        return "nullif_skip_literals"
+    raise ValueError(
+        f"safe_division supports bigquery, snowflake, databricks and clickhouse, not {dialect!r}"
+    )
+
+
+def _is_zero_guard(node: exp.Expr) -> bool:
+    node = node.unnest()
+    if not isinstance(node, exp.Nullif):
+        return False
+    zero = node.expression
+    return isinstance(zero, exp.Literal) and zero.is_number and zero.name in {"0", "0.0"}
+
+
+def _is_nonzero_number(node: exp.Expr) -> bool:
+    node = node.unnest()
+    if isinstance(node, exp.Neg):
+        node = node.this.unnest()
+    return isinstance(node, exp.Literal) and node.is_number and Decimal(node.name) != 0
+
+
+def safe_division(expression: E, dialect: DialectType, copy: bool = True) -> E:
+    """Make every ``/`` return NULL instead of failing or producing infinity on a zero divisor.
+
+    The form depends on the dialect the expression is written in:
+
+    * ``bigquery`` and ``databricks``: ``a / b`` becomes ``SAFE_DIVIDE(a, b)`` and
+      ``TRY_DIVIDE(a, b)`` respectively (both are ``exp.SafeDivide``).
+    * ``snowflake``: ``a / b`` becomes ``a / NULLIF(b, 0)``; a divisor that is already
+      ``NULLIF(x, 0)`` is left alone.
+    * ``clickhouse``: ``a / b`` becomes ``a / NULLIF(b, 0)``, which also covers the
+      ``Nullable(Decimal(p, s))`` divisors ClickHouse rejects at zero; a non-zero numeric
+      literal divisor and a divisor that is already ``NULLIF(x, 0)`` are left alone.
+
+    The rewrite changes results (a zero divisor yields NULL), so it is opt-in: nothing
+    calls it unless the caller asks. Any other dialect raises ``ValueError``.
+
+    Args:
+        expression: the expression to rewrite.
+        dialect: the dialect the expression is written in and will be generated for.
+        copy: rewrite a copy instead of mutating ``expression``.
+
+    Returns:
+        The rewritten expression.
+    """
+    form = _division_form(dialect)
+    if copy:
+        expression = expression.copy()
+    for node in reversed(list(expression.find_all(exp.Div, bfs=False))):
+        divisor = node.expression
+        if form == "function":
+            replacement = exp.SafeDivide(this=node.this, expression=divisor)
+            if node is expression:
+                return replacement  # type: ignore[return-value]
+            node.replace(replacement)
+        elif not (
+            _is_zero_guard(divisor)
+            or (form == "nullif_skip_literals" and _is_nonzero_number(divisor))
+        ):
+            node.set("expression", exp.Nullif(this=divisor, expression=exp.Literal.number(0)))
+    return expression
+
+
+def _deduplicate_select(select: exp.Select) -> None:
+    selects = select.expressions
+    if any(isinstance(e, exp.Star) or (isinstance(e, exp.Column) and e.is_star) for e in selects):
+        return
+
+    def output_name(node: exp.Expr) -> str:
+        if isinstance(node, (exp.Alias, exp.Column)):
+            return node.output_name
+        return ""
+
+    totals: dict[str, int] = {}
+    for node in selects:
+        name = output_name(node).lower()
+        if name:
+            totals[name] = totals.get(name, 0) + 1
+    repeated = {name for name, total in totals.items() if total > 1}
+    if not repeated:
+        return
+
+    ordering: list[exp.Expr] = []
+    for key in ("order", "group"):
+        clause = select.args.get(key)
+        if clause:
+            ordering.extend(clause.expressions)
+    if any(
+        not column.table and column.name.lower() in repeated
+        for node in ordering
+        for column in node.find_all(exp.Column)
+    ):
+        return
+
+    seen: dict[str, int] = {}
+    for node in list(selects):
+        name = output_name(node)
+        if name.lower() not in repeated:
+            continue
+        seen[name.lower()] = seen.get(name.lower(), 0) + 1
+        if seen[name.lower()] == 1:
+            continue
+        new_name = f"{name}_{seen[name.lower()]}"
+        if isinstance(node, exp.Alias):
+            node.set(
+                "alias", exp.to_identifier(new_name, quoted=node.args["alias"].args.get("quoted"))
+            )
+        else:
+            node.replace(exp.alias_(node.copy(), new_name))
+
+
+def _is_set_operand(select: exp.Select) -> bool:
+    parent = select.parent
+    while isinstance(parent, exp.Subquery):
+        parent = parent.parent
+    return isinstance(parent, exp.SetOperation)
+
+
+def deduplicate_output_aliases(expression: E, nested: bool = True, copy: bool = True) -> E:
+    """Suffix repeated output names of ``SELECT`` projections as ``name_2``, ``name_3``...
+
+    Spark and Databricks reject or mis-resolve a query whose projection names two
+    columns alike once it feeds a ``CREATE TABLE AS`` or an outer query. In each
+    ``SELECT`` the first occurrence keeps its name (case-insensitive); later ones are
+    aliased, and a plain column that needs a new name gains an alias. A ``SELECT`` is left
+    unchanged when its projection contains ``*``, or when an unqualified column of its
+    ``ORDER BY`` or ``GROUP BY`` names a repeated output (renaming could change what it
+    resolves to). Operands of ``UNION``, ``INTERSECT`` and ``EXCEPT`` are never renamed,
+    since the first operand names the result.
+
+    Args:
+        expression: the expression to rewrite.
+        nested: also rewrite ``SELECT`` statements in subqueries, CTEs and DML sources;
+            when false only ``expression`` itself, if it is a ``SELECT``, is rewritten.
+        copy: rewrite a copy instead of mutating ``expression``.
+
+    Returns:
+        The rewritten expression.
+    """
+    if copy:
+        expression = expression.copy()
+    selects = expression.find_all(exp.Select) if nested else [expression]
+    for select in list(selects):
+        if isinstance(select, exp.Select) and not _is_set_operand(select):
+            _deduplicate_select(select)
+    return expression
+
+
+def _is_cte_reference(table: exp.Table) -> bool:
+    name = table.name.lower()
+    node: exp.Expr = table
+    while node.parent is not None:
+        parent = node.parent
+        if isinstance(parent, exp.With):
+            for cte in parent.expressions:
+                if cte is node:
+                    if parent.args.get("recursive") and cte.alias_or_name.lower() == name:
+                        return True
+                    break
+                if cte.alias_or_name.lower() == name:
+                    return True
+        elif isinstance(parent, exp.Query) and node is not parent.args.get("with_"):
+            with_ = parent.args.get("with_")
+            if with_ and any(cte.alias_or_name.lower() == name for cte in with_.expressions):
+                return True
+        node = parent
+    return False
+
+
+def unqualified_tables(expression: exp.Expr) -> list[exp.Table]:
+    """Return the ``Table`` nodes that name a table without a schema or catalog.
+
+    Names that resolve to a CTE visible at the reference (an earlier sibling of the same
+    ``WITH``, or any CTE of an enclosing query's ``WITH``) are skipped, as are table
+    functions. The nodes belong to ``expression`` and are in depth-first order, so a caller
+    holding a dataset or project can qualify them in place with ``table.set("db", ...)``.
+
+    Args:
+        expression: the expression to scan.
+
+    Returns:
+        Every unqualified, non-CTE table node, duplicates included.
+    """
+    return [
+        table
+        for table in expression.find_all(exp.Table, bfs=False)
+        if isinstance(table.this, exp.Identifier)
+        and not table.db
+        and not table.catalog
+        and not _is_cte_reference(table)
+    ]
+
+
+def flag_comparisons_to_boolean(
+    expression: E,
+    columns: t.Iterable[str],
+    use_is: bool = False,
+    copy: bool = True,
+) -> E:
+    """Rewrite ``flag = 1`` and ``flag = 0`` into boolean comparisons for the named columns.
+
+    Schemas that store flags as ``BOOLEAN`` can arrive with query text that
+    compares them with ``1`` and ``0``, which engines with a strict boolean type reject.
+    ``flag = 1`` becomes ``flag = TRUE`` (or ``flag IS TRUE`` with ``use_is``) and
+    ``flag = 0`` becomes ``flag = FALSE`` (``flag IS FALSE``). The literal may be on
+    either side; only the integers 0 and 1 are rewritten.
+
+    Args:
+        expression: the expression to rewrite.
+        columns: names (case-insensitive, qualifier ignored) of the flag columns.
+        use_is: emit ``IS TRUE`` / ``IS FALSE`` instead of ``= TRUE`` / ``= FALSE``.
+        copy: rewrite a copy instead of mutating ``expression``.
+
+    Returns:
+        The rewritten expression.
+    """
+    column_names = {name.lower() for name in columns}
+    if copy:
+        expression = expression.copy()
+    if not column_names:
+        return expression
+
+    for node in list(expression.find_all(exp.EQ)):
+        column, literal = node.this, node.expression
+        if isinstance(literal, exp.Column):
+            column, literal = literal, column
+        if (
+            isinstance(column, exp.Column)
+            and column.name.lower() in column_names
+            and isinstance(literal, exp.Literal)
+            and literal.is_int
+            and literal.name in {"0", "1"}
+        ):
+            value = exp.Boolean(this=literal.name == "1")
+            column = column.copy()
+            node.replace(
+                exp.Is(this=column, expression=value)
+                if use_is
+                else exp.EQ(this=column, expression=value)
             )
     return expression

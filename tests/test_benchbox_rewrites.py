@@ -4,8 +4,13 @@ from decimal import Decimal
 from sqlglot import exp, parse_one
 from sqlglot.benchbox.rewrites import (
     date_integer_arithmetic_to_interval,
+    deduplicate_output_aliases,
+    flag_comparisons_to_boolean,
     fold_between_literal_arithmetic,
+    safe_division,
+    unqualified_tables,
 )
+from sqlglot.dialects.dialect import Dialect
 from tests import engines
 from tests.engines import requires_engine
 
@@ -300,3 +305,288 @@ class TestDateIntegerArithmeticToInterval(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def rewrite_division(sql, dialect):
+    return safe_division(parse_one(sql, read=dialect), dialect).sql(dialect)
+
+
+class TestSafeDivision(unittest.TestCase):
+    def test_bigquery_uses_safe_divide(self):
+        self.assertEqual(
+            rewrite_division("SELECT a / b, (x + 1) / (y - 1) / z FROM t", "bigquery"),
+            "SELECT SAFE_DIVIDE(a, b), SAFE_DIVIDE(SAFE_DIVIDE((x + 1), (y - 1)), z) FROM t",
+        )
+
+    def test_databricks_uses_try_divide(self):
+        self.assertEqual(
+            rewrite_division("SELECT a / b FROM t WHERE x / y > 1", "databricks"),
+            "SELECT TRY_DIVIDE(a, b) FROM t WHERE TRY_DIVIDE(x, y) > 1",
+        )
+
+    def test_snowflake_wraps_divisor_in_nullif(self):
+        self.assertEqual(
+            rewrite_division("SELECT a / b, a / 2, c / NULLIF(d, 0) FROM t", "snowflake"),
+            "SELECT a / NULLIF(b, 0), a / NULLIF(2, 0), c / NULLIF(d, 0) FROM t",
+        )
+
+    def test_clickhouse_wraps_non_literal_divisors(self):
+        self.assertEqual(
+            rewrite_division(
+                "SELECT a / b, a / 2, a / 0, a / NULLIF(b, 0), "
+                "a / CAST(b AS Nullable(Decimal(15, 2))), a / (b - c) FROM t",
+                "clickhouse",
+            ),
+            "SELECT a / nullIf(b, 0), a / 2, a / nullIf(0, 0), a / nullIf(b, 0), "
+            "a / nullIf(CAST(b AS Nullable(Decimal(15, 2))), 0), a / nullIf((b - c), 0) FROM t",
+        )
+
+    def test_nested_division_in_every_position(self):
+        self.assertEqual(
+            rewrite_division("SELECT SUM(a / b) / SUM(c / d) FROM t", "snowflake"),
+            "SELECT SUM(a / NULLIF(b, 0)) / NULLIF(SUM(c / NULLIF(d, 0)), 0) FROM t",
+        )
+
+    def test_rewrite_is_idempotent(self):
+        for dialect in ("bigquery", "databricks", "snowflake", "clickhouse"):
+            with self.subTest(dialect=dialect):
+                once = rewrite_division("SELECT a / b FROM t", dialect)
+                self.assertEqual(rewrite_division(once, dialect), once)
+
+    def test_copy_flag(self):
+        tree = parse_one("SELECT a / b FROM t", read="snowflake")
+        safe_division(tree, "snowflake")
+        self.assertEqual(tree.sql("snowflake"), "SELECT a / b FROM t")
+        safe_division(tree, "snowflake", copy=False)
+        self.assertEqual(tree.sql("snowflake"), "SELECT a / NULLIF(b, 0) FROM t")
+
+    def test_unsupported_dialect_raises(self):
+        with self.assertRaises(ValueError):
+            safe_division(parse_one("SELECT a / b"), "postgres")
+        with self.assertRaises(ValueError):
+            safe_division(parse_one("SELECT a / b"), "no_such_dialect")
+
+    def test_dialect_object_is_accepted(self):
+        self.assertEqual(
+            safe_division(parse_one("SELECT a / b"), Dialect.get_or_raise("bigquery")).sql(
+                "bigquery"
+            ),
+            "SELECT SAFE_DIVIDE(a, b)",
+        )
+
+    def test_other_dialects_render_the_bigquery_form(self):
+        tree = safe_division(parse_one("SELECT a / b FROM t", read="bigquery"), "bigquery")
+        self.assertEqual(
+            tree.sql("duckdb"), "SELECT CASE WHEN b <> 0 THEN a / b ELSE NULL END FROM t"
+        )
+        self.assertEqual(
+            tree.sql("postgres"),
+            "SELECT CASE WHEN b <> 0 THEN CAST(a AS DOUBLE PRECISION) / b ELSE NULL END FROM t",
+        )
+
+
+def dedupe(sql, dialect="databricks"):
+    return deduplicate_output_aliases(parse_one(sql, read=dialect)).sql(dialect)
+
+
+class TestDeduplicateOutputAliases(unittest.TestCase):
+    def test_repeated_aliases_and_columns_are_suffixed(self):
+        self.assertEqual(
+            dedupe("SELECT a AS x, b AS x, c AS x, a, t.a, d FROM t"),
+            "SELECT a AS x, b AS x_2, c AS x_3, a, t.a AS a_2, d FROM t",
+        )
+
+    def test_names_compare_case_insensitively_and_keep_quoting(self):
+        self.assertEqual(
+            dedupe("SELECT a AS `Total`, b AS TOTAL, c AS `total` FROM t"),
+            "SELECT a AS `Total`, b AS TOTAL_2, c AS `total_3` FROM t",
+        )
+
+    def test_unnamed_expressions_are_not_counted(self):
+        self.assertEqual(
+            dedupe("SELECT a + 1, b + 1, c AS c, d AS c FROM t"),
+            "SELECT a + 1, b + 1, c AS c, d AS c_2 FROM t",
+        )
+
+    def test_unique_projection_is_unchanged(self):
+        sql = "SELECT a, b AS c FROM t"
+        self.assertEqual(dedupe(sql), sql)
+
+    def test_star_projection_is_unchanged(self):
+        sql = "SELECT *, a AS x, b AS x FROM t"
+        self.assertEqual(dedupe(sql), sql)
+
+    def test_order_or_group_by_a_repeated_name_is_unchanged(self):
+        for tail in ("ORDER BY x", "GROUP BY x", "GROUP BY 1 ORDER BY X DESC"):
+            with self.subTest(tail=tail):
+                sql = f"SELECT a AS x, b AS x FROM t {tail}"
+                self.assertEqual(dedupe(sql), sql)
+
+    def test_qualified_order_by_does_not_block_the_rename(self):
+        self.assertEqual(
+            dedupe("SELECT a AS x, b AS x FROM t ORDER BY t.a"),
+            "SELECT a AS x, b AS x_2 FROM t ORDER BY t.a",
+        )
+
+    def test_with_clause_select_is_deduplicated(self):
+        self.assertEqual(
+            dedupe("WITH c AS (SELECT 1 AS k) SELECT k, k FROM c"),
+            "WITH c AS (SELECT 1 AS k) SELECT k, k AS k_2 FROM c",
+        )
+
+    def test_set_operation_operands_are_unchanged(self):
+        for sql in (
+            "SELECT a AS x, b AS x UNION SELECT 1, 2",
+            "(SELECT a AS x, b AS x) UNION ALL (SELECT 1, 2)",
+        ):
+            with self.subTest(sql=sql):
+                self.assertEqual(dedupe(sql), parse_one(sql, read="databricks").sql("databricks"))
+
+    def test_nested_selects_are_deduplicated(self):
+        self.assertEqual(
+            dedupe(
+                "WITH c AS (SELECT a AS x, b AS x FROM t) "
+                "SELECT s.x, s.k FROM (SELECT x, x AS k, x AS k FROM c) AS s "
+                "WHERE s.x IN (SELECT a AS y, b AS y FROM u)"
+            ),
+            "WITH c AS (SELECT a AS x, b AS x_2 FROM t) "
+            "SELECT s.x, s.k FROM (SELECT x, x AS k, x AS k_2 FROM c) AS s "
+            "WHERE s.x IN (SELECT a AS y, b AS y_2 FROM u)",
+        )
+
+    def test_nested_select_skip_rules_apply_per_select(self):
+        self.assertEqual(
+            dedupe(
+                "SELECT s.x FROM (SELECT a AS x, b AS x FROM t ORDER BY x) AS s CROSS JOIN "
+                "(SELECT c AS y, d AS y FROM t) AS r"
+            ),
+            "SELECT s.x FROM (SELECT a AS x, b AS x FROM t ORDER BY x) AS s CROSS JOIN "
+            "(SELECT c AS y, d AS y_2 FROM t) AS r",
+        )
+
+    def test_dml_source_is_deduplicated(self):
+        self.assertEqual(
+            dedupe("INSERT INTO t SELECT 1 AS x, 2 AS x"), "INSERT INTO t SELECT 1 AS x, 2 AS x_2"
+        )
+
+    def test_only_the_top_level_select_without_nested(self):
+        tree = parse_one(
+            "SELECT s.x FROM (SELECT a AS x, b AS x FROM t) AS s, "
+            "(SELECT 1) AS r WHERE 1 = 1 UNION SELECT 1",
+            read="databricks",
+        )
+        self.assertEqual(
+            deduplicate_output_aliases(tree, nested=False).sql("databricks"),
+            tree.sql("databricks"),
+        )
+        plain = parse_one("SELECT a AS x, b AS x FROM (SELECT c AS y, d AS y FROM t)")
+        self.assertEqual(
+            deduplicate_output_aliases(plain, nested=False).sql(),
+            "SELECT a AS x, b AS x_2 FROM (SELECT c AS y, d AS y FROM t)",
+        )
+
+    def test_copy_flag(self):
+        tree = parse_one("SELECT a AS x, b AS x", read="databricks")
+        deduplicate_output_aliases(tree)
+        self.assertEqual(tree.sql("databricks"), "SELECT a AS x, b AS x")
+        deduplicate_output_aliases(tree, copy=False)
+        self.assertEqual(tree.sql("databricks"), "SELECT a AS x, b AS x_2")
+
+
+def names(sql, dialect="bigquery"):
+    return [table.sql(dialect) for table in unqualified_tables(parse_one(sql, read=dialect))]
+
+
+class TestUnqualifiedTables(unittest.TestCase):
+    def test_returns_nodes_of_the_expression(self):
+        tree = parse_one("SELECT * FROM a JOIN ds.b ON TRUE JOIN p.ds.c ON TRUE", read="bigquery")
+        (node,) = unqualified_tables(tree)
+        self.assertIs(node, tree.find(exp.Table))
+        node.set("db", exp.to_identifier("ds"))
+        self.assertEqual(
+            tree.sql("bigquery"), "SELECT * FROM ds.a JOIN ds.b ON TRUE JOIN p.ds.c ON TRUE"
+        )
+
+    def test_every_reference_is_returned_depth_first(self):
+        self.assertEqual(
+            names("SELECT * FROM a WHERE x IN (SELECT y FROM b) UNION ALL SELECT * FROM a"),
+            ["a", "b", "a"],
+        )
+
+    def test_cte_references_are_skipped(self):
+        self.assertEqual(
+            names("WITH c AS (SELECT * FROM real_t) SELECT * FROM c JOIN other ON TRUE"),
+            ["other", "real_t"],
+        )
+
+    def test_later_cte_does_not_shadow_an_earlier_body(self):
+        self.assertEqual(
+            names("WITH a AS (SELECT * FROM b), b AS (SELECT 1 AS k) SELECT * FROM a, b"),
+            ["b"],
+        )
+
+    def test_recursive_cte_may_reference_itself(self):
+        self.assertEqual(
+            names("WITH RECURSIVE r AS (SELECT 1 AS n UNION ALL SELECT n FROM r) SELECT * FROM r"),
+            [],
+        )
+
+    def test_nested_cte_scopes(self):
+        self.assertEqual(
+            names(
+                "SELECT * FROM (WITH inner_c AS (SELECT 1 AS k) SELECT * FROM inner_c) AS s "
+                "JOIN inner_c ON TRUE"
+            ),
+            ["inner_c"],
+        )
+
+    def test_dml_targets_and_table_functions(self):
+        self.assertEqual(names("INSERT INTO target SELECT * FROM source"), ["target", "source"])
+        self.assertEqual(names("SELECT * FROM UNNEST([1, 2]) AS u"), [])
+
+    def test_catalog_only_and_schema_qualified_are_skipped(self):
+        self.assertEqual(names("SELECT * FROM `p.d.t` JOIN d.u ON TRUE"), [])
+
+
+class TestFlagComparisonsToBoolean(unittest.TestCase):
+    COLUMNS = ("IsCurrent", "holidayflag")
+
+    def rewrite(self, sql, **kwargs):
+        return flag_comparisons_to_boolean(
+            parse_one(sql, read="sqlite"), self.COLUMNS, **kwargs
+        ).sql("sqlite")
+
+    def test_equals_form(self):
+        self.assertEqual(
+            self.rewrite(
+                "SELECT * FROM d WHERE IsCurrent = 1 AND d.HolidayFlag = 0 AND 1 = iscurrent"
+            ),
+            "SELECT * FROM d WHERE IsCurrent = TRUE AND d.HolidayFlag = FALSE AND iscurrent = TRUE",
+        )
+
+    def test_is_form(self):
+        self.assertEqual(
+            self.rewrite(
+                "SELECT CASE WHEN IsCurrent = 1 THEN 1 END FROM d WHERE HolidayFlag = 0",
+                use_is=True,
+            ),
+            "SELECT CASE WHEN IsCurrent IS TRUE THEN 1 END FROM d WHERE HolidayFlag IS FALSE",
+        )
+
+    def test_other_comparisons_are_unchanged(self):
+        sql = (
+            "SELECT * FROM d WHERE IsCurrent = 2 AND IsCurrent = 1.5 AND IsCurrent <> 1 "
+            "AND other = 1 AND IsCurrent = flag2 AND IsCurrent IN (0, 1)"
+        )
+        self.assertEqual(self.rewrite(sql), parse_one(sql, read="sqlite").sql("sqlite"))
+
+    def test_no_columns_is_a_no_op(self):
+        tree = parse_one("SELECT * FROM d WHERE IsCurrent = 1")
+        self.assertEqual(flag_comparisons_to_boolean(tree, []).sql(), tree.sql())
+
+    def test_copy_flag(self):
+        tree = parse_one("SELECT * FROM d WHERE IsCurrent = 1")
+        flag_comparisons_to_boolean(tree, self.COLUMNS)
+        self.assertEqual(tree.sql(), "SELECT * FROM d WHERE IsCurrent = 1")
+        flag_comparisons_to_boolean(tree, self.COLUMNS, copy=False)
+        self.assertEqual(tree.sql(), "SELECT * FROM d WHERE IsCurrent = TRUE")
