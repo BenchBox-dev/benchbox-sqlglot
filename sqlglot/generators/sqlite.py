@@ -402,6 +402,15 @@ class SQLiteGenerator(generator.Generator):
         modifier = f"'{modifier} {unit.name}'" if unit else f"'{modifier}'"
         return self.func("DATE", expression.this, modifier)
 
+    def datesub_sql(self, expression: exp.DateSub) -> str:
+        return self.dateadd_sql(
+            exp.DateAdd(
+                this=expression.this,
+                expression=exp.Neg(this=expression.expression),
+                unit=expression.args.get("unit"),
+            )
+        )
+
     def _date_interval_sql(self, expression: exp.Add | exp.Sub) -> str | None:
         date, interval = expression.this, expression.expression
         if isinstance(expression, exp.Add) and isinstance(date, exp.Interval):
@@ -514,7 +523,9 @@ class SQLiteGenerator(generator.Generator):
 
         sql = f"(JULIANDAY({self.sql(expression, 'this')}) - JULIANDAY({self.sql(expression, 'expression')}))"
 
-        if unit == "MONTH":
+        if unit == "DAY":
+            pass
+        elif unit == "MONTH":
             sql = f"{sql} / 30.0"
         elif unit == "YEAR":
             sql = f"{sql} / 365.0"

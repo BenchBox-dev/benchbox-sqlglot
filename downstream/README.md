@@ -81,3 +81,12 @@ The adapter rewrites in the same module are:
 
 The Databricks generator also drops ordering (`ASC`, `DESC`, `NULLS FIRST`, `NULLS LAST`) from
 `PRIMARY KEY` columns, which Databricks rejects, and its parser accepts that ordering.
+
+The `netezza` dialect reads the SQLite date idioms that Netezza-sourced benchmark queries carry:
+`DATE('now')` is `CURRENT_DATE`, `DATE('now', '-N days')` (also `+`, `month` and `year`) is a date
+add or subtract, `JULIANDAY(a) - JULIANDAY(b)` is a day `DATE_DIFF` and a lone `JULIANDAY(x)` is the
+day number `DATE_DIFF('DAY', DATE '1970-01-01', x) + 2440588`. Every target writes its own form, and
+the SQLite generator writes `DATE(...)` and `JULIANDAY` back. Other dialects read these calls as
+plain functions, as before. The Snowflake generator rewrites a `REGEXP_REPLACE` pattern that has
+non-capturing groups `(?:...)` into capturing groups and renumbers the `\N` references in the
+replacement, because Snowflake's regular expression syntax lacks non-capturing groups.

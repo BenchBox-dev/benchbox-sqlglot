@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from sqlglot.dialects.postgres import Postgres
+from sqlglot.parsers.netezza import NetezzaParser
 
 
 class Netezza(Postgres):
     """IBM Netezza Performance Server, whose SQL descends from PostgreSQL.
 
-    Behaves as `Postgres` until a difference is proved against the engine; its own
-    class gives callers an explicit key to read and write.
+    Differs from `Postgres` only by reading the SQLite date idioms that Netezza-sourced
+    benchmark queries carry (`JULIANDAY`, `DATE('now' [, '-N days'])`) as portable
+    date nodes, so every target dialect writes its own spelling.
     """
+
+    Parser = NetezzaParser

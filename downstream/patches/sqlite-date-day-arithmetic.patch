@@ -1,0 +1,76 @@
+diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
+index 19665536..37971340 100644
+--- a/sqlglot/generators/sqlite.py
++++ b/sqlglot/generators/sqlite.py
+@@ -402,6 +402,15 @@ class SQLiteGenerator(generator.Generator):
+         modifier = f"'{modifier} {unit.name}'" if unit else f"'{modifier}'"
+         return self.func("DATE", expression.this, modifier)
+ 
++    def datesub_sql(self, expression: exp.DateSub) -> str:
++        return self.dateadd_sql(
++            exp.DateAdd(
++                this=expression.this,
++                expression=exp.Neg(this=expression.expression),
++                unit=expression.args.get("unit"),
++            )
++        )
++
+     def _date_interval_sql(self, expression: exp.Add | exp.Sub) -> str | None:
+         date, interval = expression.this, expression.expression
+         if isinstance(expression, exp.Add) and isinstance(date, exp.Interval):
+@@ -514,7 +523,9 @@ class SQLiteGenerator(generator.Generator):
+ 
+         sql = f"(JULIANDAY({self.sql(expression, 'this')}) - JULIANDAY({self.sql(expression, 'expression')}))"
+ 
+-        if unit == "MONTH":
++        if unit == "DAY":
++            pass
++        elif unit == "MONTH":
+             sql = f"{sql} / 30.0"
+         elif unit == "YEAR":
+             sql = f"{sql} / 365.0"
+diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
+index 818c2db0..5b376bbb 100644
+--- a/tests/dialects/test_sqlite.py
++++ b/tests/dialects/test_sqlite.py
+@@ -1124,3 +1124,40 @@ class TestSQLite(Validator):
+             "CREATE TRIGGER view_insert INSTEAD OF INSERT ON employee_view BEGIN INSERT INTO employees (id, name, department) VALUES (NEW.id, NEW.name, NEW.department) END",
+             check_command_warning=True,
+         )
++
++    def test_date_day_difference_and_subtraction(self):
++        for unit in ("DAY", "day"):
++            with self.subTest(unit=unit):
++                self.assertEqual(
++                    exp.DateDiff(
++                        this=exp.column("a"), expression=exp.column("b"), unit=exp.var(unit)
++                    ).sql("sqlite", unsupported_level=ErrorLevel.RAISE),
++                    "CAST((JULIANDAY(a) - JULIANDAY(b)) AS INTEGER)",
++                )
++
++        for amount, unit, expected in (
++            (exp.Literal.number(30), "DAY", "DATE(CURRENT_DATE, '-30 DAY')"),
++            (exp.Literal.number(2), "MONTH", "DATE(CURRENT_DATE, '-2 MONTH')"),
++            (exp.Literal.number(1), "YEAR", "DATE(CURRENT_DATE, '-1 YEAR')"),
++            (exp.Paren(this=exp.column("n")), "DAY", "DATE(CURRENT_DATE, (-(n)) || ' DAY')"),
++        ):
++            with self.subTest(amount=amount.sql(), unit=unit):
++                node = exp.DateSub(this=exp.CurrentDate(), expression=amount, unit=exp.var(unit))
++                self.assertEqual(node.sql("sqlite", unsupported_level=ErrorLevel.RAISE), expected)
++
++    @requires_engine("sqlite")
++    def test_date_subtraction_executes(self):
++        node = exp.select(
++            exp.DateSub(
++                this=exp.CurrentDate(), expression=exp.Literal.number(30), unit=exp.var("DAY")
++            ),
++            exp.DateSub(
++                this=exp.Literal.string("2024-03-15"),
++                expression=exp.Literal.number(1),
++                unit=exp.var("MONTH"),
++            ),
++        )
++        with engines.connect("sqlite") as connection:
++            (row,) = connection.execute(node.sql("sqlite"))
++            (expected,) = connection.execute("SELECT DATE('now', '-30 days')")
++        self.assertEqual(row, (expected[0], "2024-02-15"))

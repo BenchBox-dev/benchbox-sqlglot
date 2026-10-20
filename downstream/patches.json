@@ -218,7 +218,7 @@
         "tests.dialects.test_questdb",
         "tests.test_platform_dialects_engines"
       ],
-      "reason": "Explicit Netezza, Greenplum, Vertica, DataFusion and QuestDB dialects, each a thin subclass of postgres (BenchBox substituted postgres for them), with QuestDB's generator (comma joins, DATEADD, SUBSTRING and CTE column lists written in forms QuestDB runs) in its own module; execution tests run DataFusion dialect output and the date arithmetic rewrite on real engines."
+      "reason": "Explicit Netezza, Greenplum, Vertica, DataFusion and QuestDB dialects, each a thin subclass of postgres (BenchBox substituted postgres for them), with QuestDB's generator (comma joins, DATEADD, SUBSTRING and CTE column lists written in forms QuestDB runs) in its own module; execution tests run DataFusion dialect output and the date arithmetic rewrite on real engines; the Netezza dialect reads the SQLite date idioms (see netezza-sqlite-idioms)."
     },
     {
       "id": "platform-dialects",
@@ -290,6 +290,60 @@
         "tests.test_benchbox_adapter_rewrites_engines"
       ],
       "reason": "Execute the adapter rewrites on real engines: zero divisors on Postgres, DuckDB, PySpark and chDB, alias deduplication on Postgres, DuckDB and PySpark, table qualification and flag folding on Postgres and DuckDB, and Databricks primary key syntax on PySpark; the rewrites themselves are in benchbox-rewrites, which needs no further patch."
+    },
+    {
+      "id": "sqlite-date-day-arithmetic",
+      "source": "a83f3dd0d29fbeda10ea1606e0903461ba1c4abc",
+      "status": "carried",
+      "depends": [
+        "sqlite-temporal-lowering"
+      ],
+      "paths": [
+        "sqlglot/generators/sqlite.py",
+        "tests/dialects/test_sqlite.py"
+      ],
+      "tests": [
+        "tests.dialects.test_sqlite"
+      ],
+      "reason": "Write DATEDIFF in DAY units without an unsupported warning and write DATE_SUB as DATE(x, '-N UNIT'), so day differences and relative dates round-trip to SQLite.",
+      "patch": "downstream/patches/sqlite-date-day-arithmetic.patch"
+    },
+    {
+      "id": "snowflake-regexp-replace-groups",
+      "source": "78c5cfc3060ef68131bfb7f1bde978e506447dad",
+      "status": "carried",
+      "depends": [],
+      "paths": [
+        "sqlglot/generators/snowflake.py",
+        "tests/dialects/test_snowflake.py"
+      ],
+      "tests": [
+        "tests.dialects.test_snowflake"
+      ],
+      "reason": "Snowflake regular expressions have no non-capturing groups: turn (?:...) in a literal REGEXP_REPLACE pattern into a capturing group and renumber the \\N references in a literal replacement.",
+      "patch": "downstream/patches/snowflake-regexp-replace-groups.patch"
+    },
+    {
+      "id": "netezza-sqlite-idioms",
+      "source": "905ef895d3ec9d0e6ca395d867f4b9037e1f8e2f",
+      "status": "original",
+      "depends": [
+        "real-engine-ci",
+        "platform-dialect-modules",
+        "sqlite-date-day-arithmetic",
+        "snowflake-regexp-replace-groups"
+      ],
+      "paths": [
+        "sqlglot/parsers/netezza.py",
+        "tests/test_regexp_replace_execution.py",
+        "tests/test_sqlite_idioms_execution.py"
+      ],
+      "tests": [
+        "tests.dialects.test_netezza",
+        "tests.test_sqlite_idioms_execution",
+        "tests.test_regexp_replace_execution"
+      ],
+      "reason": "The Netezza parser reads the SQLite date idioms (DATE('now' [, '-N days']), JULIANDAY(a) - JULIANDAY(b), a lone JULIANDAY) as portable date nodes so every target writes its own form; execution tests run them on SQLite, DuckDB, DataFusion, chDB, PySpark, Postgres, StarRocks and Doris and run a REGEXP_REPLACE with a non-capturing group on chDB, DuckDB, DataFusion and Postgres. The Netezza dialect module and its tests stay in platform-dialect-modules."
     }
   ]
 }

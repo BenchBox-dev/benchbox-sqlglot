@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import typing as t
 from collections import defaultdict
 
@@ -40,6 +41,52 @@ from sqlglot.tokens import TokenType
 
 if t.TYPE_CHECKING:
     from sqlglot._typing import E
+
+
+_NAMED_GROUP = re.compile(r"\(\?(?:P?<[A-Za-z_]|')")
+_GROUP_REFERENCE = re.compile(r"\\(\\|\d)")
+
+
+def _capture_non_capturing_groups(pattern: str) -> tuple[str, dict[int, int]] | None:
+    result: list[str] = []
+    groups: dict[int, int] = {}
+    original = captured = 0
+    converted = False
+    in_class = False
+    i = 0
+    while i < len(pattern):
+        char = pattern[i]
+        if char == "\\":
+            result.append(pattern[i : i + 2])
+            i += 2
+        elif in_class:
+            in_class = char != "]"
+            result.append(char)
+            i += 1
+        elif char == "[":
+            end = i + 1
+            if pattern.startswith("^", end):
+                end += 1
+            if pattern.startswith("]", end):
+                end += 1
+            result.append(pattern[i:end])
+            in_class = True
+            i = end
+        elif pattern.startswith("(?:", i):
+            captured += 1
+            converted = True
+            result.append("(")
+            i += 3
+        elif char == "(" and (not pattern.startswith("(?", i) or _NAMED_GROUP.match(pattern, i)):
+            original += 1
+            captured += 1
+            groups[original] = captured
+            result.append(char)
+            i += 1
+        else:
+            result.append(char)
+            i += 1
+    return ("".join(result), groups) if converted else None
 
 
 def _build_datediff(args: list) -> exp.DateDiff:
@@ -1155,6 +1202,38 @@ class SnowflakeGenerator(generator.Generator):
             # omit the default window from window ranking functions
             expression.set("spec", None)
         return super().window_sql(expression)
+
+    def regexpreplace_sql(self, expression: exp.RegexpReplace) -> str:
+        pattern = expression.expression
+        replacement = expression.args.get("replacement")
+        if (
+            isinstance(pattern, exp.Literal)
+            and pattern.is_string
+            and (
+                replacement is None
+                or (isinstance(replacement, exp.Literal) and replacement.is_string)
+            )
+        ):
+            captured = _capture_non_capturing_groups(pattern.name)
+            if captured:
+                new_pattern, groups = captured
+                expression = expression.copy()
+                expression.set("expression", exp.Literal.string(new_pattern))
+                if replacement is not None:
+                    expression.set(
+                        "replacement",
+                        exp.Literal.string(
+                            _GROUP_REFERENCE.sub(
+                                lambda m: (
+                                    m.group(0)
+                                    if m.group(1) in ("\\", "0")
+                                    else f"\\{groups.get(int(m.group(1)), int(m.group(1)))}"
+                                ),
+                                replacement.name,
+                            )
+                        ),
+                    )
+        return self.function_fallback_sql(expression)
 
     def withingroup_sql(self, expression: exp.WithinGroup) -> str:
         # Snowflake's MODE doesn't support the ordered-set syntax, i.e. it only
