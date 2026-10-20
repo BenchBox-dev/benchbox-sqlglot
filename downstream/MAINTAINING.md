@@ -150,6 +150,12 @@ drops the ordering of `PRIMARY KEY` columns (Databricks accepts neither `ASC`/`D
 `databricks-primary-key-ordering`. `tests/test_benchbox_adapter_rewrites_engines.py` proves
 each rewrite on the engines listed in ENGINE-GAPS.md.
 
+`sqlglot/benchbox/ddl.py` follows the same rule for DDL: `DdlOptions` and `SingleStoreKeys` are frozen
+dataclasses, table names, key columns and type names arrive as arguments, and no table of a benchmark
+exists in the fork. The module and `tests/test_benchbox_ddl.py` are the `original` entry `benchbox-ddl`.
+Engine-specific DDL (ClickHouse, Doris, StarRocks, Hive, Redshift, Delta, Iceberg, BigQuery key
+enforcement and qualification) is not part of it and is added to `DdlOptions` by its own change.
+
 ## Platform dialects
 
 The fork adds `netezza`, `greenplum`, `vertica`, `datafusion` and `questdb`, each a

@@ -44,6 +44,11 @@ on chDB, DuckDB, DataFusion and Postgres; the Snowflake form (capturing groups, 
 has no Snowflake engine, so it is run on DuckDB's RE2, chDB and Python's `re` instead, which agree with
 the original, and its output text is asserted (see the Snowflake row above). Spark and Databricks read
 `\1` in a replacement as the digit 1 (they expect `$1`); that is not changed by this slice.
+`tests/test_benchbox_ddl.py` runs in the same two jobs: it creates the stripped and unstripped schema
+from `transpile_ddl` on SQLite, DuckDB and Postgres and compares columns and constraints, replaces a
+table on DuckDB, and checks the types a `type_map` produces on DuckDB and Postgres. SingleStore
+`SHARD KEY`, `SORT KEY` and `REFERENCE TABLE` output is a golden-output test only (the SingleStore row
+below); the key clauses are not part of any other engine's grammar, so they cannot run elsewhere.
 `tests/test_questdb_execution.py` runs in the `questdb` job: it executes the QuestDB
 generator's comma-join expansion, `DATEADD`, `SUBSTRING` and CTE column list output.
 
