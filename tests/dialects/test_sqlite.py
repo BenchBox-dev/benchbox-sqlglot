@@ -1124,3 +1124,40 @@ class TestSQLite(Validator):
             "CREATE TRIGGER view_insert INSTEAD OF INSERT ON employee_view BEGIN INSERT INTO employees (id, name, department) VALUES (NEW.id, NEW.name, NEW.department) END",
             check_command_warning=True,
         )
+
+    def test_date_day_difference_and_subtraction(self):
+        for unit in ("DAY", "day"):
+            with self.subTest(unit=unit):
+                self.assertEqual(
+                    exp.DateDiff(
+                        this=exp.column("a"), expression=exp.column("b"), unit=exp.var(unit)
+                    ).sql("sqlite", unsupported_level=ErrorLevel.RAISE),
+                    "CAST((JULIANDAY(a) - JULIANDAY(b)) AS INTEGER)",
+                )
+
+        for amount, unit, expected in (
+            (exp.Literal.number(30), "DAY", "DATE(CURRENT_DATE, '-30 DAY')"),
+            (exp.Literal.number(2), "MONTH", "DATE(CURRENT_DATE, '-2 MONTH')"),
+            (exp.Literal.number(1), "YEAR", "DATE(CURRENT_DATE, '-1 YEAR')"),
+            (exp.Paren(this=exp.column("n")), "DAY", "DATE(CURRENT_DATE, (-(n)) || ' DAY')"),
+        ):
+            with self.subTest(amount=amount.sql(), unit=unit):
+                node = exp.DateSub(this=exp.CurrentDate(), expression=amount, unit=exp.var(unit))
+                self.assertEqual(node.sql("sqlite", unsupported_level=ErrorLevel.RAISE), expected)
+
+    @requires_engine("sqlite")
+    def test_date_subtraction_executes(self):
+        node = exp.select(
+            exp.DateSub(
+                this=exp.CurrentDate(), expression=exp.Literal.number(30), unit=exp.var("DAY")
+            ),
+            exp.DateSub(
+                this=exp.Literal.string("2024-03-15"),
+                expression=exp.Literal.number(1),
+                unit=exp.var("MONTH"),
+            ),
+        )
+        with engines.connect("sqlite") as connection:
+            (row,) = connection.execute(node.sql("sqlite"))
+            (expected,) = connection.execute("SELECT DATE('now', '-30 days')")
+        self.assertEqual(row, (expected[0], "2024-02-15"))
