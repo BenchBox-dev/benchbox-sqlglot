@@ -134,7 +134,7 @@
       "tests": [
         "tests.test_benchbox_rewrites"
       ],
-      "reason": "Engine-neutral expression rewrites in a new package. The first member folds literal sum/difference BETWEEN bounds to exact decimals so engines that evaluate decimal literals as binary floats keep rows equal to a bound; the column and table gates are arguments.; date_integer_arithmetic_to_interval rewrites `date_column +/- <integer>` into a day interval for caller-named date columns."
+      "reason": "Engine-neutral expression rewrites in a new package. The first member folds literal sum/difference BETWEEN bounds to exact decimals so engines that evaluate decimal literals as binary floats keep rows equal to a bound; the column and table gates are arguments.; date_integer_arithmetic_to_interval rewrites `date_column +/- <integer>` into a day interval for caller-named date columns; safe_division, deduplicate_output_aliases, unqualified_tables and flag_comparisons_to_boolean carry the adapter fix-ups (opt-in zero-divisor NULLs for BigQuery, Snowflake, Databricks and ClickHouse; Databricks output alias suffixing; the table nodes a caller qualifies; TPC-DI flag columns as booleans with the column list passed in)."
     },
     {
       "id": "sqlite-temporal-lowering",
@@ -257,6 +257,39 @@
         "tests.test_questdb_execution"
       ],
       "reason": "Execute the QuestDB generator's output on QuestDB and compare rows; the generator itself is in platform-dialect-modules' sqlglot/generators/questdb.py, which needs no carried patch because it edits no upstream-owned file."
+    },
+    {
+      "id": "databricks-primary-key-ordering",
+      "source": "83c20137a0e717eb64cffeb9fd78a4def2dc4954",
+      "status": "carried",
+      "depends": [],
+      "paths": [
+        "sqlglot/generators/databricks.py",
+        "sqlglot/parsers/databricks.py",
+        "tests/dialects/test_databricks.py"
+      ],
+      "tests": [
+        "tests.dialects.test_databricks"
+      ],
+      "reason": "Drop ASC/DESC and NULLS FIRST/LAST from PRIMARY KEY columns in Databricks output and accept them when Databricks reads a primary key; Databricks accepts neither, and PySpark rejects them as a syntax error. An upstream-submission candidate that depends on no other fork file.",
+      "patch": "downstream/patches/databricks-primary-key-ordering.patch"
+    },
+    {
+      "id": "adapter-rewrites-execution",
+      "source": "2bb6aa091da051a61b322821bd15eaddb5c02d6d",
+      "status": "original",
+      "depends": [
+        "real-engine-ci",
+        "benchbox-rewrites",
+        "databricks-primary-key-ordering"
+      ],
+      "paths": [
+        "tests/test_benchbox_adapter_rewrites_engines.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_adapter_rewrites_engines"
+      ],
+      "reason": "Execute the adapter rewrites on real engines: zero divisors on Postgres, DuckDB, PySpark and chDB, alias deduplication on Postgres, DuckDB and PySpark, table qualification and flag folding on Postgres and DuckDB, and Databricks primary key syntax on PySpark; the rewrites themselves are in benchbox-rewrites, which needs no further patch."
     }
   ]
 }
