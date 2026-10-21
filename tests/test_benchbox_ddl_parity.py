@@ -351,6 +351,13 @@ class TestSparkOnPySpark(unittest.TestCase):
         self.assertEqual(info["Sort Columns"], "[`b`]")
         self.assertEqual(info["Num Buckets"], "4")
 
+    def test_sorted_by_without_clustered_by_is_not_spark_sql(self):
+        with self.assertRaises(Exception):
+            self.conn.execute(
+                f"CREATE TABLE {self.name} (k BIGINT, d DATE) USING PARQUET "
+                "PARTITIONED BY (d) SORTED BY (k)"
+            )
+
 
 class TestStripWithProperties(unittest.TestCase):
     PARQUET = "CREATE TABLE t (a INT) WITH (format = 'PARQUET')"
