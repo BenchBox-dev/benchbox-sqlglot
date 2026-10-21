@@ -432,7 +432,7 @@
         "tests.test_benchbox_generators",
         "tests.test_benchbox_compat_engines"
       ],
-      "reason": "Engine-compatibility rewrites in sqlglot.benchbox.compat (alias inlining, column qualification by name, one-row sources for FROM-less selects, FILTER removal for BigQuery, ClickHouse and others, literal-subquery naming and VALUES, grouped scalar subqueries, ordered list aggregates, window NULL ordering reset) with every gate an argument, the DataFusion generator that drops an unsupported GROUP BY (), and execution tests on Postgres, DuckDB, DataFusion, PySpark and chDB."
+      "reason": "Engine-compatibility rewrites in sqlglot.benchbox.compat (alias inlining, column qualification by name, one-row sources for FROM-less selects, FILTER removal for BigQuery, ClickHouse and others, literal-subquery naming and VALUES, grouped scalar subqueries, ordered list aggregates) with every gate an argument, the DataFusion generator that drops an unsupported GROUP BY (), and execution tests on Postgres, DuckDB, DataFusion, PySpark and chDB."
     },
     {
       "id": "benchbox-subqueries",
@@ -485,6 +485,21 @@
         "tests.test_benchbox_ddl_lakehouse"
       ],
       "reason": "Hive-family, lakehouse and warehouse table layouts in ddl_engines.py (an original file of benchbox-ddl-engines, so no patch is needed): Spark and Databricks USING, PARTITIONED BY, CLUSTER BY, CLUSTERED BY and TBLPROPERTIES for Delta, Iceberg, Hudi, Parquet and ORC; Hive and Athena PARTITIONED BY, ROW FORMAT, STORED AS and LOCATION for external and staging tables; Trino and Presto WITH properties; Synapse DISTRIBUTION; PostgreSQL access methods and the pg_mooncake mirror statements; tests create tables on PySpark and Trino and assert the rest as golden output."
+    },
+    {
+      "id": "bigquery-window-nulls-ordering",
+      "source": "0d895d597de14053cf10ef386767b7ad04309605",
+      "status": "carried",
+      "depends": [],
+      "paths": [
+        "sqlglot/generators/bigquery.py",
+        "tests/dialects/test_bigquery.py"
+      ],
+      "tests": [
+        "tests.dialects.test_bigquery"
+      ],
+      "reason": "BigQuery rejects a non-default NULLS FIRST/LAST in the window ORDER BY of FIRST_VALUE, LAST_VALUE and NTH_VALUE unless the frame is an explicit ROWS frame. The BigQuery generator drops the clause when the key is a PARTITION BY key (constant per partition, so the result is unchanged) and otherwise sorts on `key IS NULL` first so the NULL placement is kept; a query's own ORDER BY keeps its clause. An upstream-submission candidate that depends on no other fork file.",
+      "patch": "downstream/patches/bigquery-window-nulls-ordering.patch"
     }
   ]
 }

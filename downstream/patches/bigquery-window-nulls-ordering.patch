@@ -1,0 +1,111 @@
+diff --git a/sqlglot/generators/bigquery.py b/sqlglot/generators/bigquery.py
+index cf74d659..ada154f5 100644
+--- a/sqlglot/generators/bigquery.py
++++ b/sqlglot/generators/bigquery.py
+@@ -380,6 +380,10 @@ class BigQueryGenerator(generator.Generator):
+         exp.RowNumber,
+     )
+ 
++    # Frame-dependent windows: BigQuery accepts a non-default NULLS FIRST/LAST in their ORDER BY
++    # only with an explicit ROWS frame, and rejects it under the default or a RANGE frame
++    VALUE_WINDOW_FUNCS = (exp.FirstValue, exp.LastValue, exp.NthValue)
++
+     TS_OR_DS_TYPES: t.ClassVar = (
+         exp.TsOrDsToDatetime,
+         exp.TsOrDsToTimestamp,
+@@ -874,6 +878,44 @@ class BigQueryGenerator(generator.Generator):
+ 
+         return super().cast_sql(expression, safe_prefix=safe_prefix)
+ 
++    def ordered_sql(self, expression: exp.Ordered) -> str:
++        order = expression.parent
++        window = order.parent if isinstance(order, exp.Order) else None
++        if isinstance(window, exp.Window):
++            window_this = window.this
++            if isinstance(window_this, (exp.IgnoreNulls, exp.RespectNulls)):
++                window_this = window_this.this
++
++            spec = window.args.get("spec")
++            desc = bool(expression.args.get("desc"))
++            # BigQuery's default is NULLS FIRST for ASC and NULLS LAST for DESC
++            if (
++                isinstance(window_this, self.VALUE_WINDOW_FUNCS)
++                and not (spec and spec.text("kind").upper() == "ROWS")
++                and bool(expression.args.get("nulls_first")) == desc
++            ):
++                key = expression.this
++                if any(key == partition for partition in window.args.get("partition_by") or []):
++                    # The key is constant within each partition, so the clause cannot change
++                    # the result: drop it.
++                    expression.set("nulls_first", not desc)
++                else:
++                    # Sort on `key IS NULL` first, which orders the NULLs the way the clause asked
++                    wrapped = (
++                        key
++                        if isinstance(key, (exp.Column, exp.Literal, exp.Func))
++                        else exp.paren(key.copy())
++                    )
++                    is_null = self.sql(exp.Is(this=wrapped.copy(), expression=exp.null()))
++                    sort_order = (
++                        " DESC"
++                        if desc
++                        else (" ASC" if expression.args.get("desc") is False else "")
++                    )
++                    return f"{is_null}{' DESC' if desc else ''}, {self.sql(key)}{sort_order}"
++
++        return super().ordered_sql(expression)
++
+     def clusterproperty_sql(self, expression: exp.ClusterProperty) -> str:
+         if expression.this:
+             self.unsupported(f"Unsupported CLUSTER BY {self.sql(expression, 'this')}")
+diff --git a/tests/dialects/test_bigquery.py b/tests/dialects/test_bigquery.py
+index 231fee8b..c4376c02 100644
+--- a/tests/dialects/test_bigquery.py
++++ b/tests/dialects/test_bigquery.py
+@@ -3048,6 +3048,46 @@ OPTIONS (
+                         f"WITH t AS (SELECT 1 AS id, 2 AS col1) SELECT {func_call} OVER (PARTITION BY id ORDER BY col1 {sort_order} {null_order}) FROM t"
+                     )
+ 
++    def test_null_ordering_in_value_functions_without_rows_frame(self):
++        # Without a ROWS frame BigQuery rejects a non-default NULLS clause in the window ORDER BY
++        # of FIRST_VALUE, LAST_VALUE and NTH_VALUE. A key that is also a PARTITION BY key is
++        # constant per partition, so the clause is dropped; any other key is sorted on `key IS NULL`.
++        for func_call in ("FIRST_VALUE(a)", "LAST_VALUE(a)", "NTH_VALUE(a, 2)"):
++            with self.subTest(func_call):
++                self.validate_all(
++                    f"SELECT {func_call} OVER (PARTITION BY b ORDER BY b) FROM t ORDER BY b NULLS LAST",
++                    read={
++                        "duckdb": f"SELECT {func_call} OVER (PARTITION BY b ORDER BY b) FROM t ORDER BY b",
++                    },
++                )
++                self.validate_all(
++                    f"SELECT {func_call} OVER (PARTITION BY b ORDER BY c IS NULL, c) FROM t",
++                    read={
++                        "duckdb": f"SELECT {func_call} OVER (PARTITION BY b ORDER BY c) FROM t",
++                    },
++                )
++                self.validate_all(
++                    f"SELECT {func_call} OVER (PARTITION BY b ORDER BY c IS NULL DESC, c DESC) FROM t",
++                    read={
++                        "duckdb": f"SELECT {func_call} OVER (PARTITION BY b ORDER BY c DESC NULLS FIRST) FROM t",
++                    },
++                )
++
++        self.validate_all(
++            "SELECT FIRST_VALUE(a IGNORE NULLS) OVER (PARTITION BY b ORDER BY (c + d) IS NULL, c + d RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t",
++            read={
++                "duckdb": "SELECT FIRST_VALUE(a IGNORE NULLS) OVER (PARTITION BY b ORDER BY c + d RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t",
++            },
++        )
++
++        # The default NULL ordering needs no clause or key, and a query's own ORDER BY keeps its clause
++        self.validate_all(
++            "SELECT FIRST_VALUE(a) OVER (PARTITION BY b ORDER BY c) FROM t ORDER BY c NULLS LAST, b DESC NULLS FIRST",
++            read={
++                "duckdb": "SELECT FIRST_VALUE(a) OVER (PARTITION BY b ORDER BY c NULLS FIRST) FROM t ORDER BY c, b DESC NULLS FIRST",
++            },
++        )
++
+     def test_json_extract(self):
+         self.validate_all(
+             "SELECT JSON_EXTRACT_SCALAR(j, '$.a')",
