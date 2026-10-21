@@ -3048,6 +3048,46 @@ OPTIONS (
                         f"WITH t AS (SELECT 1 AS id, 2 AS col1) SELECT {func_call} OVER (PARTITION BY id ORDER BY col1 {sort_order} {null_order}) FROM t"
                     )
 
+    def test_null_ordering_in_value_functions_without_rows_frame(self):
+        # Without a ROWS frame BigQuery rejects a non-default NULLS clause in the window ORDER BY
+        # of FIRST_VALUE, LAST_VALUE and NTH_VALUE. A key that is also a PARTITION BY key is
+        # constant per partition, so the clause is dropped; any other key is sorted on `key IS NULL`.
+        for func_call in ("FIRST_VALUE(a)", "LAST_VALUE(a)", "NTH_VALUE(a, 2)"):
+            with self.subTest(func_call):
+                self.validate_all(
+                    f"SELECT {func_call} OVER (PARTITION BY b ORDER BY b) FROM t ORDER BY b NULLS LAST",
+                    read={
+                        "duckdb": f"SELECT {func_call} OVER (PARTITION BY b ORDER BY b) FROM t ORDER BY b",
+                    },
+                )
+                self.validate_all(
+                    f"SELECT {func_call} OVER (PARTITION BY b ORDER BY c IS NULL, c) FROM t",
+                    read={
+                        "duckdb": f"SELECT {func_call} OVER (PARTITION BY b ORDER BY c) FROM t",
+                    },
+                )
+                self.validate_all(
+                    f"SELECT {func_call} OVER (PARTITION BY b ORDER BY c IS NULL DESC, c DESC) FROM t",
+                    read={
+                        "duckdb": f"SELECT {func_call} OVER (PARTITION BY b ORDER BY c DESC NULLS FIRST) FROM t",
+                    },
+                )
+
+        self.validate_all(
+            "SELECT FIRST_VALUE(a IGNORE NULLS) OVER (PARTITION BY b ORDER BY (c + d) IS NULL, c + d RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t",
+            read={
+                "duckdb": "SELECT FIRST_VALUE(a IGNORE NULLS) OVER (PARTITION BY b ORDER BY c + d RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t",
+            },
+        )
+
+        # The default NULL ordering needs no clause or key, and a query's own ORDER BY keeps its clause
+        self.validate_all(
+            "SELECT FIRST_VALUE(a) OVER (PARTITION BY b ORDER BY c) FROM t ORDER BY c NULLS LAST, b DESC NULLS FIRST",
+            read={
+                "duckdb": "SELECT FIRST_VALUE(a) OVER (PARTITION BY b ORDER BY c NULLS FIRST) FROM t ORDER BY c, b DESC NULLS FIRST",
+            },
+        )
+
     def test_json_extract(self):
         self.validate_all(
             "SELECT JSON_EXTRACT_SCALAR(j, '$.a')",

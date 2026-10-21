@@ -380,6 +380,10 @@ class BigQueryGenerator(generator.Generator):
         exp.RowNumber,
     )
 
+    # Frame-dependent windows: BigQuery accepts a non-default NULLS FIRST/LAST in their ORDER BY
+    # only with an explicit ROWS frame, and rejects it under the default or a RANGE frame
+    VALUE_WINDOW_FUNCS = (exp.FirstValue, exp.LastValue, exp.NthValue)
+
     TS_OR_DS_TYPES: t.ClassVar = (
         exp.TsOrDsToDatetime,
         exp.TsOrDsToTimestamp,
@@ -873,6 +877,44 @@ class BigQueryGenerator(generator.Generator):
                 return f"{self.sql(expression, 'to')}{self.sql(this)}"
 
         return super().cast_sql(expression, safe_prefix=safe_prefix)
+
+    def ordered_sql(self, expression: exp.Ordered) -> str:
+        order = expression.parent
+        window = order.parent if isinstance(order, exp.Order) else None
+        if isinstance(window, exp.Window):
+            window_this = window.this
+            if isinstance(window_this, (exp.IgnoreNulls, exp.RespectNulls)):
+                window_this = window_this.this
+
+            spec = window.args.get("spec")
+            desc = bool(expression.args.get("desc"))
+            # BigQuery's default is NULLS FIRST for ASC and NULLS LAST for DESC
+            if (
+                isinstance(window_this, self.VALUE_WINDOW_FUNCS)
+                and not (spec and spec.text("kind").upper() == "ROWS")
+                and bool(expression.args.get("nulls_first")) == desc
+            ):
+                key = expression.this
+                if any(key == partition for partition in window.args.get("partition_by") or []):
+                    # The key is constant within each partition, so the clause cannot change
+                    # the result: drop it.
+                    expression.set("nulls_first", not desc)
+                else:
+                    # Sort on `key IS NULL` first, which orders the NULLs the way the clause asked
+                    wrapped = (
+                        key
+                        if isinstance(key, (exp.Column, exp.Literal, exp.Func))
+                        else exp.paren(key.copy())
+                    )
+                    is_null = self.sql(exp.Is(this=wrapped.copy(), expression=exp.null()))
+                    sort_order = (
+                        " DESC"
+                        if desc
+                        else (" ASC" if expression.args.get("desc") is False else "")
+                    )
+                    return f"{is_null}{' DESC' if desc else ''}, {self.sql(key)}{sort_order}"
+
+        return super().ordered_sql(expression)
 
     def clusterproperty_sql(self, expression: exp.ClusterProperty) -> str:
         if expression.this:

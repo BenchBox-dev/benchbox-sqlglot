@@ -126,9 +126,6 @@ every gate (which columns, which alias, which keys) to the caller and returns a 
   into `ARRAY_AGG(x ORDER BY keys)`, or on Spark, Spark 2 and Databricks into
   `TRANSFORM(SORT_ARRAY(COLLECT_LIST(STRUCT(keys..., x AS _v))), r -> r._v)`; `dialect` picks the NULL ordering
   that needs no clause.
-- `strip_window_null_ordering(expression, dialect, columns)` resets named window ordering columns to
-  the dialect's default NULL ordering, so the generator writes no `NULLS FIRST`/`NULLS LAST`; the
-  caller decides which columns may hold no NULLs.
 
 `sqlglot.benchbox.subqueries` holds the subquery rewrites for engines that plan a subquery badly or wrongly:
 

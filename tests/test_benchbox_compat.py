@@ -10,7 +10,6 @@ from sqlglot.benchbox.compat import (
     name_literal_subquery_columns,
     order_list_aggregates,
     qualify_columns_by_name,
-    strip_window_null_ordering,
     wrap_grouped_scalar_subqueries,
 )
 
@@ -393,52 +392,6 @@ class TestOrderListAggregates(unittest.TestCase):
             "ARRAY_AGG(x ORDER BY id)",
         )
         self.assertIsInstance(tree, exp.List)
-
-
-class TestStripWindowNullOrdering(unittest.TestCase):
-    QUERY = (
-        "SELECT FIRST_VALUE(a) OVER (PARTITION BY b ORDER BY b), "
-        "FIRST_VALUE(a) OVER (PARTITION BY b ORDER BY c) FROM t ORDER BY b"
-    )
-
-    def test_named_columns_only(self):
-        self.assertEqual(
-            sql(
-                strip_window_null_ordering,
-                self.QUERY,
-                "duckdb",
-                "bigquery",
-                dialect="bigquery",
-                columns=["B"],
-            ),
-            "SELECT FIRST_VALUE(a) OVER (PARTITION BY b ORDER BY b), "
-            "FIRST_VALUE(a) OVER (PARTITION BY b ORDER BY c NULLS LAST) FROM t ORDER BY b NULLS LAST",
-        )
-        self.assertEqual(
-            sql(
-                strip_window_null_ordering,
-                self.QUERY,
-                "duckdb",
-                "bigquery",
-                dialect="bigquery",
-                columns=[],
-            ),
-            "SELECT FIRST_VALUE(a) OVER (PARTITION BY b ORDER BY b NULLS LAST), "
-            "FIRST_VALUE(a) OVER (PARTITION BY b ORDER BY c NULLS LAST) FROM t ORDER BY b NULLS LAST",
-        )
-
-    def test_descending_order_uses_its_default(self):
-        self.assertEqual(
-            sql(
-                strip_window_null_ordering,
-                "SELECT FIRST_VALUE(a) OVER (ORDER BY b DESC) FROM t",
-                "duckdb",
-                "bigquery",
-                dialect="bigquery",
-                columns=["b"],
-            ),
-            "SELECT FIRST_VALUE(a) OVER (ORDER BY b DESC) FROM t",
-        )
 
 
 if __name__ == "__main__":

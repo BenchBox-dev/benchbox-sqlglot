@@ -327,5 +327,41 @@ class TestGeneratorsOnPySpark(GeneratorsOnEngine, unittest.TestCase):
             engines.execute("pyspark", GLOBAL_AGGREGATE_SQL.format(rows=ROWS, bound=0))
 
 
+@requires_engine("duckdb")
+class TestBigQueryValueWindowNullOrderingOnDuckDB(unittest.TestCase):
+    """BigQuery has no engine in CI, so the SQL its generator writes runs on DuckDB, which parses it."""
+
+    def bigquery_text(self, sql):
+        return sqlglot.parse_one(sql, read="duckdb").sql(
+            "bigquery", unsupported_level=sqlglot.ErrorLevel.RAISE
+        )
+
+    def assert_same_rows(self, sql, expected):
+        bigquery = self.bigquery_text(sql)
+        self.assertEqual(sort(engines.execute("duckdb", sql)), sort(expected))
+        self.assertEqual(sort(engines.execute("duckdb", bigquery)), sort(expected))
+        return bigquery
+
+    def test_null_key_is_ordered_by_an_is_null_key(self):
+        bigquery = self.assert_same_rows(
+            f"SELECT k, FIRST_VALUE(x) OVER (PARTITION BY k ORDER BY x) FROM {ROWS} WHERE k = 'a'",
+            [("a", 1), ("a", 1), ("a", 1)],
+        )
+        self.assertIn("ORDER BY x IS NULL, x", bigquery)
+        bigquery = self.assert_same_rows(
+            f"SELECT k, FIRST_VALUE(x) OVER (PARTITION BY k ORDER BY x DESC NULLS FIRST) FROM {ROWS} WHERE k = 'a'",
+            [("a", None), ("a", None), ("a", None)],
+        )
+        self.assertIn("ORDER BY x IS NULL DESC, x DESC", bigquery)
+
+    def test_partition_key_clause_is_dropped(self):
+        bigquery = self.assert_same_rows(
+            f"SELECT k, FIRST_VALUE(x) OVER (PARTITION BY x ORDER BY x) FROM {ROWS} WHERE k = 'a'",
+            [("a", 1), ("a", 2), ("a", None)],
+        )
+        self.assertNotIn("NULLS", bigquery)
+        self.assertNotIn("IS NULL", bigquery)
+
+
 if __name__ == "__main__":
     unittest.main()
