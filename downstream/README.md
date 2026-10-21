@@ -74,6 +74,9 @@ instead of falling back.
 `sqlglot.benchbox.rewrites` holds expression rewrites whose gates are arguments, for
 example `date_integer_arithmetic_to_interval(expression, date_columns)`, which turns
 `d_date + 5` into a day interval for the columns the caller says hold dates.
+`mark_date_columns(expression, date_columns)` types those columns as `DATE` on the tree, so the SQLite
+generator writes `d_date + 5` as `DATE(d_date, '5 DAY')`, `d2 - d1` as a day count and a `DATE_TRUNC`
+compared with a date as timestamp text; pass the marked expression, not its SQL text, to `.sql('sqlite')`.
 
 The adapter rewrites in the same module are:
 

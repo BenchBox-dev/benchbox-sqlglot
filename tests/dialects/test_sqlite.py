@@ -1348,3 +1348,141 @@ class TestSQLite(Validator):
             connection.execute("INSERT INTO ev VALUES ('1998-04-08 13:45:10')")
             sql = parse_one("SELECT DATE_TRUNC('day', ts) FROM ev", read="postgres").sql("sqlite")
             self.assertEqual(connection.execute(sql), [("1998-04-08 00:00:00",)])
+
+    def test_date_integer_arithmetic_counts_days(self):
+        for source, expected in (
+            ("CAST(d AS DATE) + 5", "DATE(DATE(d), '5 DAY')"),
+            ("5 + CAST(d AS DATE)", "DATE(DATE(d), '5 DAY')"),
+            ("CAST(d AS DATE) - 5", "DATE(DATE(d), '-5 DAY')"),
+            (
+                "CAST(d AS DATE) + (CAST(n AS INT) + 1)",
+                "DATE(DATE(d), (CAST(n AS INTEGER) + 1) || ' DAY')",
+            ),
+            ("CAST(d AS DATE) - CAST(n AS INT)", "DATE(DATE(d), (-CAST(n AS INTEGER)) || ' DAY')"),
+            (
+                "CAST(d AS DATE) - CAST(e AS DATE)",
+                "CAST((JULIANDAY(DATE(d)) - JULIANDAY(DATE(e))) AS INTEGER)",
+            ),
+        ):
+            for dialect in ("postgres", "duckdb", "netezza"):
+                with self.subTest(dialect=dialect, source=source):
+                    sql = parse_one(f"SELECT {source} FROM t", read=dialect).sql(
+                        "sqlite", unsupported_level=ErrorLevel.RAISE
+                    )
+                    self.assertEqual(sql, f"SELECT {expected} FROM t")
+
+        for source in (
+            "d + 5",
+            "n + 5",
+            "CAST(d AS DATE) + 1.5",
+            "CAST(d AS DATE) + n",
+            "5 - CAST(d AS DATE)",
+        ):
+            with self.subTest(source=source):
+                sql = parse_one(f"SELECT {source} FROM t", read="postgres").sql("sqlite")
+                self.assertNotIn("DAY", sql)
+                self.assertNotIn("JULIANDAY", sql)
+
+    def test_date_truncation_compares_with_a_date(self):
+        for source, expected in (
+            (
+                "DATE_TRUNC('month', d) = CAST(e AS DATE)",
+                "STRFTIME('%Y-%m-01 00:00:00', d) = DATETIME(DATE(e))",
+            ),
+            (
+                "CAST(e AS DATE) <> DATE_TRUNC('month', d)",
+                "DATETIME(DATE(e)) <> STRFTIME('%Y-%m-01 00:00:00', d)",
+            ),
+            (
+                "DATE_TRUNC('year', d) BETWEEN CAST(e AS DATE) AND CAST(f AS DATE)",
+                "STRFTIME('%Y-01-01 00:00:00', d) BETWEEN DATETIME(DATE(e)) AND DATETIME(DATE(f))",
+            ),
+            (
+                "CAST(e AS DATE) BETWEEN DATE_TRUNC('year', d) AND DATE_TRUNC('year', f)",
+                "DATETIME(DATE(e)) BETWEEN STRFTIME('%Y-01-01 00:00:00', d) "
+                "AND STRFTIME('%Y-01-01 00:00:00', f)",
+            ),
+            (
+                "DATE_TRUNC('day', d) >= CAST(e AS DATE) AND DATE_TRUNC('day', d) < CAST(f AS DATE)",
+                "STRFTIME('%Y-%m-%d 00:00:00', d) >= DATETIME(DATE(e)) "
+                "AND STRFTIME('%Y-%m-%d 00:00:00', d) < DATETIME(DATE(f))",
+            ),
+            (
+                "DATE_TRUNC('day', d) <= CAST(e AS DATE) OR DATE_TRUNC('day', d) > CAST(f AS DATE)",
+                "STRFTIME('%Y-%m-%d 00:00:00', d) <= DATETIME(DATE(e)) "
+                "OR STRFTIME('%Y-%m-%d 00:00:00', d) > DATETIME(DATE(f))",
+            ),
+            ("DATE_TRUNC('month', d) = e", "STRFTIME('%Y-%m-01 00:00:00', d) = e"),
+            ("CAST(e AS DATE) = f", "DATE(e) = f"),
+        ):
+            for dialect in ("postgres", "duckdb"):
+                with self.subTest(dialect=dialect, source=source):
+                    sql = parse_one(f"SELECT 1 FROM t WHERE {source}", read=dialect).sql(
+                        "sqlite", unsupported_level=ErrorLevel.RAISE
+                    )
+                    self.assertEqual(sql, f"SELECT 1 FROM t WHERE {expected}")
+
+    def test_marked_date_columns_are_dates(self):
+        from sqlglot.benchbox.rewrites import mark_date_columns
+
+        for source, expected in (
+            ("d_date + 5", "DATE(d_date, '5 DAY')"),
+            ("d1.d_date - 30", "DATE(d1.d_date, '-30 DAY')"),
+            (
+                "d1.d_date - d2.d_date",
+                "CAST((JULIANDAY(d1.d_date) - JULIANDAY(d2.d_date)) AS INTEGER)",
+            ),
+            ("d_date_sk + 5", "d_date_sk + 5"),
+        ):
+            for dialect in ("netezza", "postgres", "duckdb"):
+                with self.subTest(dialect=dialect, source=source):
+                    tree = mark_date_columns(
+                        parse_one(f"SELECT {source} FROM t", read=dialect), ["d_date"]
+                    )
+                    self.assertEqual(
+                        tree.sql("sqlite", unsupported_level=ErrorLevel.RAISE),
+                        f"SELECT {expected} FROM t",
+                    )
+
+    @requires_engine("sqlite")
+    @requires_engine("duckdb")
+    def test_date_semantics_match_duckdb_execution(self):
+        from sqlglot.benchbox.rewrites import mark_date_columns
+
+        rows = (
+            ("2000-01-01", "2000-01-06", "2000-01-01"),
+            ("2000-01-10", "2000-01-10", "2000-03-01"),
+            ("2000-02-29", "2000-03-05", "2000-02-01"),
+            ("1999-12-31", "2000-01-01", "2000-01-01"),
+            (None, "2000-01-01", None),
+        )
+        queries = (
+            "SELECT d1 + 5, d1 - 5, d2 - d1 FROM t ORDER BY d1, d2",
+            "SELECT d1 FROM t WHERE d2 > d1 + 5 ORDER BY d1",
+            "SELECT d1 FROM t WHERE d2 BETWEEN d1 - 1 AND d1 + 5 ORDER BY d1",
+            "SELECT d1 FROM t WHERE DATE_TRUNC('month', d1) = d3 ORDER BY d1",
+            "SELECT d1 FROM t WHERE DATE_TRUNC('month', d1) <> d3 ORDER BY d1",
+            "SELECT d1 FROM t WHERE DATE_TRUNC('month', d1) >= d3 ORDER BY d1",
+            "SELECT d1 FROM t WHERE DATE_TRUNC('month', d1) BETWEEN d3 AND d2 ORDER BY d1",
+            "SELECT d1 FROM t WHERE d3 < DATE_TRUNC('year', d1) ORDER BY d1",
+        )
+        for dialect in ("postgres", "duckdb"):
+            for query in queries:
+                outputs = {}
+                for engine in ("sqlite", "duckdb"):
+                    with engines.connect(engine) as connection:
+                        column = "TEXT" if engine == "sqlite" else "DATE"
+                        connection.execute(
+                            f"CREATE TABLE t (d1 {column}, d2 {column}, d3 {column})"
+                        )
+                        for row in rows:
+                            values = ", ".join("NULL" if v is None else f"'{v}'" for v in row)
+                            connection.execute(f"INSERT INTO t VALUES ({values})")
+                        tree = mark_date_columns(parse_one(query, read=dialect), ["d1", "d2", "d3"])
+                        sql = tree.sql(engine, unsupported_level=ErrorLevel.RAISE)
+                        outputs[engine] = [
+                            tuple(None if v is None else str(v) for v in row)
+                            for row in connection.execute(sql)
+                        ]
+                with self.subTest(dialect=dialect, query=query):
+                    self.assertEqual(outputs["sqlite"], outputs["duckdb"])
