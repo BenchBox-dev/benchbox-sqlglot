@@ -344,7 +344,7 @@
     },
     {
       "id": "sqlite-date-integer-semantics",
-      "source": "adc40a9c2f4796b1eee57f356b35ee0a5861959d",
+      "source": "d6fe8cfb012aa9c41c36b4b317cd2fd731aab039",
       "status": "carried",
       "depends": [
         "benchbox-rewrites",
