@@ -68,6 +68,16 @@ ClickHouse tables on chDB and compares engine, sorting, partition and primary ke
 checks `SHOW CREATE TABLE` for the key model, distribution and partition clauses. Redshift `DISTSTYLE`,
 `DISTKEY`, `SORTKEY` and Spectrum `CREATE EXTERNAL TABLE` output is golden-output only (the Redshift row
 below).
+`tests/test_benchbox_ddl_lakehouse.py` runs in the `in-process` and `trino` jobs: on PySpark it creates
+partitioned, bucketed Parquet tables with a location and properties and ORC tables and reads the provider,
+buckets, sort columns, partitioning and properties back with `DESCRIBE TABLE EXTENDED`, and on Trino it
+creates a constraint-free table in the memory catalog. Everything else in the file is golden output: Delta,
+Iceberg and Hudi need table-format jars and catalogs that the local PySpark session does not have
+(Databricks row below), `STORED AS` needs a Hive metastore (PySpark's in-memory catalog rejects it), the
+memory catalog rejects every `WITH` property (the Trino hive and iceberg connectors are not in the
+container), and Spark's `REPLACE TABLE` needs a v2 catalog. Athena external tables, Synapse and Fabric
+distribution clauses, Redshift Spectrum tables and the `pg_mooncake` statements have no engine (the rows
+below).
 `tests/test_questdb_execution.py` runs in the `questdb` job: it executes the QuestDB
 generator's comma-join expansion, `DATEADD`, `SUBSTRING` and CTE column list output.
 
@@ -130,6 +140,7 @@ weaker than execution and must be named as such in the pull request.
 | Amazon Redshift | Managed service, no container | Postgres execution for the shared subset (Redshift derives from PostgreSQL 8); Redshift-only features (`DISTKEY`, `SORTKEY`, `ENCODE`) get golden-output tests |
 | Azure Synapse | Managed service (the SQL Server container is not Synapse T-SQL and has licensing terms) | Golden-output tests with the `tsql` dialect; no execution substitute |
 | Microsoft Fabric (warehouse, lakehouse, Spark) | Managed service | Golden-output tests with the `fabric` dialect; Fabric Spark output executed on PySpark where it is plain Spark SQL |
+| pg_mooncake | Postgres extension that the `postgres:16` service image does not ship; its access method needs the extension's own image | Golden-output tests of `USING mooncake` and the rename and `mooncake.create_table` statements; plain `CREATE TABLE` output executes on the `postgres` job (`tests/test_benchbox_ddl.py`) |
 | ClickHouse Cloud, MotherDuck, Firebolt, Starburst, OneHouse, Snowpark Connect | Managed services needing credentials | Same substitutes as the open engine they share a dialect with: chdb, DuckDB, Postgres/Trino; otherwise golden-output tests |
 
 ### Obtainable engine, impractical on hosted runners

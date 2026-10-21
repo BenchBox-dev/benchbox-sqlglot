@@ -19,6 +19,12 @@ from sqlglot import exp
 from sqlglot.dialects.clickhouse import ClickHouse
 from sqlglot.dialects.dialect import Dialect
 from sqlglot.dialects.doris import Doris
+from sqlglot.dialects.athena import Athena
+from sqlglot.dialects.hive import Hive
+from sqlglot.dialects.postgres import Postgres
+from sqlglot.dialects.presto import Presto
+from sqlglot.dialects.spark import Spark
+from sqlglot.dialects.tsql import TSQL
 from sqlglot.dialects.redshift import Redshift
 from sqlglot.dialects.starrocks import StarRocks
 from sqlglot.benchbox.layout import TableLayout
@@ -99,10 +105,11 @@ class _Context:
         return ", ".join(self.name(v) for v in values)
 
     def literal(self, value: str) -> str:
-        """A string literal, with quotes doubled and backslashes doubled where they escape."""
-        if "\\" in self.target.tokenizer_class.STRING_ESCAPES:
+        """A string literal, escaped the way the target's tokenizer reads it."""
+        escapes = self.target.tokenizer_class.STRING_ESCAPES
+        if "\\" in escapes:
             value = value.replace("\\", "\\\\")
-        return "'" + value.replace("'", "''") + "'"
+        return "'" + value.replace("'", "''" if "'" in escapes else "\\'") + "'"
 
     def value(self, value: str) -> str:
         """A property value: numbers, booleans and arrays as they are, everything else quoted."""
@@ -350,6 +357,172 @@ def _redshift(ctx: _Context) -> list[str]:
     return groups
 
 
+# -- Spark, Databricks, Hive, Athena --------------------------------------------------
+
+
+def _bucketing(ctx: _Context) -> str | None:
+    layout = ctx.layout
+    if not layout.distribute_by:
+        return None
+    if not layout.buckets:
+        raise ValueError("bucketing by distribute_by needs buckets")
+    clause = f"CLUSTERED BY ({ctx.names(layout.distribute_by)})"
+    if layout.sort_by:
+        clause += f" SORTED BY ({ctx.names(layout.sort_by)})"
+    return f"{clause} INTO {layout.buckets} BUCKETS"
+
+
+def _table_properties(ctx: _Context) -> str | None:
+    if not ctx.layout.properties:
+        return None
+    props = ", ".join(
+        f"{ctx.literal(k)} = {ctx.literal(v)}" for k, v in ctx.layout.properties.items()
+    )
+    return f"TBLPROPERTIES ({props})"
+
+
+def _spark(ctx: _Context) -> list[str]:
+    layout = ctx.layout
+    groups: list[str | None] = []
+    if layout.stored_as:
+        groups.append(f"STORED AS {layout.stored_as.upper()}")
+    elif layout.format:
+        groups.append(f"USING {layout.format.upper()}")
+    if layout.partition_by:
+        groups.append(f"PARTITIONED BY ({ctx.names(layout.partition_by)})")
+    if layout.cluster_by_auto:
+        groups.append("CLUSTER BY AUTO")
+    elif layout.cluster_by:
+        groups.append(f"CLUSTER BY ({ctx.names(layout.cluster_by)})")
+    groups.append(_bucketing(ctx))
+    if layout.location:
+        groups.append(f"LOCATION {ctx.literal(layout.location)}")
+    groups.append(_table_properties(ctx))
+    return [g for g in groups if g]
+
+
+_ESCAPES = {"\n": "\\n", "\t": "\\t", "\r": "\\r", "'": "\\'", "\\": "\\\\"}
+
+
+def _delimiter(value: str) -> str:
+    return "'" + "".join(_ESCAPES.get(c, c) for c in value) + "'"
+
+
+def _hive(ctx: _Context) -> list[str]:
+    layout = ctx.layout
+    groups: list[str | None] = []
+    if layout.partition_by:
+        defined = ctx.defined
+        typed: list[str] = []
+        for entry in layout.partition_by:
+            column = defined.get(entry.lower())
+            if column is None:
+                typed.append(entry if " " in entry.strip() else f"{ctx.name(entry)} STRING")
+                continue
+            kind = column.args.get("kind")
+            column.pop()
+            typed.append(f"{ctx.name(column.name)} {kind.sql(ctx.target) if kind else 'STRING'}")
+        groups.append(f"PARTITIONED BY ({', '.join(typed)})")
+    groups.append(_bucketing(ctx))
+    if layout.field_delimiter is not None or layout.line_delimiter is not None:
+        row = "ROW FORMAT DELIMITED"
+        if layout.field_delimiter is not None:
+            row += f" FIELDS TERMINATED BY {_delimiter(layout.field_delimiter)}"
+        if layout.line_delimiter is not None:
+            row += f" LINES TERMINATED BY {_delimiter(layout.line_delimiter)}"
+        groups.append(row)
+    file_format = layout.stored_as or layout.format
+    if file_format:
+        groups.append(f"STORED AS {file_format.upper()}")
+    if layout.location:
+        groups.append(f"LOCATION {ctx.literal(layout.location)}")
+    groups.append(_table_properties(ctx))
+    return [g for g in groups if g]
+
+
+# -- Trino, Presto --------------------------------------------------------------------
+
+
+def _trino(ctx: _Context) -> list[str]:
+    layout = ctx.layout
+
+    def array(values: Sequence[str]) -> str:
+        return "ARRAY[" + ", ".join(ctx.literal(v) for v in values) + "]"
+
+    settings: list[tuple[str, str]] = []
+    if layout.format:
+        settings.append(("format", ctx.literal(layout.format.upper())))
+    if layout.partition_by:
+        key = "partitioning" if (layout.format or "").lower() == "iceberg" else "partitioned_by"
+        settings.append((key, array(layout.partition_by)))
+    if layout.distribute_by:
+        if not layout.buckets:
+            raise ValueError("bucketing by distribute_by needs buckets")
+        settings.append(("bucketed_by", array(layout.distribute_by)))
+        settings.append(("bucket_count", str(layout.buckets)))
+    if layout.sort_by:
+        settings.append(("sorted_by", array(layout.sort_by)))
+    if layout.location:
+        key = "external_location" if layout.external else "location"
+        settings.append((key, ctx.literal(layout.location)))
+    settings.extend((k, ctx.value(v)) for k, v in layout.properties.items())
+    return [f"WITH ({key} = {value})" for key, value in settings]
+
+
+# -- T-SQL (Synapse, Fabric) and PostgreSQL ---------------------------------------------
+
+_TSQL_DISTRIBUTIONS = {"round_robin": "ROUND_ROBIN", "replicate": "REPLICATE", "hash": "HASH"}
+
+
+def _tsql(ctx: _Context) -> list[str]:
+    layout = ctx.layout
+    style = layout.distribution or ("hash" if layout.distribute_by else None)
+    options: list[str] = []
+    if style is not None:
+        if style not in _TSQL_DISTRIBUTIONS:
+            raise ValueError(
+                f"T-SQL distribution must be one of {sorted(_TSQL_DISTRIBUTIONS)}, not {style!r}"
+            )
+        value = _TSQL_DISTRIBUTIONS[style]
+        if style == "hash":
+            if not layout.distribute_by:
+                raise ValueError("T-SQL hash distribution needs distribute_by")
+            value = f"HASH({ctx.names(layout.distribute_by)})"
+        options.append(f"DISTRIBUTION = {value}")
+    options.extend(f"{k} = {ctx.value(v)}" for k, v in layout.properties.items())
+    return [f"WITH ({', '.join(options)})"] if options else []
+
+
+def _postgres(ctx: _Context) -> list[str]:
+    """``format`` is a table access method; it is written after the column list."""
+    return [_Raw(f"USING {ctx.layout.format}")] if ctx.layout.format else []
+
+
+def mooncake_mirror_statements(
+    table: str, staging_table: str, schema: str | None = None
+) -> list[str]:
+    """The statements that promote a loaded heap table to a ``pg_mooncake`` mirror.
+
+    The table is created and loaded as a plain heap table, because ``COPY`` into a
+    ``pg_mooncake`` table fails. ``table`` is renamed to ``staging_table`` and
+    ``mooncake.create_table`` creates ``table`` from it.
+    """
+
+    def quoted(name: str) -> str:
+        return exp.to_identifier(name, quoted=True).sql("postgres")
+
+    def qualified(name: str) -> str:
+        return f"{quoted(schema)}.{quoted(name)}" if schema else quoted(name)
+
+    def reference(name: str) -> str:
+        return "'" + (f"{schema}.{name}" if schema else name).replace("'", "''") + "'"
+
+    return [
+        f"ALTER TABLE {qualified(table)} RENAME TO {quoted(staging_table)}",
+        f"CALL mooncake.create_table({reference(table)}, {reference(staging_table)})",
+    ]
+
+
 # -- Grafting -------------------------------------------------------------------------
 
 _Builder = t.Callable[[_Context], "list[str]"]
@@ -364,6 +537,16 @@ def _family(target: Dialect, layout: TableLayout) -> _Builder | None:
         return lambda ctx: _olap(ctx, starrocks=True)
     if isinstance(target, Redshift):
         return _redshift
+    if isinstance(target, Spark):
+        return _spark
+    if isinstance(target, (Hive, Athena)):
+        return _hive
+    if isinstance(target, Presto):
+        return _trino
+    if isinstance(target, TSQL):
+        return _tsql
+    if isinstance(target, Postgres):
+        return _postgres
     return None
 
 

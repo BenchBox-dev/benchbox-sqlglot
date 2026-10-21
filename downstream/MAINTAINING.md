@@ -154,9 +154,11 @@ each rewrite on the engines listed in ENGINE-GAPS.md.
 dataclasses, table names, key columns and type names arrive as arguments, and no table of a benchmark
 exists in the fork. The module and `tests/test_benchbox_ddl.py` are the `original` entry `benchbox-ddl`.
 `sqlglot/benchbox/layout.py` (`TableLayout`) and `sqlglot/benchbox/ddl_engines.py` (the clause writers) hold
-engine-specific DDL: ClickHouse, Doris, StarRocks and Redshift, with `tests/test_benchbox_ddl_engines.py`;
-they are the `original` entry `benchbox-ddl-engines`. A dialect is added to `_family` with a builder that
-returns clause groups in the target's syntax. BigQuery key enforcement and qualification are not part of it.
+engine-specific DDL: ClickHouse, Doris, StarRocks, Redshift, Spark and Databricks, Hive and Athena, Trino and
+Presto, Synapse and Fabric, and PostgreSQL access methods, with `tests/test_benchbox_ddl_engines.py` and
+`tests/test_benchbox_ddl_lakehouse.py`; they are the `original` entries `benchbox-ddl-engines` and
+`benchbox-ddl-lakehouse`. A dialect is added to `_family` with a builder that returns clause groups in the
+target's syntax. BigQuery key enforcement and qualification are not part of it.
 
 Engine rewrites (`sqlglot/benchbox/engine_rewrites.py`, an `original` file with its tests in the
 `engine-rewrites` entry) follow the same rule: nothing in them names a benchmark, a query or a table.
