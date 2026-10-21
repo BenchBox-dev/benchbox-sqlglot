@@ -30,9 +30,7 @@ DUAL_LEG = (
     "UNION ALL SELECT 0 AS r FROM (SELECT 1) AS dual WHERE FALSE) AS c"
 )
 # The TPC-DI EQ3 shape: a scalar subquery that counts the rows of an inner COUNT(*).
-COUNT_OF_COUNT = (
-    f"SELECT (SELECT COUNT(*) FROM (SELECT COUNT(*) AS source_count FROM {ROWS} AS t WHERE y > 0)) AS source_records"
-)
+COUNT_OF_COUNT = f"SELECT (SELECT COUNT(*) FROM (SELECT COUNT(*) AS source_count FROM {ROWS} AS t WHERE y > 0)) AS source_records"
 SOURCE_ROWS = 4
 
 # Each way to write a one-row source, as a complete query that returns the one row.
@@ -89,9 +87,7 @@ class RowSources:
         self.assertEqual(self.rows_of(rewritten), [(114,)])
 
     def test_row_source_added_back_for_engines_that_need_one(self):
-        fromless = (
-            f"SELECT id FROM {ROWS} AS t WHERE id IN (SELECT 1 WHERE 1 = 1 UNION ALL SELECT 3 WHERE 1 = 1) ORDER BY id"
-        )
+        fromless = f"SELECT id FROM {ROWS} AS t WHERE id IN (SELECT 1 WHERE 1 = 1 UNION ALL SELECT 3 WHERE 1 = 1) ORDER BY id"
         rewritten = add_row_source_to_fromless_selects(
             self.parse(fromless), "(SELECT 1) AS one", self.DIALECT
         )
@@ -200,7 +196,13 @@ class TestRowSourcesOnSqlite(RowSources, unittest.TestCase):
     ENGINE = "sqlite"
     DIALECT = "sqlite"
     ACCEPTS = frozenset(
-        {"fromless", "fromless_where", "derived_table", "derived_table_named_column", "values_derived_unnamed"}
+        {
+            "fromless",
+            "fromless_where",
+            "derived_table",
+            "derived_table_named_column",
+            "values_derived_unnamed",
+        }
     )
 
 

@@ -48,7 +48,12 @@ class TestDropLiteralRowSource(unittest.TestCase):
 
     def test_named_literal_column_is_dropped_when_unused(self):
         self.assertEqual(
-            sql(drop_literal_row_source, "SELECT 0 AS r FROM (SELECT 1 AS c) AS dual WHERE FALSE", "postgres", alias="dual"),
+            sql(
+                drop_literal_row_source,
+                "SELECT 0 AS r FROM (SELECT 1 AS c) AS dual WHERE FALSE",
+                "postgres",
+                alias="dual",
+            ),
             "SELECT 0 AS r WHERE FALSE",
         )
 
@@ -65,7 +70,9 @@ class TestDropLiteralRowSource(unittest.TestCase):
             "SELECT 0 FROM (SELECT 1) AS dual JOIN t ON TRUE",
         ):
             with self.subTest(query=query):
-                self.assertEqual(sql(drop_literal_row_source, query, "postgres", alias="dual"), query)
+                self.assertEqual(
+                    sql(drop_literal_row_source, query, "postgres", alias="dual"), query
+                )
 
     def test_copy(self):
         tree = sqlglot.parse_one("SELECT 0 FROM (SELECT 1) AS dual WHERE FALSE", read="postgres")
@@ -76,13 +83,17 @@ class TestDropLiteralRowSource(unittest.TestCase):
 
     def test_bigquery_gets_a_source_back(self):
         dropped = drop_literal_row_source(sqlglot.parse_one(HAVOC_Q17_V4, read="bigquery"), "dual")
-        restored = add_row_source_to_fromless_selects(dropped, "UNNEST([1])", "bigquery").sql("bigquery")
+        restored = add_row_source_to_fromless_selects(dropped, "UNNEST([1])", "bigquery").sql(
+            "bigquery"
+        )
         self.assertIn("SELECT 0 AS revenue FROM UNNEST([1]) WHERE FALSE", restored)
 
     def test_no_dialect_generates_a_values_source(self):
         for dialect in DIALECTS:
             with self.subTest(dialect=dialect):
-                rewritten = drop_literal_row_source(sqlglot.parse_one(HAVOC_Q17_V4, read=dialect), "dual")
+                rewritten = drop_literal_row_source(
+                    sqlglot.parse_one(HAVOC_Q17_V4, read=dialect), "dual"
+                )
                 self.assertNotIn("VALUES", rewritten.sql(dialect).upper())
                 self.assertNotIn("DUAL", rewritten.sql(dialect).upper())
 
@@ -122,7 +133,9 @@ class TestFlattenCountOfCount(unittest.TestCase):
                 self.assertEqual(sql(flatten_count_of_count, query, "postgres"), query)
 
     def test_copy(self):
-        tree = sqlglot.parse_one("SELECT COUNT(*) FROM (SELECT COUNT(*) FROM t) AS q", read="postgres")
+        tree = sqlglot.parse_one(
+            "SELECT COUNT(*) FROM (SELECT COUNT(*) FROM t) AS q", read="postgres"
+        )
         flatten_count_of_count(tree)
         self.assertIn("(SELECT", tree.sql())
         self.assertEqual(flatten_count_of_count(tree, copy=False).sql(), "SELECT COUNT(*) FROM t")

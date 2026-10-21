@@ -325,7 +325,16 @@ def flatten_count_of_count(expression: E, copy: bool = True) -> E:
             or not isinstance(subquery.this, exp.Select)
             or any(
                 outer.args.get(arg)
-                for arg in ("where", "group", "having", "joins", "with_", "distinct", "limit", "qualify")
+                for arg in (
+                    "where",
+                    "group",
+                    "having",
+                    "joins",
+                    "with_",
+                    "distinct",
+                    "limit",
+                    "qualify",
+                )
             )
         ):
             continue
@@ -334,7 +343,10 @@ def flatten_count_of_count(expression: E, copy: bool = True) -> E:
             len(inner.expressions) != 1
             or not _is_count_star(inner.expressions[0])
             or not inner.args.get("from_")
-            or any(inner.args.get(arg) for arg in ("group", "having", "with_", "distinct", "limit", "qualify"))
+            or any(
+                inner.args.get(arg)
+                for arg in ("group", "having", "with_", "distinct", "limit", "qualify")
+            )
         ):
             continue
         replacement = inner.copy()
