@@ -457,11 +457,47 @@ class SQLiteGenerator(generator.Generator):
                 return self.func("DATE", literal, modifier)
         return None
 
+    def _is_date(self, node: exp.Expr) -> bool:
+        return self._annotated(node).is_type(exp.DType.DATE)
+
+    def _whole_days(self, node: exp.Expr) -> bool:
+        node = node.unnest()
+        if isinstance(node, exp.Neg):
+            node = node.this.unnest()
+        if isinstance(node, exp.Literal):
+            return node.is_int
+        return self._annotated(node).is_type(*exp.DataType.INTEGER_TYPES)
+
+    def _date_integer_sql(self, expression: exp.Add | exp.Sub) -> str | None:
+        # SQLite adds numbers to text: '2000-01-01' + 5 is 2005 and a difference of two date
+        # texts is a year difference, whereas the source engines count whole days.
+        left, right = expression.this, expression.expression
+        if self._is_date(left) and self._whole_days(right):
+            days = right
+        elif isinstance(expression, exp.Add) and self._is_date(right) and self._whole_days(left):
+            left, days = right, left
+        elif isinstance(expression, exp.Sub) and self._is_date(left) and self._is_date(right):
+            return self.datediff_sql(exp.DateDiff(this=left, expression=right, unit=exp.var("DAY")))
+        else:
+            return None
+        day = exp.var("DAY")
+        if isinstance(expression, exp.Sub):
+            return self.datesub_sql(exp.DateSub(this=left, expression=days, unit=day))
+        return self.dateadd_sql(exp.DateAdd(this=left, expression=days, unit=day))
+
     def add_sql(self, expression: exp.Add) -> str:
-        return self._date_interval_sql(expression) or super().add_sql(expression)
+        return (
+            self._date_interval_sql(expression)
+            or self._date_integer_sql(expression)
+            or super().add_sql(expression)
+        )
 
     def sub_sql(self, expression: exp.Sub) -> str:
-        return self._date_interval_sql(expression) or super().sub_sql(expression)
+        return (
+            self._date_interval_sql(expression)
+            or self._date_integer_sql(expression)
+            or super().sub_sql(expression)
+        )
 
     def interval_sql(self, expression: exp.Interval) -> str:
         self.unsupported("SQLite does not support this INTERVAL expression")
@@ -481,6 +517,47 @@ class SQLiteGenerator(generator.Generator):
             "of unknown type or a DATE"
         )
         return self.function_fallback_sql(expression)
+
+    def _align_dates_with_truncation(self, *operands: exp.Expr) -> None:
+        # A truncation is written as timestamp text ('2020-03-01 00:00:00'), while a DATE is
+        # date text ('2020-03-01'); the source engines compare a DATE with a timestamp as the
+        # DATE's midnight, but SQLite compares the texts, so equality fails and a range bound
+        # on the same day is mis-ordered.
+        if not any(isinstance(node, (exp.DateTrunc, exp.TimestampTrunc)) for node in operands):
+            return
+        for node in operands:
+            if not isinstance(node, (exp.DateTrunc, exp.TimestampTrunc)) and self._is_date(node):
+                node.replace(exp.Anonymous(this="DATETIME", expressions=[node.copy()]))
+
+    def eq_sql(self, expression: exp.EQ) -> str:
+        self._align_dates_with_truncation(expression.this, expression.expression)
+        return super().eq_sql(expression)
+
+    def neq_sql(self, expression: exp.NEQ) -> str:
+        self._align_dates_with_truncation(expression.this, expression.expression)
+        return super().neq_sql(expression)
+
+    def lt_sql(self, expression: exp.LT) -> str:
+        self._align_dates_with_truncation(expression.this, expression.expression)
+        return super().lt_sql(expression)
+
+    def lte_sql(self, expression: exp.LTE) -> str:
+        self._align_dates_with_truncation(expression.this, expression.expression)
+        return super().lte_sql(expression)
+
+    def gt_sql(self, expression: exp.GT) -> str:
+        self._align_dates_with_truncation(expression.this, expression.expression)
+        return super().gt_sql(expression)
+
+    def gte_sql(self, expression: exp.GTE) -> str:
+        self._align_dates_with_truncation(expression.this, expression.expression)
+        return super().gte_sql(expression)
+
+    def between_sql(self, expression: exp.Between) -> str:
+        self._align_dates_with_truncation(
+            expression.this, expression.args["low"], expression.args["high"]
+        )
+        return super().between_sql(expression)
 
     def datetrunc_sql(self, expression: exp.DateTrunc) -> str:
         return self._truncate_sql(expression)
