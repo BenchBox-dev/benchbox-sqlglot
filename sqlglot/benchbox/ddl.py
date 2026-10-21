@@ -14,6 +14,8 @@ from types import MappingProxyType
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.benchbox.layout import TableLayout, frozen_layouts
+from sqlglot.benchbox.ddl_engines import apply_layout
 from sqlglot.dialects.dialect import Dialect, DialectType
 
 
@@ -78,10 +80,21 @@ class DdlOptions:
         drop_type_parameters: replacement type names written without parameters, so a
             ``VARCHAR(25)`` mapped to ``TEXT`` becomes ``TEXT``.
         singlestore: SingleStore ``SHARD KEY``, ``SORT KEY`` and ``REFERENCE TABLE`` clauses.
+        strip_not_null: remove ``NOT NULL`` from columns.
+        if_not_exists: write ``CREATE TABLE IF NOT EXISTS`` for a permanent ``CREATE TABLE``
+            that does not say it (and is not turned into ``CREATE OR REPLACE``).
+        schema: qualify table names that have no schema with this one.
+        table_suffix: appended to every ``CREATE TABLE`` name.
+        layouts: table name to the ``TableLayout`` written for that table. Names are matched
+            case-insensitively, without any schema qualifier.
+        default_layout: the ``TableLayout`` for permanent tables that have no entry in
+            ``layouts``.
 
-    Strip options are applied first, then ``type_map``, ``or_replace`` and ``singlestore``,
-    so a primary key removed by ``strip_primary_keys`` no longer counts as one when
-    ``singlestore.random_shard_key`` decides on ``SHARD KEY ()``.
+    Strip options are applied first, then ``type_map``, ``or_replace``, ``singlestore`` and the
+    table layout, so a primary key removed by ``strip_primary_keys`` no longer counts as one when
+    ``singlestore.random_shard_key`` decides on ``SHARD KEY ()``. A layout still sees the
+    statement's own primary key (the ClickHouse ``ORDER BY`` fallback, the Doris and StarRocks
+    ``primary`` model) because it is read before anything is stripped.
     """
 
     strip_primary_keys: bool = False
@@ -92,6 +105,12 @@ class DdlOptions:
     type_map: Mapping[str, str] = field(default_factory=dict)
     drop_type_parameters: Collection[str] = field(default_factory=frozenset)
     singlestore: SingleStoreKeys | None = None
+    strip_not_null: bool = False
+    if_not_exists: bool = False
+    schema: str | None = None
+    table_suffix: str = ""
+    layouts: Mapping[str, TableLayout] = field(default_factory=dict)
+    default_layout: TableLayout | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -104,6 +123,7 @@ class DdlOptions:
             "drop_type_parameters",
             frozenset(name.upper() for name in self.drop_type_parameters),
         )
+        object.__setattr__(self, "layouts", frozen_layouts(self.layouts))
 
 
 def shard_key_clause(
@@ -234,6 +254,50 @@ def _singlestore(create: exp.Create, keys: SingleStoreKeys, dialect: Dialect, op
         schema.append("expressions", exp.var(clause))
 
 
+def _source_primary_key(create: exp.Create) -> list[str]:
+    schema = create.this
+    if not isinstance(schema, exp.Schema):
+        return []
+    columns = [
+        column.name
+        for column in schema.expressions
+        if isinstance(column, exp.ColumnDef)
+        and any(
+            isinstance(c.args.get("kind"), exp.PrimaryKeyColumnConstraint)
+            for c in column.args.get("constraints") or []
+        )
+    ]
+    for key in schema.find_all(exp.PrimaryKey):
+        if key.parent is schema or isinstance(key.parent, exp.Constraint):
+            return [i.name for e in key.expressions for i in e.find_all(exp.Identifier)]
+    return columns
+
+
+def _strip_not_null(create: exp.Create) -> None:
+    schema = create.this
+    if not isinstance(schema, exp.Schema):
+        return
+    for column in schema.find_all(exp.ColumnDef):
+        for constraint in list(column.args.get("constraints") or []):
+            if isinstance(constraint.args.get("kind"), exp.NotNullColumnConstraint):
+                constraint.pop()
+
+
+def _exists(create: exp.Create, options: DdlOptions) -> None:
+    if options.if_not_exists and _is_permanent_table(create) and not create.args.get("replace"):
+        create.set("exists", True)
+
+
+def _name(create: exp.Create, options: DdlOptions) -> None:
+    table = create.this.this if isinstance(create.this, exp.Schema) else create.this
+    if not isinstance(table, exp.Table):
+        return
+    if options.table_suffix:
+        table.set("this", exp.to_identifier(table.name + options.table_suffix))
+    if options.schema and not table.args.get("db"):
+        table.set("db", exp.to_identifier(options.schema))
+
+
 def transpile_ddl(
     sql: str,
     read: DialectType = None,
@@ -261,16 +325,29 @@ def transpile_ddl(
     for tree in sqlglot.parse(sql, read=read):
         if tree is None:
             continue
+        tail: list[str] = []
         if isinstance(tree, exp.Create) and str(tree.args.get("kind") or "").upper() == "TABLE":
+            table = _table_name(tree)
+            source_primary_key = _source_primary_key(tree)
             kinds: list[type[exp.Expr]] = []
             for name, classes in _CONSTRAINT_KINDS.items():
                 if getattr(options, name):
                     kinds.extend(classes)
             if kinds:
                 _strip_constraints(tree, tuple(kinds))
+            if options.strip_not_null:
+                _strip_not_null(tree)
             _map_types(tree, options)
             _replace(tree, options)
+            _exists(tree, options)
             if options.singlestore is not None:
                 _singlestore(tree, options.singlestore, target, opts)
-        statements.append(target.generate(tree, copy=False, **opts))
+            layout = options.layouts.get(table) or options.default_layout
+            if layout is not None and _is_permanent_table(tree):
+                tail = apply_layout(tree, layout, target, opts, source_primary_key)
+            _name(tree, options)
+        text = target.generate(tree, copy=False, **opts)
+        if tail:
+            text = f"{text}{chr(10) if opts.get('pretty') else ' '}" + " ".join(tail)
+        statements.append(text)
     return statements

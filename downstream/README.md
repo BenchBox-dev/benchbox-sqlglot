@@ -177,6 +177,12 @@ set by `DdlOptions`, a frozen dataclass whose fields all default to off:
 | `type_map` | `Mapping[str, str]` | column type name to the type written instead (`{"DECIMAL": "NUMERIC"}`), parameters kept |
 | `drop_type_parameters` | `Collection[str]` | replacement types written without parameters (`["TEXT"]`) |
 | `singlestore` | `SingleStoreKeys \| None` | SingleStore key clauses, below |
+| `strip_not_null` | `bool` | removes `NOT NULL` from columns |
+| `if_not_exists` | `bool` | `CREATE TABLE` becomes `CREATE TABLE IF NOT EXISTS` (permanent tables, not `OR REPLACE`) |
+| `schema` | `str \| None` | qualifies table names that have no schema |
+| `table_suffix` | `str` | appended to every created table name |
+| `layouts` | `Mapping[str, TableLayout]` | engine-specific clauses per table name, below |
+| `default_layout` | `TableLayout \| None` | the layout of permanent tables with no entry in `layouts` |
 
 `SingleStoreKeys` (also frozen) carries the benchmark data the fork must not know: `shard_keys` and
 `sort_keys` (table name to column or columns), `reference_tables` (written as `CREATE REFERENCE TABLE`
@@ -188,3 +194,24 @@ options, so a primary key removed by `strip_primary_keys` does not stop `SHARD K
 Constraint stripping, replacement and type renaming act on the parsed statement, so `CHECK`
 constraints, defaults and everything else are kept. Statements that are not `CREATE TABLE` are only
 translated.
+
+### Engine-specific table layouts
+
+`TableLayout` (frozen, in `sqlglot.benchbox.layout`) carries one table's physical layout as data: `engine`,
+`format`, `stored_as`, `partition_by` or `partition_clause`, `sort_by`, `primary_key`, `cluster_by`,
+`distribution`, `distribute_by`, `buckets`, `key_model`, `key_columns`, `location`, `external`,
+`properties` and the other fields its docstring lists with the dialects that read each one. A field a
+dialect has no use for is ignored; a dialect with no layout support raises `ValueError`. Column names are
+written the way the target quotes them, and anything that is not a plain identifier (`tuple()`,
+`toYYYYMM(day)`) is written as given. Each clause group is written in the target's syntax and parsed back
+with the target's parser, so SQLGlot's own generator spells and places it; a group the parser cannot read
+(Redshift `SORTKEY AUTO`, Doris `AGGREGATE KEY`, Redshift Spectrum clauses) is appended to the statement
+text. A statement that already has a clause of the same kind (`ENGINE`, `ORDER BY`, `DISTSTYLE`...) keeps its
+own. A layout is applied to permanent `CREATE TABLE` statements only, after the other options, and reads the
+statement's own primary key before anything is stripped.
+
+| Dialect | Clauses written |
+|---|---|
+| ClickHouse | `ENGINE = <engine>`, `PARTITION BY (..)`, `ORDER BY (..)` from `sort_by`, else the statement's primary key, else `tuple()`, then `PRIMARY KEY (..)` after a given `sort_by` (the statement's own `PRIMARY KEY` is removed then), `SETTINGS`. `nullable_columns` decides which columns are `Nullable` (a key column listed there is a `ValueError`); without it SQLGlot's `Nullable` wrapping stays except on `NOT NULL` columns, which get a plain type. Fixed-size arrays (`REAL[3]`) become plain arrays. |
+| Doris, StarRocks | `DUPLICATE`, `UNIQUE`, `AGGREGATE` or `PRIMARY KEY (..)` from `key_model` and `key_columns` (a leading run of defined, keyable columns; else the first keyable column), `PARTITION BY`, `DISTRIBUTED BY HASH(..) BUCKETS n` or `RANDOM`, StarRocks `ORDER BY (..)`, `PROPERTIES (..)`. Primary and foreign keys are removed, fixed-size arrays lose their size. `DORIS_TYPE_MAP` and `STARROCKS_TYPE_MAP` are the column type maps to pass as `type_map`. |
+| Redshift | `DISTSTYLE KEY DISTKEY(..)`, `EVEN`, `ALL` or `AUTO`; `SORTKEY(..)` or `SORTKEY AUTO`; with `external`, `CREATE EXTERNAL TABLE ... STORED AS .. LOCATION .. TABLE PROPERTIES (..)` |

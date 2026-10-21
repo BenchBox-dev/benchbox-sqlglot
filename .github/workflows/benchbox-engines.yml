@@ -39,7 +39,7 @@ jobs:
       - name: PySpark needs Java 17
         run: echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
       - run: .venv/bin/python -m tests.engines status
-      - run: .venv/bin/python -m unittest tests.test_engines tests.test_platform_dialects_engines tests.test_benchbox_adapter_rewrites_engines tests.test_benchbox_compat_engines tests.test_benchbox_subqueries_engines tests.test_sqlite_idioms_execution tests.test_regexp_replace_execution tests.test_benchbox_ddl tests.test_engine_rewrites_execution -v
+      - run: .venv/bin/python -m unittest tests.test_engines tests.test_platform_dialects_engines tests.test_benchbox_adapter_rewrites_engines tests.test_benchbox_compat_engines tests.test_benchbox_subqueries_engines tests.test_sqlite_idioms_execution tests.test_regexp_replace_execution tests.test_benchbox_ddl tests.test_engine_rewrites_execution tests.test_benchbox_ddl_engines -v
 
   postgres:
     runs-on: ubuntu-latest
@@ -139,7 +139,7 @@ jobs:
           uv venv
           uv pip install -e . -r downstream/engines-requirements.txt
       - run: .venv/bin/python -m tests.engines wait starrocks 600
-      - run: .venv/bin/python -m unittest tests.test_engines tests.test_sqlite_idioms_execution tests.test_engine_rewrites_execution -v
+      - run: .venv/bin/python -m unittest tests.test_engines tests.test_sqlite_idioms_execution tests.test_engine_rewrites_execution tests.test_benchbox_ddl_engines -v
       - name: Container log
         if: failure()
         run: docker logs --tail 200 starrocks
@@ -165,7 +165,7 @@ jobs:
           uv venv
           uv pip install -e . -r downstream/engines-requirements.txt
       - run: .venv/bin/python -m tests.engines wait doris 600
-      - run: .venv/bin/python -m unittest tests.test_engines tests.test_sqlite_idioms_execution tests.test_engine_rewrites_execution -v
+      - run: .venv/bin/python -m unittest tests.test_engines tests.test_sqlite_idioms_execution tests.test_engine_rewrites_execution tests.test_benchbox_ddl_engines -v
       - name: Container log
         if: failure()
         run: docker logs --tail 200 doris

@@ -62,6 +62,12 @@ DataFusion and PySpark and compares the rows of the original query with the rows
 `IN` over a grouped subquery behind comma joins, nested correlated subqueries, a correlated scalar subquery, and an
 inequality-correlated `EXISTS` that must stay in place). Whether a given engine version needs these rewrites is not
 something this test can show: current Postgres, DuckDB, DataFusion and Spark answer the originals correctly too.
+`tests/test_benchbox_ddl_engines.py` runs in the `in-process`, `starrocks` and `doris` jobs: it creates
+ClickHouse tables on chDB and compares engine, sorting, partition and primary keys and column types with
+`system.tables` and `system.columns`, and creates Doris and StarRocks tables on their containers and
+checks `SHOW CREATE TABLE` for the key model, distribution and partition clauses. Redshift `DISTSTYLE`,
+`DISTKEY`, `SORTKEY` and Spectrum `CREATE EXTERNAL TABLE` output is golden-output only (the Redshift row
+below).
 `tests/test_questdb_execution.py` runs in the `questdb` job: it executes the QuestDB
 generator's comma-join expansion, `DATEADD`, `SUBSTRING` and CTE column list output.
 

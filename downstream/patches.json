@@ -451,6 +451,24 @@
         "tests.test_benchbox_subqueries_engines"
       ],
       "reason": "Subquery rewrites in sqlglot.benchbox.subqueries for engines that plan subqueries badly or wrongly: NOT IN to NOT EXISTS for columns the caller says are never NULL, IN over a grouped subquery to EXISTS, and decorrelation (SQLGlot's unnest_subqueries after column qualification from a caller-passed schema and comma-join to CROSS JOIN conversion, skipping subqueries correlated by anything but equality), with execution tests on Postgres, DuckDB, DataFusion and PySpark."
+    },
+    {
+      "id": "benchbox-ddl-engines",
+      "source": "273aa30e0bdb6e6fef93f0e2c129f88a5ce1d602",
+      "status": "original",
+      "depends": [
+        "real-engine-ci",
+        "benchbox-ddl"
+      ],
+      "paths": [
+        "sqlglot/benchbox/layout.py",
+        "sqlglot/benchbox/ddl_engines.py",
+        "tests/test_benchbox_ddl_engines.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_ddl_engines"
+      ],
+      "reason": "TableLayout and the engine clause writers behind DdlOptions.layouts and default_layout: ClickHouse ENGINE, PARTITION BY, ORDER BY, PRIMARY KEY, SETTINGS and Nullable columns; Doris and StarRocks key models, key columns, partitioning, distribution and PROPERTIES; Redshift DISTSTYLE, DISTKEY, SORTKEY and Spectrum external tables; the strip_not_null, if_not_exists, schema and table_suffix options. Tables, key columns and tuning values are arguments; tests create the tables on chDB, Doris and StarRocks and compare the created layout."
     }
   ]
 }
