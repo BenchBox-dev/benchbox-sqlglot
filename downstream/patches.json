@@ -326,6 +326,23 @@
       "patch": "downstream/patches/sqlite-day-offset-date.patch"
     },
     {
+      "id": "sqlite-exact-integer-division",
+      "source": "d474ae506e61a6639d5f79841cd9046e2615b243",
+      "status": "carried",
+      "depends": [
+        "sqlite-day-offset-date"
+      ],
+      "paths": [
+        "sqlglot/generators/sqlite.py",
+        "tests/dialects/test_sqlite.py"
+      ],
+      "tests": [
+        "tests.dialects.test_sqlite"
+      ],
+      "reason": "Write a source division that may truncate integers (PostgreSQL, Netezza and MySQL-family `/`) as an exact SQLite quotient: the dividend becomes CAST(x AS REAL) unless an operand is already REAL or both operands are explicit integers (an integer CAST with integer literals), so TPC-DS Q21's inv_after / inv_before no longer truncates before BETWEEN 2.0/3.0 AND 3.0/2.0. Replaces the extraction-only division resolver, whose rule this includes; nested a / b / c chains are resolved too.",
+      "patch": "downstream/patches/sqlite-exact-integer-division.patch"
+    },
+    {
       "id": "snowflake-regexp-replace-groups",
       "source": "78c5cfc3060ef68131bfb7f1bde978e506447dad",
       "status": "carried",
