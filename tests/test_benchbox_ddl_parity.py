@@ -52,7 +52,9 @@ class TestQuestDBLayout(unittest.TestCase):
                     LINEITEM,
                     "questdb",
                     strip_primary_keys=True,
-                    default_layout=TableLayout(designated_timestamp="l_shipdate", time_partition=unit),
+                    default_layout=TableLayout(
+                        designated_timestamp="l_shipdate", time_partition=unit
+                    ),
                 )
                 self.assertTrue(sql.endswith(") timestamp(l_shipdate)"), sql)
 
@@ -90,7 +92,12 @@ class TestArraySizes(unittest.TestCase):
             ("questdb", "DOUBLE PRECISION[]"),
         ):
             with self.subTest(write=write):
-                self.assertEqual(ddl(self.SQL, write), [f"CREATE TABLE v (id {'INT64' if write == 'bigquery' else 'BIGINT'}, e {expected})"])
+                self.assertEqual(
+                    ddl(self.SQL, write),
+                    [
+                        f"CREATE TABLE v (id {'INT64' if write == 'bigquery' else 'BIGINT'}, e {expected})"
+                    ],
+                )
 
     def test_duckdb_and_postgres_keep_the_size(self):
         self.assertEqual(ddl(self.SQL, "duckdb"), ["CREATE TABLE v (id BIGINT, e DOUBLE[256])"])
@@ -139,7 +146,9 @@ class TestBigQueryConstraints(unittest.TestCase):
         keys = [*tree.find_all(exp.PrimaryKey), *tree.find_all(exp.Reference)]
         self.assertEqual(len(keys), 2)
         for key in keys:
-            self.assertEqual([str(getattr(o, "name", o)) for o in key.args["options"]], ["NOT ENFORCED"])
+            self.assertEqual(
+                [str(getattr(o, "name", o)) for o in key.args["options"]], ["NOT ENFORCED"]
+            )
 
     def test_stripped_constraints_stay_stripped(self):
         [sql] = ddl(
@@ -184,7 +193,7 @@ class TestQuestDBOnQuestDB(unittest.TestCase):
 
     def columns(self):
         rows = self.connection.execute(
-            f"SELECT \"column\", type, \"designated\" FROM table_columns('{self.TABLE}')"
+            f'SELECT "column", type, "designated" FROM table_columns(\'{self.TABLE}\')'
         )
         return {name: (kind, designated) for name, kind, designated in rows}
 

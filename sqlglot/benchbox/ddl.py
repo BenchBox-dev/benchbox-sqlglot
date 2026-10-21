@@ -330,7 +330,9 @@ def _name(create: exp.Create, options: DdlOptions) -> None:
 
 def _keeps_array_sizes(target: Dialect) -> bool:
     """DuckDB and PostgreSQL take ``FLOAT[3]``; every other engine's array type has no size."""
-    return isinstance(target, DuckDB) or (isinstance(target, Postgres) and not isinstance(target, QuestDB))
+    return isinstance(target, DuckDB) or (
+        isinstance(target, Postgres) and not isinstance(target, QuestDB)
+    )
 
 
 def _questdb_types(create: exp.Create) -> None:
@@ -388,7 +390,9 @@ def _bigquery_constraints(create: exp.Create) -> None:
                 )
                 constraint.pop()
 
-    has_table_key = any(isinstance(node, exp.PrimaryKey) for node in schema.find_all(exp.PrimaryKey))
+    has_table_key = any(
+        isinstance(node, exp.PrimaryKey) for node in schema.find_all(exp.PrimaryKey)
+    )
     if primary and not has_table_key:
         schema.append("expressions", exp.PrimaryKey(expressions=primary))
     for item in foreign:
