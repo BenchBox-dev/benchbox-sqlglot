@@ -6,7 +6,6 @@ from sqlglot.benchbox.compat import (
     add_row_source_to_fromless_selects,
     filtered_aggregates_to_conditional,
     inline_select_aliases,
-    literal_subquery_to_values,
     name_literal_subquery_columns,
     order_list_aggregates,
     qualify_columns_by_name,
@@ -248,32 +247,6 @@ class TestFilteredAggregates(unittest.TestCase):
 
 
 class TestLiteralSubqueries(unittest.TestCase):
-    def test_literal_subquery_to_values(self):
-        self.assertEqual(
-            sql(
-                literal_subquery_to_values,
-                "SELECT 0 AS r FROM (SELECT 1) AS dual WHERE FALSE UNION ALL SELECT 2 FROM (SELECT 1) AS other",
-                "postgres",
-                alias="dual",
-                column="dual_col",
-            ),
-            "SELECT 0 AS r FROM (VALUES (1)) AS dual(dual_col) WHERE FALSE "
-            "UNION ALL SELECT 2 FROM (SELECT 1) AS other",
-        )
-
-    def test_literal_subquery_to_values_keeps_other_shapes(self):
-        for query in (
-            "SELECT 0 FROM (SELECT 'a') AS dual",
-            "SELECT 0 FROM (SELECT 1 AS one) AS dual",
-            "SELECT 0 FROM (SELECT 1, 2) AS dual",
-            "SELECT 0 FROM (SELECT x FROM t) AS dual",
-        ):
-            with self.subTest(query=query):
-                self.assertEqual(
-                    sql(literal_subquery_to_values, query, "postgres", alias="dual", column="c"),
-                    query,
-                )
-
     def test_name_literal_subquery_columns(self):
         self.assertEqual(
             sql(

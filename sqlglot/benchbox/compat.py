@@ -243,16 +243,22 @@ def filtered_aggregates_to_conditional(
     return expression
 
 
-def literal_subquery_to_values(expression: E, alias: str, column: str, copy: bool = True) -> E:
-    """Rewrite ``(SELECT 1) AS alias`` into ``(VALUES (1)) AS alias(column)``.
+def drop_literal_row_source(expression: E, alias: str, copy: bool = True) -> E:
+    """Drop the one-row ``(SELECT 1) AS alias`` source from a ``SELECT`` that never reads it.
 
-    Only a derived table named ``alias`` whose single projection is one unaliased numeric literal
-    is replaced, so the result still produces one row of that literal, now with a named column.
+    ``SELECT 0 AS r FROM (SELECT 1) AS dual WHERE FALSE`` becomes ``SELECT 0 AS r WHERE FALSE``.
+    A ``FROM``-less ``SELECT`` is the one-row source every engine the fork is tested on accepts
+    (PostgreSQL, DuckDB, DataFusion, Spark, ClickHouse, StarRocks, Doris and SQLite), so no
+    ``VALUES`` list, ``system.one`` or ``dual`` is needed. Engines that reject ``WHERE`` without a
+    ``FROM`` (BigQuery) get a source back from ``add_row_source_to_fromless_selects``.
+
+    Only a ``SELECT`` whose single ``FROM`` item is a derived table named ``alias`` with one
+    numeric literal projection is rewritten, and only when it neither selects ``*`` nor references
+    the derived table's column.
 
     Args:
         expression: the expression to rewrite.
-        alias: the derived table name to match and keep.
-        column: the column name the ``VALUES`` row receives.
+        alias: the derived table name to match.
         copy: rewrite a copy instead of mutating ``expression``.
 
     Returns:
@@ -260,25 +266,100 @@ def literal_subquery_to_values(expression: E, alias: str, column: str, copy: boo
     """
     if copy:
         expression = expression.copy()
-    for subquery in list(expression.find_all(exp.Subquery)):
-        inner = subquery.this
+    for select in list(expression.find_all(exp.Select)):
+        source = select.args.get("from_")
+        subquery = source.this if source else None
         if (
-            subquery.alias != alias
-            or not isinstance(inner, exp.Select)
-            or len(inner.expressions) != 1
+            select.args.get("joins")
+            or not isinstance(subquery, exp.Subquery)
+            or subquery.alias != alias
+            or any(isinstance(projection, exp.Star) for projection in select.expressions)
         ):
             continue
-        literal = inner.expressions[0]
-        if isinstance(literal, exp.Literal) and not literal.is_string:
-            subquery.replace(
-                exp.Values(
-                    expressions=[exp.Tuple(expressions=[literal.copy()])],
-                    alias=exp.TableAlias(
-                        this=exp.to_identifier(alias), columns=[exp.to_identifier(column)]
-                    ),
+        inner = subquery.this
+        if not isinstance(inner, exp.Select) or len(inner.expressions) != 1:
+            continue
+        projection = inner.expressions[0]
+        literal = projection.this if isinstance(projection, exp.Alias) else projection
+        if not isinstance(literal, exp.Literal) or literal.is_string:
+            continue
+        column = projection.alias if isinstance(projection, exp.Alias) else ""
+        if any(
+            ref.table == alias or (column and not ref.table and ref.name == column)
+            for ref in select.find_all(exp.Column)
+        ):
+            continue
+        select.set("from_", None)
+    return expression
+
+
+def flatten_count_of_count(expression: E, copy: bool = True) -> E:
+    """Count the rows of the source instead of the one row a nested ``COUNT(*)`` returns.
+
+    ``SELECT COUNT(*) FROM (SELECT COUNT(*) AS c FROM t WHERE p)`` counts the single row of the
+    inner aggregate, so it always returns 1. When the author meant the number of source rows, as in
+    a "source records" column next to a target count, this rewrite replaces it with the inner
+    ``SELECT COUNT(*) FROM t WHERE p``. **The returned value changes** (1 becomes the row count),
+    so apply it only where the row count is the intended answer.
+
+    Only an outer ``SELECT COUNT(*)`` over exactly one derived table, with nothing else, whose inner
+    ``SELECT`` is a single ungrouped ``COUNT(*)`` with a ``FROM``, is rewritten. The outer projection
+    (and its alias) is kept.
+
+    Args:
+        expression: the expression to rewrite.
+        copy: rewrite a copy instead of mutating ``expression``.
+
+    Returns:
+        The rewritten expression.
+    """
+    if copy:
+        expression = expression.copy()
+    for outer in list(expression.find_all(exp.Select)):
+        source = outer.args.get("from_")
+        subquery = source.this if source else None
+        if (
+            len(outer.expressions) != 1
+            or not _is_count_star(outer.expressions[0])
+            or not isinstance(subquery, exp.Subquery)
+            or not isinstance(subquery.this, exp.Select)
+            or any(
+                outer.args.get(arg)
+                for arg in (
+                    "where",
+                    "group",
+                    "having",
+                    "joins",
+                    "with_",
+                    "distinct",
+                    "limit",
+                    "qualify",
                 )
             )
+        ):
+            continue
+        inner = subquery.this
+        if (
+            len(inner.expressions) != 1
+            or not _is_count_star(inner.expressions[0])
+            or not inner.args.get("from_")
+            or any(
+                inner.args.get(arg)
+                for arg in ("group", "having", "with_", "distinct", "limit", "qualify")
+            )
+        ):
+            continue
+        replacement = inner.copy()
+        replacement.set("expressions", [outer.expressions[0].copy()])
+        if outer is expression:
+            return replacement  # type: ignore[return-value]
+        outer.replace(replacement)
     return expression
+
+
+def _is_count_star(projection: exp.Expr) -> bool:
+    count = projection.this if isinstance(projection, exp.Alias) else projection
+    return isinstance(count, exp.Count) and isinstance(count.this, exp.Star)
 
 
 def name_literal_subquery_columns(expression: E, column: str, copy: bool = True) -> E:

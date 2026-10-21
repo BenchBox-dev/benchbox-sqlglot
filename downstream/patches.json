@@ -517,6 +517,24 @@
       ],
       "reason": "BigQuery rejects a non-default NULLS FIRST/LAST in the window ORDER BY of FIRST_VALUE, LAST_VALUE and NTH_VALUE unless the frame is an explicit ROWS frame. The BigQuery generator drops the clause when the key is a PARTITION BY key (constant per partition, so the result is unchanged) and otherwise sorts on `key IS NULL` first so the NULL placement is kept; a query's own ORDER BY keeps its clause. An upstream-submission candidate that depends on no other fork file.",
       "patch": "downstream/patches/bigquery-window-nulls-ordering.patch"
+    },
+    {
+      "id": "benchbox-row-sources",
+      "source": "d5d5a5fd143aaf6a0f78289fb61baf92e98e8143",
+      "status": "original",
+      "depends": [
+        "real-engine-ci",
+        "engine-compat-rewrites"
+      ],
+      "paths": [
+        "tests/test_benchbox_row_sources.py",
+        "tests/test_benchbox_row_sources_engines.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_row_sources",
+        "tests.test_benchbox_row_sources_engines"
+      ],
+      "reason": "One-row sources without VALUES in compat.py (an original file of engine-compat-rewrites, so no patch is needed): drop_literal_row_source replaces the literal_subquery_to_values rewrite that wrote (VALUES (1)) AS d(c), which ClickHouse rejects, with a FROM-less SELECT, and flatten_count_of_count turns a COUNT(*) over a nested COUNT(*) (always 1) into the source row count. Tests execute every single-row spelling and both rewrites on SQLite, DuckDB, DataFusion, PySpark, chDB, PostgreSQL, StarRocks and Doris."
     }
   ]
 }
