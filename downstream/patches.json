@@ -472,7 +472,7 @@
     },
     {
       "id": "benchbox-ddl-lakehouse",
-      "source": "0000000000000000000000000000000000000000",
+      "source": "482f4276382cf081d2e71bdb3d14a7d91444fcad",
       "status": "original",
       "depends": [
         "real-engine-ci",
