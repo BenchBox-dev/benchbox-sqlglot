@@ -53,6 +53,16 @@ commits, commit timestamp, repository, namespace, complete patch manifest and
 per-file SHA256 hashes. This works directly from the zipped wheel. See the
 [maintenance guide](MAINTAINING.md) for refresh, verification and rollback.
 
+## Engine versions in CI
+
+The `BenchBox real engines` workflow executes translated SQL on the engines BenchBox supports, so
+`downstream/engines-requirements.txt` holds each in-process engine to the release series BenchBox
+locks and supports (`uv.lock` and `pyproject.toml` in BenchBox): DuckDB 1.5 (below 2), DataFusion 54,
+chDB 4.1 and PySpark 4.2. Service engines are pinned by image tag in the workflow. A newer major is
+not tested until BenchBox supports it; raise a pin in the same change that raises BenchBox's lock.
+Every job prints the installed package versions (`python -m tests.engines versions`), and the job log
+is the version record for the evidence of a change.
+
 ## Dialects
 
 The fork provides every upstream dialect plus `netezza`, `greenplum`, `vertica`,
