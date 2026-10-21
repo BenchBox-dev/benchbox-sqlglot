@@ -83,6 +83,49 @@ class TestQuestDBLayout(unittest.TestCase):
             TableLayout(time_partition="decade")
 
 
+class TestTypeIntent(unittest.TestCase):
+    SQL = (
+        "CREATE TABLE t (a VARCHAR, b VARCHAR(5), c FLOAT, d REAL, e DOUBLE PRECISION, "
+        "v FLOAT[4], g DECIMAL(18,14), h NUMERIC(10,2), i DECIMAL(38,2), j DECIMAL(29,9))"
+    )
+
+    def test_olap_bare_varchar_is_full_length_for_either_read_dialect(self):
+        for write in ("starrocks", "doris"):
+            for read in ("postgres", "duckdb"):
+                with self.subTest(write=write, read=read):
+                    [sql] = ddl(self.SQL, write, read=read)
+                    self.assertIn("a VARCHAR(65533)", sql)
+        [sql] = ddl(self.SQL, "starrocks")
+        self.assertIn("b VARCHAR(5)", sql)
+
+    def test_float_as_real_keeps_four_byte_floats_for_a_postgres_read(self):
+        for write, real, vector in (
+            ("starrocks", "FLOAT", "ARRAY<FLOAT>"),
+            ("spark", "FLOAT", "ARRAY<FLOAT>"),
+            ("trino", "REAL", "ARRAY(REAL)"),
+            ("clickhouse", "Nullable(Float32)", "Array(Nullable(Float32))"),
+            ("tsql", "REAL", "ARRAY<REAL>"),
+        ):
+            with self.subTest(write=write):
+                [sql] = ddl(self.SQL, write, float_as_real=True)
+                self.assertIn(f"c {real},", sql)
+                self.assertIn(f"d {real},", sql)
+                self.assertIn(f"v {vector},", sql)
+        [wide] = ddl(self.SQL, "starrocks")
+        self.assertIn("c DOUBLE,", wide)
+        self.assertIn("e DOUBLE,", ddl(self.SQL, "starrocks", float_as_real=True)[0])
+
+    def test_bigquery_wide_decimals_are_bignumeric(self):
+        [sql] = ddl(self.SQL, "bigquery")
+        for expected in (
+            "g BIGNUMERIC(18, 14)",
+            "h NUMERIC(10, 2)",
+            "i BIGNUMERIC(38, 2)",
+            "j NUMERIC(29, 9)",
+        ):
+            self.assertIn(expected, sql)
+
+
 class TestArraySizes(unittest.TestCase):
     SQL = "CREATE TABLE v (id BIGINT, e DOUBLE[256])"
 

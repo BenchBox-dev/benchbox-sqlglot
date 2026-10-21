@@ -90,7 +90,7 @@ below). The same file executes the Spark forms on PySpark (a layout format repla
 columns) and, in the `postgres` job, that PostgreSQL rejects `WITH (format = ...)` unless
 `strip_with_properties` removes it. `tests/test_benchbox_ddl_engines.py` also creates a StarRocks table
 from standard DDL in the `starrocks` job and reads back its `PRIMARY KEY` model and `varchar(44)` /
-`char(10)` lengths. Redshift `SORTKEY` and SingleStore `DATETIME` output stays golden output (the
+`char(10)` lengths. Doris and StarRocks bare `VARCHAR` length, `ARRAY<FLOAT>` vectors and `float` columns are read back there too (`float_as_real`). Redshift `SORTKEY`, BigQuery `BIGNUMERIC` and SingleStore `DATETIME` output stay golden output (the
 Redshift and SingleStore rows below).
 
 `tests/test_engine_rewrites_execution.py` runs in the `in-process`, `starrocks` and `doris` jobs. On chDB it

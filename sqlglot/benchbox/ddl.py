@@ -19,8 +19,12 @@ from sqlglot.benchbox.layout import TableLayout, frozen_layouts
 from sqlglot.dialects.bigquery import BigQuery
 from sqlglot.dialects.dialect import Dialect, DialectType
 from sqlglot.dialects.duckdb import DuckDB
+from sqlglot.dialects.doris import Doris
 from sqlglot.dialects.postgres import Postgres
 from sqlglot.dialects.questdb import QuestDB
+from sqlglot.dialects.starrocks import StarRocks
+from sqlglot.dialects.tsql import TSQL
+from sqlglot.tokens import TokenType
 
 
 def _frozen_columns(
@@ -99,6 +103,10 @@ class DdlOptions:
         table_case: ``upper`` or ``lower`` to write table names in that case, for engines whose
             table names are case-sensitive (BigQuery) when the callers refer to them in one
             case. Applies to the created table and to the tables a ``REFERENCES`` clause names.
+        float_as_real: read a bare ``FLOAT`` (and ``FLOAT[n]``) as the 4-byte ``REAL`` even when
+            the source dialect reads it as 8-byte (PostgreSQL), for DDL written with DuckDB's
+            meaning of ``FLOAT``. Every target then gets its own 4-byte type (``FLOAT``,
+            ``REAL``, ``Float32``) or, where it has none (BigQuery, Snowflake), its only float.
         layouts: table name to the ``TableLayout`` written for that table. Names are matched
             case-insensitively, without any schema qualifier.
         default_layout: the ``TableLayout`` for permanent tables that have no entry in
@@ -125,6 +133,7 @@ class DdlOptions:
     schema: str | None = None
     table_suffix: str = ""
     table_case: str | None = None
+    float_as_real: bool = False
     layouts: Mapping[str, TableLayout] = field(default_factory=dict)
     default_layout: TableLayout | None = None
 
@@ -352,6 +361,57 @@ def _keeps_array_sizes(target: Dialect) -> bool:
     )
 
 
+def _parse(sql: str, read: DialectType, options: DdlOptions) -> list[exp.Expr | None]:
+    if not options.float_as_real:
+        return sqlglot.parse(sql, read=read)
+    dialect = Dialect.get_or_raise(read)
+    tokens = dialect.tokenize(sql)
+    for token in tokens:
+        if token.token_type == TokenType.DOUBLE and token.text.upper() == "FLOAT":
+            token.token_type = TokenType.FLOAT
+    return dialect.parser().parse(tokens, sql)
+
+
+_VARCHAR_DEFAULT_LENGTH = 65533
+
+
+def _target_types(create: exp.Create, target: Dialect) -> None:
+    """Column types a target needs written differently from what SQLGlot's generator writes.
+
+    Doris and StarRocks read a bare ``VARCHAR`` as ``VARCHAR(1)`` and silently truncate, so it
+    gets their maximum length. BigQuery's ``NUMERIC`` holds scale 9 and 29 integer digits at
+    most; a wider ``DECIMAL(p, s)`` is ``BIGNUMERIC``. T-SQL's ``FLOAT`` is 8 bytes, so a 4-byte
+    float is spelled ``REAL``.
+    """
+    schema = create.this
+    if not isinstance(schema, exp.Schema):
+        return
+    for data_type in [d for c in schema.find_all(exp.ColumnDef) for d in c.find_all(exp.DataType)]:
+        if isinstance(target, (Doris, StarRocks)):
+            if data_type.is_type(exp.DType.TEXT):
+                data_type.set("this", exp.DType.VARCHAR)
+            if data_type.is_type(exp.DType.VARCHAR) and not data_type.expressions:
+                data_type.set(
+                    "expressions",
+                    [exp.DataTypeParam(this=exp.Literal.number(_VARCHAR_DEFAULT_LENGTH))],
+                )
+        elif isinstance(target, BigQuery):
+            if data_type.is_type(exp.DType.DECIMAL, exp.DType.BIGDECIMAL) and data_type.expressions:
+                values = [
+                    p.this.name for p in data_type.expressions if isinstance(p, exp.DataTypeParam)
+                ]
+                if len(values) == 2 and values[0].isdigit() and values[1].isdigit():
+                    precision, scale = int(values[0]), int(values[1])
+                    if scale > 9 or precision - scale > 29:
+                        data_type.set("this", exp.DType.BIGDECIMAL)
+        elif (
+            isinstance(target, TSQL)
+            and data_type.is_type(exp.DType.FLOAT)
+            and not data_type.expressions
+        ):
+            data_type.replace(exp.DataType(this=exp.DType.USERDEFINED, kind="REAL"))
+
+
 def _questdb_types(create: exp.Create) -> None:
     """QuestDB column types take no length: ``VARCHAR(25)`` and ``CHAR(25)`` are ``VARCHAR``.
 
@@ -445,7 +505,7 @@ def transpile_ddl(
     options = options or DdlOptions()
     target = Dialect.get_or_raise(write)
     statements: list[str] = []
-    for tree in sqlglot.parse(sql, read=read):
+    for tree in _parse(sql, read, options):
         if tree is None:
             continue
         tail: list[str] = []
@@ -465,6 +525,7 @@ def transpile_ddl(
             _map_types(tree, options)
             if isinstance(target, QuestDB):
                 _questdb_types(tree)
+            _target_types(tree, target)
             _replace(tree, options)
             _exists(tree, options)
             if options.singlestore is not None:
