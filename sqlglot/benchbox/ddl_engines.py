@@ -43,6 +43,9 @@ STARROCKS_TYPE_MAP: dict[str, str] = {
     "SMALLINT": "INT",
     "BLOB": "VARCHAR(65533)",
 }
+# SingleStore recommends ``DATETIME`` over ``TIMESTAMP``, which only holds dates through
+# 2038-01-19 (``DATETIME`` goes to 9999-12-31). Pass as ``DdlOptions.type_map``.
+SINGLESTORE_TYPE_MAP: dict[str, str] = {"TIMESTAMP": "DATETIME"}
 
 _PLAIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _NON_KEY_TYPES = frozenset(
@@ -342,9 +345,14 @@ def _redshift(ctx: _Context) -> list[str]:
     elif style:
         groups.append(f"DISTSTYLE {style.upper()}")
 
-    if layout.sort_by:
+    properties = ctx.create.args.get("properties")
+    # A statement's own SORTKEY is kept, with no second one beside it.
+    has_sort_key = isinstance(properties, exp.Properties) and any(
+        isinstance(p, exp.SortKeyProperty) for p in properties.expressions
+    )
+    if layout.sort_by and not has_sort_key:
         groups.append(f"SORTKEY({ctx.names(layout.sort_by)})")
-    elif layout.sort_auto:
+    elif layout.sort_auto and not layout.sort_by and not has_sort_key:
         groups.append("SORTKEY AUTO")
 
     if layout.external:
@@ -386,12 +394,25 @@ def _table_properties(ctx: _Context) -> str | None:
     return f"TBLPROPERTIES ({props})"
 
 
+def _replace_file_format(ctx: _Context) -> None:
+    """The layout's file format is the one written; the statement's own ``USING`` or ``STORED AS`` goes."""
+    properties = ctx.create.args.get("properties")
+    if not isinstance(properties, exp.Properties):
+        return
+    kept = [p for p in properties.expressions if not isinstance(p, exp.FileFormatProperty)]
+    properties.set("expressions", kept)
+    if not kept:
+        ctx.create.set("properties", None)
+
+
 def _spark(ctx: _Context) -> list[str]:
     layout = ctx.layout
     groups: list[str | None] = []
     if layout.stored_as:
+        _replace_file_format(ctx)
         groups.append(f"STORED AS {layout.stored_as.upper()}")
     elif layout.format:
+        _replace_file_format(ctx)
         groups.append(f"USING {layout.format.upper()}")
     if layout.partition_by:
         groups.append(f"PARTITIONED BY ({ctx.names(layout.partition_by)})")
@@ -438,6 +459,7 @@ def _hive(ctx: _Context) -> list[str]:
         groups.append(row)
     file_format = layout.stored_as or layout.format
     if file_format:
+        _replace_file_format(ctx)
         groups.append(f"STORED AS {file_format.upper()}")
     if layout.location:
         groups.append(f"LOCATION {ctx.literal(layout.location)}")
@@ -661,7 +683,9 @@ def apply_layout(
 
     Clauses the target's parser reads become properties of ``create``; a clause group whose
     property kind the statement already has is dropped, so a statement that says
-    ``ENGINE = ...`` or ``DISTSTYLE ...`` keeps its own.
+    ``ENGINE = ...`` or ``DISTSTYLE ...`` keeps its own. The exception is the file format of
+    Spark, Databricks, Hive and Athena: a layout's ``format`` or ``stored_as`` is what the table
+    is declared to be, so it replaces the statement's own ``USING`` or ``STORED AS``.
 
     Raises:
         ValueError: ``target`` has no layout support, or the layout is invalid for it.

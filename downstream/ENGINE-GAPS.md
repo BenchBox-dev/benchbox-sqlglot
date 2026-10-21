@@ -85,7 +85,13 @@ generator's comma-join expansion, `DATEADD`, `SUBSTRING` and CTE column list out
 `TIMESTAMP` column types, the designated timestamp and the partitioning; QuestDB rejects `VARCHAR(n)`,
 `CHAR(n)` and fixed-size arrays, so those are written without the length. The BigQuery
 `PRIMARY KEY` / `FOREIGN KEY ... NOT ENFORCED` and table-name output is golden output (the BigQuery row
-below).
+below). The same file executes the Spark forms on PySpark (a layout format replacing the statement's
+`USING`, a fixed-size array written as `ARRAY<DOUBLE>`, `CLUSTERED BY ... SORTED BY` bucket sort
+columns) and, in the `postgres` job, that PostgreSQL rejects `WITH (format = ...)` unless
+`strip_with_properties` removes it. `tests/test_benchbox_ddl_engines.py` also creates a StarRocks table
+from standard DDL in the `starrocks` job and reads back its `PRIMARY KEY` model and `varchar(44)` /
+`char(10)` lengths. Redshift `SORTKEY` and SingleStore `DATETIME` output stays golden output (the
+Redshift and SingleStore rows below).
 
 `tests/test_engine_rewrites_execution.py` runs in the `in-process`, `starrocks` and `doris` jobs. On chDB it
 executes the ClickHouse rewrites (lowercased identifiers, decimal zero literals with the zero-divisor

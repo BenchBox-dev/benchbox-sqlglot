@@ -7,11 +7,15 @@ constraint and naming output is asserted as text against the grammar in the BigQ
 ``CREATE TABLE`` reference.
 """
 
+import os
+import tempfile
 import unittest
+import uuid
 
 import sqlglot
 from sqlglot import exp
 from sqlglot.benchbox.ddl import DdlOptions, transpile_ddl
+from sqlglot.benchbox.ddl_engines import SINGLESTORE_TYPE_MAP, STARROCKS_TYPE_MAP
 from sqlglot.benchbox.layout import TableLayout
 from tests import engines
 from tests.engines import requires_engine
@@ -231,6 +235,218 @@ class TestQuestDBOnQuestDB(unittest.TestCase):
         )
         self.connection.execute(sql)
         self.assertEqual(self.columns()["v"], ("DOUBLE[]", False))
+
+
+class TestRedshiftSortKey(unittest.TestCase):
+    LAYOUT = TableLayout(distribution="auto", sort_auto=True)
+
+    def test_the_statements_own_sortkey_is_the_only_one(self):
+        for layout in (self.LAYOUT, TableLayout(distribution="auto", sort_by=["b"])):
+            with self.subTest(layout=layout):
+                self.assertEqual(
+                    ddl(
+                        "CREATE TABLE t (a INT, b INT) SORTKEY (a)",
+                        "redshift",
+                        default_layout=layout,
+                    ),
+                    ["CREATE TABLE t (a INTEGER, b INTEGER) SORTKEY(a) DISTSTYLE AUTO"],
+                )
+
+    def test_sort_auto_is_written_without_a_sortkey(self):
+        self.assertEqual(
+            ddl("CREATE TABLE t (a INT) DISTSTYLE EVEN", "redshift", default_layout=self.LAYOUT),
+            ["CREATE TABLE t (a INTEGER) DISTSTYLE EVEN SORTKEY AUTO"],
+        )
+
+
+class TestSparkFileFormat(unittest.TestCase):
+    def test_the_layouts_format_replaces_the_statements_using(self):
+        for fmt in ("delta", "orc"):
+            with self.subTest(fmt=fmt):
+                self.assertEqual(
+                    ddl(
+                        "CREATE TABLE t (a INT) USING PARQUET",
+                        "spark",
+                        read="spark",
+                        default_layout=TableLayout(format=fmt),
+                    ),
+                    [f"CREATE TABLE t (a INT) USING {fmt.upper()}"],
+                )
+
+    def test_the_layouts_format_replaces_the_statements_stored_as(self):
+        self.assertEqual(
+            ddl(
+                "CREATE TABLE t (a INT) STORED AS ORC",
+                "hive",
+                read="hive",
+                default_layout=TableLayout(stored_as="parquet", properties={"k": "v"}),
+            ),
+            ["CREATE TABLE t (a INT) STORED AS PARQUET TBLPROPERTIES ('k'='v')"],
+        )
+
+    def test_the_statements_format_stays_without_a_layout_format(self):
+        self.assertEqual(
+            ddl(
+                "CREATE TABLE t (a INT) USING PARQUET",
+                "spark",
+                read="spark",
+                default_layout=TableLayout(properties={"k": "v"}),
+            ),
+            ["CREATE TABLE t (a INT) USING PARQUET TBLPROPERTIES ('k'='v')"],
+        )
+
+    def test_bucketed_tables_keep_their_sort_columns(self):
+        self.assertEqual(
+            ddl(
+                "CREATE TABLE t (a INT, b INT)",
+                "hive",
+                default_layout=TableLayout(
+                    stored_as="parquet", distribute_by=["a"], sort_by=["b"], buckets=4
+                ),
+            ),
+            [
+                "CREATE TABLE t (a INT, b INT) CLUSTERED BY (a) SORTED BY (b) INTO 4 BUCKETS "
+                "STORED AS PARQUET"
+            ],
+        )
+
+
+@requires_engine("pyspark")
+class TestSparkOnPySpark(unittest.TestCase):
+    def setUp(self):
+        self.conn = engines.connect("pyspark")
+        self.directory = tempfile.mkdtemp()
+        self.name = "t" + uuid.uuid4().hex[:8]
+        self.addCleanup(self.conn.execute, f"DROP TABLE IF EXISTS {self.name}")
+
+    def create(self, sql, **options):
+        [statement] = transpile_ddl(
+            sql.replace("fact", self.name),
+            read="postgres",
+            write="spark",
+            options=DdlOptions(**options),
+        )
+        self.conn.execute(statement)
+        return {row[0]: row[1] for row in self.conn.execute(f"DESCRIBE TABLE EXTENDED {self.name}")}
+
+    def test_layout_format_wins_over_using_and_arrays_are_plain(self):
+        info = self.create(
+            "CREATE TABLE fact (a INT, v DOUBLE[256]) USING PARQUET",
+            default_layout=TableLayout(format="orc", location=os.path.join(self.directory, "orc")),
+        )
+        self.assertEqual(info["Provider"], "ORC")
+        self.assertEqual(info["v"], "array<double>")
+
+    def test_bucketed_table_keeps_its_sort_columns(self):
+        info = self.create(
+            "CREATE TABLE fact (a INT, b INT)",
+            default_layout=TableLayout(
+                format="parquet",
+                distribute_by=["a"],
+                sort_by=["b"],
+                buckets=4,
+                location=os.path.join(self.directory, "bucketed"),
+            ),
+        )
+        self.assertEqual(info["Sort Columns"], "[`b`]")
+        self.assertEqual(info["Num Buckets"], "4")
+
+
+class TestStripWithProperties(unittest.TestCase):
+    PARQUET = "CREATE TABLE t (a INT) WITH (format = 'PARQUET')"
+
+    def test_postgres_keeps_the_with_clause_unless_asked(self):
+        self.assertEqual(
+            ddl(self.PARQUET, "postgres"), ["CREATE TABLE t (a INT) WITH (FORMAT='PARQUET')"]
+        )
+        self.assertEqual(
+            ddl(self.PARQUET, "postgres", strip_with_properties=True), ["CREATE TABLE t (a INT)"]
+        )
+
+    def test_temporary_marker_and_layout_properties_stay(self):
+        self.assertEqual(
+            ddl(
+                "CREATE TEMPORARY TABLE t (a INT) WITH (format = 'PARQUET')",
+                "postgres",
+                strip_with_properties=True,
+            ),
+            ["CREATE TEMPORARY TABLE t (a INT)"],
+        )
+        self.assertEqual(
+            ddl(
+                self.PARQUET,
+                "trino",
+                strip_with_properties=True,
+                default_layout=TableLayout(format="orc"),
+            ),
+            ["CREATE TABLE t (a INTEGER) WITH (format='ORC')"],
+        )
+
+
+@requires_engine("postgres")
+class TestStripWithPropertiesOnPostgres(unittest.TestCase):
+    def test_postgres_rejects_the_format_parameter_the_option_removes(self):
+        name = "swp_" + uuid.uuid4().hex[:8]
+        sql = f"CREATE TABLE {name} (a INT) WITH (format = 'PARQUET')"
+        with engines.connect("postgres") as conn:
+            [kept] = transpile_ddl(sql, read="postgres", write="postgres")
+            with self.assertRaises(Exception) as raised:
+                conn.execute(kept)
+            self.assertIn("format", str(raised.exception))
+            [stripped] = transpile_ddl(
+                sql,
+                read="postgres",
+                write="postgres",
+                options=DdlOptions(strip_with_properties=True),
+            )
+            conn.execute(stripped)
+            self.addCleanup(engines.execute, "postgres", f"DROP TABLE IF EXISTS {name}")
+
+
+class TestSingleStoreTypes(unittest.TestCase):
+    SQL = "CREATE TABLE t (a TIMESTAMP, b TIMESTAMP(6), c DATETIME)"
+
+    def test_timestamps_follow_the_documented_recommendation(self):
+        self.assertEqual(
+            ddl(self.SQL, "singlestore"),
+            ["CREATE TABLE t (a TIMESTAMP, b TIMESTAMP(6), c DATETIME)"],
+        )
+        self.assertEqual(
+            ddl(self.SQL, "singlestore", type_map=SINGLESTORE_TYPE_MAP),
+            ["CREATE TABLE t (a DATETIME, b DATETIME(6), c DATETIME)"],
+        )
+
+
+class TestOlapReadDialect(unittest.TestCase):
+    SQL = "CREATE TABLE t (a INT, c CHAR(10), v VARCHAR(44), PRIMARY KEY (a))"
+    LAYOUT = TableLayout(key_model="primary", distribution="hash", distribute_by=["a"], buckets=8)
+
+    def starrocks(self, read):
+        return ddl(
+            self.SQL,
+            "starrocks",
+            read=read,
+            type_map=STARROCKS_TYPE_MAP,
+            default_layout=self.LAYOUT,
+        )
+
+    def test_standard_ddl_keeps_lengths_and_the_primary_key_model(self):
+        self.assertEqual(
+            self.starrocks("postgres"),
+            [
+                "CREATE TABLE t (a INT, c CHAR(10), v VARCHAR(44)) PRIMARY KEY (a) "
+                "DISTRIBUTED BY HASH (a) BUCKETS 8"
+            ],
+        )
+
+    def test_reading_duckdb_text_drops_lengths_as_duckdb_does(self):
+        self.assertEqual(
+            self.starrocks("duckdb"),
+            [
+                "CREATE TABLE t (a INT, c VARCHAR(65533), v VARCHAR(65533)) PRIMARY KEY (a) "
+                "DISTRIBUTED BY HASH (a) BUCKETS 8"
+            ],
+        )
 
 
 if __name__ == "__main__":

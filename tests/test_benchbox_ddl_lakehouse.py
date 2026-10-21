@@ -113,14 +113,26 @@ class TestSparkFamily(unittest.TestCase):
             "TBLPROPERTIES ('type'='cow', 'primaryKey'='o_key', 'preCombineField'='o_day')",
         )
 
-    def test_statement_clauses_are_kept(self):
-        sql = ddl(
-            "spark",
-            read="spark",
-            sql="CREATE TABLE t (a INT) USING CSV",
-            default_layout=TableLayout(format="parquet", partition_by=["a"]),
+    def test_the_layouts_format_replaces_the_statements_and_other_clauses_are_kept(self):
+        statement = "CREATE TABLE t (a INT) USING CSV"
+        self.assertEqual(
+            ddl(
+                "spark",
+                read="spark",
+                sql=statement,
+                default_layout=TableLayout(format="parquet", partition_by=["a"]),
+            ),
+            "CREATE TABLE t (a INT) USING PARQUET PARTITIONED BY (a)",
         )
-        self.assertEqual(sql, "CREATE TABLE t (a INT) USING CSV PARTITIONED BY (a)")
+        self.assertEqual(
+            ddl(
+                "spark",
+                read="spark",
+                sql=statement,
+                default_layout=TableLayout(partition_by=["a"]),
+            ),
+            "CREATE TABLE t (a INT) USING CSV PARTITIONED BY (a)",
+        )
 
 
 class TestHiveFamily(unittest.TestCase):
