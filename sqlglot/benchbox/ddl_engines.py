@@ -22,6 +22,7 @@ from sqlglot.dialects.doris import Doris
 from sqlglot.dialects.athena import Athena
 from sqlglot.dialects.hive import Hive
 from sqlglot.dialects.postgres import Postgres
+from sqlglot.dialects.questdb import QuestDB
 from sqlglot.dialects.presto import Presto
 from sqlglot.dialects.spark import Spark
 from sqlglot.dialects.tsql import TSQL
@@ -139,9 +140,9 @@ def _mentions(expression: str, column: str) -> bool:
     )
 
 
-def _drop_array_sizes(ctx: _Context, *, plain_elements: bool = False) -> None:
-    """``FLOAT[3]`` is a plain array in these engines: drop the size."""
-    for column in ctx.columns:
+def drop_array_sizes(columns: Sequence[exp.ColumnDef], *, plain_elements: bool = False) -> None:
+    """``FLOAT[3]`` is a plain array in engines without fixed-size arrays: drop the size."""
+    for column in columns:
         kind = column.args.get("kind")
         if not isinstance(kind, exp.DataType):
             continue
@@ -152,6 +153,10 @@ def _drop_array_sizes(ctx: _Context, *, plain_elements: bool = False) -> None:
                     for inner in array.expressions:
                         if isinstance(inner, exp.DataType):
                             inner.set("nullable", False)
+
+
+def _drop_array_sizes(ctx: _Context, *, plain_elements: bool = False) -> None:
+    drop_array_sizes(ctx.columns, plain_elements=plain_elements)
 
 
 def _clickhouse_types(ctx: _Context) -> None:
@@ -498,6 +503,57 @@ def _postgres(ctx: _Context) -> list[str]:
     return [_Raw(f"USING {ctx.layout.format}")] if ctx.layout.format else []
 
 
+# -- QuestDB ---------------------------------------------------------------------------
+
+_TIME_TYPES = {exp.DType.DATE, exp.DType.TIMESTAMP}
+
+
+def _questdb(ctx: _Context) -> list[str]:
+    """Symbols, timestamp columns, the designated timestamp and its partitioning.
+
+    The clause written after the column list is ``timestamp(col) PARTITION BY <unit>``.
+    """
+    layout = ctx.layout
+    defined = ctx.defined
+
+    for name in layout.symbol_columns:
+        column = defined.get(name.lower())
+        if column is None:
+            continue
+        kind = column.args.get("kind")
+        if isinstance(kind, exp.DataType) and kind.is_type(*exp.DataType.TEXT_TYPES):
+            column.set("kind", exp.DataType(this="SYMBOL"))
+            # A SYMBOL is nullable by construction.
+            for constraint in list(column.args.get("constraints") or []):
+                if isinstance(constraint.args.get("kind"), exp.NotNullColumnConstraint):
+                    constraint.pop()
+
+    designated = layout.designated_timestamp
+    for name in dict.fromkeys([*layout.timestamp_columns, *([designated] if designated else [])]):
+        column = defined.get(name.lower())
+        if column is None:
+            if name == designated:
+                raise ValueError(f"designated_timestamp column {name!r} is not defined")
+            continue
+        kind = column.args.get("kind")
+        if not (isinstance(kind, exp.DataType) and kind.is_type(*_TIME_TYPES)):
+            if name == designated:
+                raise ValueError(f"designated_timestamp column {name!r} is not a DATE or TIMESTAMP")
+            continue
+        column.set("kind", exp.DataType(this=exp.DType.TIMESTAMP))
+
+    groups: list[str] = []
+    unit = (layout.time_partition or "none").upper()
+    if designated:
+        clause = f"timestamp({ctx.name(designated)})"
+        if unit != "NONE":
+            clause += f" PARTITION BY {unit}"
+        groups.append(_Raw(clause))
+    elif unit != "NONE":
+        raise ValueError("QuestDB time_partition needs a designated_timestamp")
+    return groups
+
+
 def mooncake_mirror_statements(
     table: str, staging_table: str, schema: str | None = None
 ) -> list[str]:
@@ -545,6 +601,8 @@ def _family(target: Dialect, layout: TableLayout) -> _Builder | None:
         return _trino
     if isinstance(target, TSQL):
         return _tsql
+    if isinstance(target, QuestDB):
+        return _questdb
     if isinstance(target, Postgres):
         return _postgres
     return None
