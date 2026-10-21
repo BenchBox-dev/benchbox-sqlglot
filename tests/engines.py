@@ -375,16 +375,34 @@ def wait_until_ready(name: str, timeout: float = 300.0, interval: float = 5.0) -
         time.sleep(interval)
 
 
+def installed_versions() -> dict[str, str]:
+    """Installed version of every engine package, ``not installed`` when missing."""
+    from importlib import metadata
+
+    names = sorted({p.split("[")[0] for e in ENGINES.values() for p in e.packages})
+    versions = {}
+    for package in names:
+        try:
+            versions[package] = metadata.version(package)
+        except metadata.PackageNotFoundError:
+            versions[package] = "not installed"
+    return versions
+
+
 def main(argv: list[str]) -> int:
     if argv[:1] == ["status"]:
         for name in ENGINES:
             print(f"{name}: {unavailable_reason(name) or 'available'}")
         return 0
+    if argv[:1] == ["versions"]:
+        for package, version in installed_versions().items():
+            print(f"{package}=={version}" if version[0].isdigit() else f"{package}: {version}")
+        return 0
     if len(argv) >= 2 and argv[0] == "wait" and argv[1] in ENGINES:
         wait_until_ready(argv[1], float(argv[2]) if len(argv) > 2 else 300.0)
         print(f"{argv[1]} is ready")
         return 0
-    print("usage: python -m tests.engines status | wait ENGINE [TIMEOUT_SECONDS]")
+    print("usage: python -m tests.engines status | versions | wait ENGINE [TIMEOUT_SECONDS]")
     return 2
 
 

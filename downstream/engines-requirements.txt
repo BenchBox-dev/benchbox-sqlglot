@@ -4,10 +4,17 @@
 # 3.9 wheels are gated by marker; tests import every engine lazily, so a missing
 # package skips (or fails under BENCHBOX_ENGINES_REQUIRED) instead of breaking
 # collection.
-duckdb>=0.6
-datafusion>=43; python_version >= '3.10'
-chdb>=3; python_version >= '3.10'
-pyspark>=3.5; python_version >= '3.10'
+#
+# Version policy: the in-process engines are held to the release series BenchBox
+# locks (BenchBox uv.lock) and supports (BenchBox pyproject.toml), so the tests
+# execute SQL on the engines users run. A newer major (DuckDB 2.0 removed the
+# lambda arrow, DataFusion 55, chDB 4.4) is not tested until BenchBox supports
+# it. Raise a pin together with BenchBox's lock; each job prints the installed
+# versions.
+duckdb>=1.5,<2
+datafusion>=54,<55; python_version >= '3.10'
+chdb>=4.1,<4.2; python_version >= '3.10'
+pyspark>=4.2,<4.3; python_version >= '3.10'
 psycopg[binary]>=3.1
 trino>=0.330
 pymysql>=1.1
