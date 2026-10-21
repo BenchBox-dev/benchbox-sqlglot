@@ -215,6 +215,15 @@ dates as text and `'1998-03-09 00:00:00'` sorts after `'1998-03-09'`, so a `DATE
 the boundary day of `d BETWEEN <date> - INTERVAL '30' DAY AND ...` (TPC-DS Q21 and Q40). That is the
 carried patch `sqlite-day-offset-date`; hour, minute and second offsets keep `DATETIME`.
 
+SQLite divides two INTEGER values with truncation, and a column that looks decimal can hold INTEGER storage, so
+no schema-free rule can prove a dividend is not an integer. A division the source marks as possibly truncating
+(`typed`: PostgreSQL, Netezza, MySQL families) is therefore written with `CAST(dividend AS REAL)` unless an
+operand is already REAL (a decimal literal, a CAST to a real type, `AVG`, arithmetic or a division involving
+one) or both operands are explicit integers (integer literals and CASTs to an integer type, with at least one
+CAST). Only the explicit CAST asserts that a quotient is meant to truncate; `1000 / 10` is not such an
+assertion. That is the carried patch `sqlite-exact-integer-division` (TPC-DS Q21's `inv_after / inv_before`
+is two integer SUMs); `tests/dialects/test_sqlite.py` executes the Q21 shape on SQLite and DuckDB.
+
 `ansi` and `standard` are not dialects the fork provides, and the fork has no alias
 dialects. The caller resolves them before calling SQLGlot: BenchBox's platform
 registry maps `ansi` and `standard` (and every platform name) to a dialect that

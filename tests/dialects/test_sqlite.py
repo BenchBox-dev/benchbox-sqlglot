@@ -93,7 +93,11 @@ class TestSQLite(Validator):
                     self.assertEqual(connection.execute(sql).fetchone(), fields)
 
                 for query, expected in (
-                    ("SELECT 2020 / 3 > 673", (0 if dialect == "postgres" else 1,)),
+                    ("SELECT 2020 / 3 > 673", (1,)),
+                    (
+                        "SELECT CAST(2020 AS INTEGER) / 3 > 673",
+                        (0 if dialect == "postgres" else 1,),
+                    ),
                     ("SELECT -EXTRACT(YEAR FROM DATE '2020-06-01') / 3 < -673", (1,)),
                     ("SELECT EXTRACT(YEAR FROM CAST(NULL AS DATE)) / 3 IS NULL", (1,)),
                     (
@@ -124,6 +128,85 @@ class TestSQLite(Validator):
                         self.assertEqual(connection.execute(sql).fetchone(), expected)
         finally:
             connection.close()
+
+    def test_integer_division_dividend_is_real(self):
+        # SQLite divides two INTEGER values with truncation. A source `/` that may truncate
+        # (typed: PostgreSQL, Netezza, MySQL...) is written as an exact quotient unless an
+        # operand is already REAL or both operands are explicit integers (an integer CAST).
+        for source in ("netezza", "postgres", "mysql", "duckdb"):
+            with self.subTest(source=source):
+                self.validate_all(
+                    "SELECT CAST(a AS REAL) / b, CAST(SUM(a) AS REAL) / SUM(b), "
+                    "CAST((a + 1) AS REAL) / 2, CAST(COUNT(*) AS REAL) / COUNT(b), "
+                    "CAST(1000 AS REAL) / 10",
+                    read={
+                        source: "SELECT a / b, SUM(a) / SUM(b), (a + 1) / 2, COUNT(*) / COUNT(b), 1000 / 10"
+                    },
+                )
+        for source in ("netezza", "postgres"):
+            with self.subTest(source=source):
+                self.validate_all(
+                    "SELECT a / 2.0, 100.00 * a / b, (CAST(a AS REAL) / b) / c, "
+                    "CAST(a AS REAL) / b / c, a / CAST(b AS REAL), AVG(a) / b, "
+                    "CAST(a AS INTEGER) / 3, CAST(a AS INTEGER) / CAST(b AS INTEGER), "
+                    "(CAST(a AS INTEGER) + 1) / 2",
+                    read={
+                        source: "SELECT a / 2.0, 100.00 * a / b, (a / b) / c, a / b / c, "
+                        "a / CAST(b AS DOUBLE PRECISION), AVG(a) / b, CAST(a AS INT) / 3, "
+                        "CAST(a AS INT) / CAST(b AS INT), (CAST(a AS INT) + 1) / 2"
+                    },
+                )
+
+    @requires_engine("sqlite")
+    @requires_engine("duckdb")
+    def test_integer_division_ratio_execution(self):
+        # TPC-DS Q21 shape: a ratio of two integer SUMs inside BETWEEN 2.0/3.0 AND 3.0/2.0.
+        # DuckDB divides exactly and is the oracle for the rows SQLite must return.
+        setup = (
+            "CREATE TABLE inv (w VARCHAR, item VARCHAR, d VARCHAR, q INTEGER)",
+            "INSERT INTO inv VALUES "
+            "('W1', 'a', '2000-01-01', 3), ('W1', 'a', '2000-02-01', 4), "
+            "('W1', 'b', '2000-01-01', 3), ('W1', 'b', '2000-02-01', 2), "
+            "('W1', 'c', '2000-01-01', 2), ('W1', 'c', '2000-02-01', 2), "
+            "('W1', 'd', '2000-01-01', 1), ('W1', 'd', '2000-02-01', 2), "
+            "('W1', 'e', '2000-01-01', 0), ('W1', 'e', '2000-02-01', 5)",
+        )
+        ratio = (
+            "SELECT * FROM (SELECT w, item, "
+            "SUM(CASE WHEN d < '2000-01-15' THEN q ELSE 0 END) AS inv_before, "
+            "SUM(CASE WHEN d >= '2000-01-15' THEN q ELSE 0 END) AS inv_after "
+            "FROM inv GROUP BY w, item) AS x "
+            "WHERE (CASE WHEN inv_before > 0 THEN inv_after / inv_before ELSE NULL END) "
+            "BETWEEN 2.0 / 3.0 AND 3.0 / 2.0 ORDER BY w, item"
+        )
+        quotients = (
+            "SELECT item, SUM(q) / COUNT(*), CAST(SUM(q) AS INTEGER) / 2, SUM(q) / 2.0, "
+            "(1000 - 64) / 10, 7 / 2 FROM inv GROUP BY item ORDER BY item"
+        )
+        for source in ("netezza", "postgres", "duckdb"):
+            for query in (ratio, quotients):
+                with self.subTest(source=source, query=query[:40]):
+                    results = {}
+                    for engine, target in (("sqlite", "sqlite"), ("duckdb", "duckdb")):
+                        with engines.connect(engine) as connection:
+                            for statement in setup:
+                                connection.execute(statement)
+                            translated = parse_one(query, read=source).sql(target)
+                            results[engine] = connection.execute(translated)
+                    if query is ratio:
+                        self.assertEqual(
+                            results["duckdb"],
+                            [("W1", "a", 3, 4), ("W1", "b", 3, 2), ("W1", "c", 2, 2)],
+                        )
+                        self.assertEqual(results["sqlite"], results["duckdb"])
+                    else:
+                        # Every quotient but the explicit CAST(...) one is exact on both engines.
+                        for sqlite_row, duckdb_row in zip(results["sqlite"], results["duckdb"]):
+                            self.assertEqual(sqlite_row[0], duckdb_row[0])
+                            self.assertAlmostEqual(sqlite_row[1], duckdb_row[1])
+                            self.assertAlmostEqual(sqlite_row[3], duckdb_row[3])
+                            self.assertAlmostEqual(sqlite_row[4], 93.6)
+                            self.assertAlmostEqual(sqlite_row[5], 3.5)
 
     def test_date_interval_arithmetic(self):
         for operator, amount in (("+", "5"), ("-", "-5")):

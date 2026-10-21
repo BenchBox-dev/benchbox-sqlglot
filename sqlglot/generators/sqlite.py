@@ -17,7 +17,6 @@ from sqlglot.dialects.dialect import (
     strposition_sql,
 )
 from sqlglot.generator import unsupported_args
-from sqlglot.errors import OptimizeError
 from sqlglot.helper import is_int
 from sqlglot.tokens import TokenType
 
@@ -235,69 +234,79 @@ class SQLiteGenerator(generator.Generator):
         self.unsupported("SQLite AUTOINCREMENT requires an INTEGER PRIMARY KEY")
         return ""
 
-    _extraction_division_casts: dict[int, bool | None] | None = None
+    @staticmethod
+    def _explicit_integer(node: exp.Expr) -> tuple[bool, bool]:
+        """
+        Whether `node` is integer-valued by its own syntax, and whether that rests on an explicit
+        CAST to an integer type: integer literals, such casts and arithmetic over them.
+        """
+        while isinstance(node, (exp.Paren, exp.Neg)):
+            node = node.this
+        if isinstance(node, exp.Literal):
+            return node.is_int, False
+        if isinstance(node, exp.Cast):
+            return node.to.is_type(*exp.DataType.INTEGER_TYPES), True
+        if isinstance(node, (exp.Add, exp.Sub, exp.Mul, exp.Mod, exp.IntDiv, exp.Div)):
+            if isinstance(node, exp.Div) and not node.args.get("typed"):
+                return False, False
+            left, left_cast = SQLiteGenerator._explicit_integer(node.this)
+            right, right_cast = SQLiteGenerator._explicit_integer(node.expression)
+            return left and right, left_cast or right_cast
+        return False, False
 
-    def preprocess(self, expression: exp.Expr) -> exp.Expr:
-        self._extraction_division_casts = None
-        return super().preprocess(expression)
+    @staticmethod
+    def _real_valued(node: exp.Expr) -> bool:
+        """Whether SQLite evaluates `node` to REAL by its own syntax."""
+        while isinstance(node, (exp.Paren, exp.Neg)):
+            node = node.this
+        if isinstance(node, exp.Literal):
+            return node.is_number and not node.is_int
+        if isinstance(node, exp.Cast):
+            return node.to.is_type(*exp.DataType.REAL_TYPES)
+        if isinstance(node, exp.Avg):
+            return True
+        if isinstance(node, (exp.Add, exp.Sub, exp.Mul, exp.Mod)):
+            return SQLiteGenerator._real_valued(node.this) or SQLiteGenerator._real_valued(
+                node.expression
+            )
+        if isinstance(node, exp.Div):
+            # A division is REAL unless it is an explicit integer division (see div_sql).
+            return not SQLiteGenerator._truncating_division(node)
+        return False
 
-    def _resolve_extraction_divisions(self, expression: exp.Expr) -> dict[int, bool | None]:
-        root = expression.root()
-        if not any(
-            extract.args.get("return_type")
-            and extract.args["return_type"].is_type(exp.DType.DECIMAL)
-            for extract in root.find_all(exp.Extract)
+    @staticmethod
+    def _truncating_division(expression: exp.Div) -> bool:
+        if not expression.args.get("typed"):
+            return False
+        # SQLite divides two INTEGER values with truncation, and a column or aggregate that
+        # looks decimal can still hold INTEGER storage, so without a schema only an explicit
+        # CAST to an integer type asserts that the quotient is meant to truncate.
+        left, left_cast = SQLiteGenerator._explicit_integer(expression.this)
+        right, right_cast = SQLiteGenerator._explicit_integer(expression.expression)
+        return left and right and (left_cast or right_cast)
+
+    def _exact_quotients(self, expression: exp.Div) -> None:
+        # `binary` writes directly nested divisions (a / b / c) without calling div_sql for the
+        # inner ones, so the whole chain is resolved here, innermost first.
+        for operand in (expression.this, expression.expression):
+            if isinstance(operand, exp.Div):
+                self._exact_quotients(operand)
+        # A source `/` that may truncate integers (typed) writes a quotient SQLite computes
+        # exactly: the dividend becomes REAL unless an operand already is REAL or both operands
+        # are explicit integers (CAST to an integer type, with integer literals).
+        if (
+            expression.args.get("typed")
+            and not self._truncating_division(expression)
+            and not self._real_valued(expression.this)
+            and not self._real_valued(expression.expression)
         ):
-            return {}
-
-        from sqlglot.optimizer.annotate_types import annotate_types
-        from sqlglot.optimizer.qualify_columns import qualify_columns
-
-        # Whole date parts fit SQLite INTEGER, but PostgreSQL's decimal EXTRACT
-        # still requires fractional division, including through CTE aliases.
-        # Resolve on a copy so qualification cannot alter emitted column names.
-        annotated = root.copy()
-        divisions = {
-            id(original): copied
-            for original, copied in zip(root.find_all(exp.Div), annotated.find_all(exp.Div))
-        }
-        try:
-            if annotated.find(exp.Column):
-                qualify_columns(annotated, schema={}, expand_stars=False, dialect=self.dialect)
-            annotate_types(annotated, dialect=self.dialect, overwrite_types=False)
-        except OptimizeError as error:
-            self.unsupported(f"Cannot resolve SQLite extraction division types: {error}")
-            return {}
-
-        casts: dict[int, bool | None] = {}
-        for key, division in divisions.items():
-            left, right = division.this, division.expression
-            if left.is_type(exp.DType.DECIMAL) or right.is_type(exp.DType.DECIMAL):
-                casts[key] = True
-            elif (
-                not left.type
-                or not right.type
-                or left.is_type(exp.DType.UNKNOWN)
-                or right.is_type(exp.DType.UNKNOWN)
-            ):
-                casts[key] = None
-            else:
-                casts[key] = False
-        return casts
+            expression.set(
+                "this",
+                exp.Cast(this=expression.this, to=exp.DataType.build(exp.DType.DOUBLE)),
+            )
 
     def div_sql(self, expression: exp.Div) -> str:
-        if expression.args.get("typed"):
-            if self._extraction_division_casts is None:
-                self._extraction_division_casts = self._resolve_extraction_divisions(expression)
-            if self._extraction_division_casts:
-                needs_cast = self._extraction_division_casts.get(id(expression))
-                if needs_cast:
-                    expression.set(
-                        "this",
-                        exp.Cast(this=expression.this, to=exp.DataType.build(exp.DType.DOUBLE)),
-                    )
-                elif needs_cast is None:
-                    self.unsupported("SQLite extraction division requires known operand types")
+        self._exact_quotients(expression)
         return super().div_sql(expression)
 
     def _annotated(self, node: exp.Expr) -> exp.Expr:
