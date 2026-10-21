@@ -68,6 +68,13 @@ class TestDropLiteralRowSource(unittest.TestCase):
             "SELECT * FROM (SELECT 1) AS dual",
             "SELECT 0 FROM (SELECT 1) AS dual, t",
             "SELECT 0 FROM (SELECT 1) AS dual JOIN t ON TRUE",
+            "SELECT 0 FROM (SELECT 1 FROM t) AS dual",
+            "SELECT 0 FROM (SELECT 1 WHERE FALSE) AS dual",
+            "SELECT 0 FROM (SELECT 1 LIMIT 0) AS dual",
+            "SELECT COUNT(*) FROM (SELECT 1 FROM t) AS dual",
+            "SELECT 0 FROM (SELECT DISTINCT 1) AS dual",
+            "SELECT 0 FROM (SELECT 1 GROUP BY 1) AS dual",
+            "SELECT 0 FROM (SELECT 1 HAVING FALSE) AS dual",
         ):
             with self.subTest(query=query):
                 self.assertEqual(

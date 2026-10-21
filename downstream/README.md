@@ -118,7 +118,10 @@ every gate (which columns, which alias, which keys) to the caller and returns a 
   `agg(IF(cond, x, NULL))` for everything else; `windows_only=True` leaves ordinary aggregates alone. The
   BigQuery generator already writes this form without a rewrite.
 - `drop_literal_row_source(expression, alias)` removes the one-row `(SELECT 1) AS alias` source from a
-  `SELECT` that never reads it, leaving a `FROM`-less `SELECT 0 AS r WHERE FALSE`. No rewrite writes
+  `SELECT` that never reads it, leaving a `FROM`-less `SELECT 0 AS r WHERE FALSE`. The inner `SELECT`
+  must be provably one row (a lone numeric literal with no `FROM`, `WHERE`, `LIMIT`, `GROUP BY`,
+  `HAVING`, `DISTINCT` or other clause), so `(SELECT 1 FROM t)` or `(SELECT 1 WHERE FALSE)` keep their
+  row counts. No rewrite writes
   `FROM VALUES (1)`, `(VALUES (1)) AS d(c)`, `system.one` or `dual`: the `FROM`-less form runs on
   PostgreSQL, DuckDB, DataFusion, Spark, ClickHouse, SQLite, StarRocks and Doris (BigQuery needs
   `add_row_source_to_fromless_selects` afterwards). `name_literal_subquery_columns(expression, column)`
