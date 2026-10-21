@@ -80,6 +80,12 @@ distribution clauses, Redshift Spectrum tables and the `pg_mooncake` statements 
 below).
 `tests/test_questdb_execution.py` runs in the `questdb` job: it executes the QuestDB
 generator's comma-join expansion, `DATEADD`, `SUBSTRING` and CTE column list output.
+`tests/test_benchbox_ddl_parity.py` runs in the `in-process`, `postgres` and `questdb` jobs. In the
+`questdb` job it creates tables from `transpile_ddl` output on QuestDB and reads back the `SYMBOL` and
+`TIMESTAMP` column types, the designated timestamp and the partitioning; QuestDB rejects `VARCHAR(n)`,
+`CHAR(n)` and fixed-size arrays, so those are written without the length. The BigQuery
+`PRIMARY KEY` / `FOREIGN KEY ... NOT ENFORCED` and table-name output is golden output (the BigQuery row
+below).
 
 `tests/test_engine_rewrites_execution.py` runs in the `in-process`, `starrocks` and `doris` jobs. On chDB it
 executes the ClickHouse rewrites (lowercased identifiers, decimal zero literals with the zero-divisor

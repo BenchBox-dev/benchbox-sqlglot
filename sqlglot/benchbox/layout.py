@@ -13,6 +13,9 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 
 
+_TIME_PARTITIONS = ("NONE", "HOUR", "DAY", "WEEK", "MONTH", "YEAR")
+
+
 def _names(value: str | Sequence[str]) -> tuple[str, ...]:
     return (value,) if isinstance(value, str) else tuple(value)
 
@@ -46,6 +49,8 @@ class TableLayout:
     T-SQL (Synapse)    ``distribution`` (``round_robin``, ``replicate`` or ``hash`` with
                        ``distribute_by``), ``properties``
     PostgreSQL         ``format`` (the table access method, ``USING <format>``)
+    QuestDB            ``symbol_columns``, ``timestamp_columns``, ``designated_timestamp``,
+                       ``time_partition``
     ================== ====================================================================
 
     Attributes:
@@ -91,6 +96,18 @@ class TableLayout:
             statement's own primary key are never ``Nullable``. ``None`` keeps SQLGlot's
             ``Nullable`` wrapping for columns without ``NOT NULL`` and writes a plain type
             for the columns with it.
+        symbol_columns: QuestDB: string columns written as ``SYMBOL`` (an interned, indexed-friendly
+            type for low-cardinality text). A ``SYMBOL`` is nullable, so ``NOT NULL`` is
+            dropped from these columns; names the statement does not define are ignored.
+        timestamp_columns: QuestDB: ``DATE`` or ``TIMESTAMP`` columns written as ``TIMESTAMP``
+            (QuestDB's ``DATE`` is the legacy millisecond type); names the statement does not
+            define, or defines with another type, are ignored.
+        designated_timestamp: QuestDB: the column written as ``timestamp(col)``, the table's
+            designated timestamp. It is written as ``TIMESTAMP`` and must be a ``DATE`` or
+            ``TIMESTAMP`` column of the statement (a ``ValueError`` otherwise).
+        time_partition: QuestDB partitioning of the designated timestamp: ``NONE``, ``HOUR``,
+            ``DAY``, ``WEEK``, ``MONTH`` or ``YEAR``. Anything but ``NONE`` needs
+            ``designated_timestamp``.
     """
 
     engine: str | None = None
@@ -114,6 +131,10 @@ class TableLayout:
     line_delimiter: str | None = None
     properties: Mapping[str, str] = field(default_factory=dict)
     nullable_columns: Collection[str] | None = None
+    symbol_columns: Sequence[str] = ()
+    timestamp_columns: Sequence[str] = ()
+    designated_timestamp: str | None = None
+    time_partition: str | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -123,6 +144,8 @@ class TableLayout:
             "cluster_by",
             "distribute_by",
             "key_columns",
+            "symbol_columns",
+            "timestamp_columns",
         ):
             object.__setattr__(self, name, _names(getattr(self, name)))
         object.__setattr__(self, "properties", MappingProxyType(dict(self.properties)))
@@ -130,6 +153,14 @@ class TableLayout:
             object.__setattr__(self, "distribution", self.distribution.lower())
         if self.key_model is not None:
             object.__setattr__(self, "key_model", self.key_model.lower())
+        if self.time_partition is not None:
+            unit = self.time_partition.upper()
+            if unit not in _TIME_PARTITIONS:
+                raise ValueError(
+                    f"time_partition must be one of {', '.join(_TIME_PARTITIONS)}, "
+                    f"not {self.time_partition!r}"
+                )
+            object.__setattr__(self, "time_partition", unit)
         if self.nullable_columns is not None:
             object.__setattr__(
                 self, "nullable_columns", frozenset(c.lower() for c in self.nullable_columns)

@@ -14,9 +14,13 @@ from types import MappingProxyType
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.benchbox.ddl_engines import apply_layout, drop_array_sizes
 from sqlglot.benchbox.layout import TableLayout, frozen_layouts
-from sqlglot.benchbox.ddl_engines import apply_layout
+from sqlglot.dialects.bigquery import BigQuery
 from sqlglot.dialects.dialect import Dialect, DialectType
+from sqlglot.dialects.duckdb import DuckDB
+from sqlglot.dialects.postgres import Postgres
+from sqlglot.dialects.questdb import QuestDB
 
 
 def _frozen_columns(
@@ -83,8 +87,14 @@ class DdlOptions:
         strip_not_null: remove ``NOT NULL`` from columns.
         if_not_exists: write ``CREATE TABLE IF NOT EXISTS`` for a permanent ``CREATE TABLE``
             that does not say it (and is not turned into ``CREATE OR REPLACE``).
-        schema: qualify table names that have no schema with this one.
+        schema: qualify table names that have no schema with this one; a dotted value is read
+            as ``catalog.schema`` (BigQuery ``project.dataset``). The tables a ``REFERENCES``
+            clause names are qualified, suffixed and re-cased the same way, so they keep
+            pointing at the tables this run creates.
         table_suffix: appended to every ``CREATE TABLE`` name.
+        table_case: ``upper`` or ``lower`` to write table names in that case, for engines whose
+            table names are case-sensitive (BigQuery) when the callers refer to them in one
+            case. Applies to the created table and to the tables a ``REFERENCES`` clause names.
         layouts: table name to the ``TableLayout`` written for that table. Names are matched
             case-insensitively, without any schema qualifier.
         default_layout: the ``TableLayout`` for permanent tables that have no entry in
@@ -109,6 +119,7 @@ class DdlOptions:
     if_not_exists: bool = False
     schema: str | None = None
     table_suffix: str = ""
+    table_case: str | None = None
     layouts: Mapping[str, TableLayout] = field(default_factory=dict)
     default_layout: TableLayout | None = None
 
@@ -124,6 +135,11 @@ class DdlOptions:
             frozenset(name.upper() for name in self.drop_type_parameters),
         )
         object.__setattr__(self, "layouts", frozen_layouts(self.layouts))
+        if self.table_case is not None:
+            case = self.table_case.lower()
+            if case not in ("upper", "lower"):
+                raise ValueError(f"table_case must be 'upper' or 'lower', not {self.table_case!r}")
+            object.__setattr__(self, "table_case", case)
 
 
 def shard_key_clause(
@@ -288,14 +304,100 @@ def _exists(create: exp.Create, options: DdlOptions) -> None:
         create.set("exists", True)
 
 
+def _qualify(table: exp.Table, options: DdlOptions) -> None:
+    name = table.name + options.table_suffix
+    if options.table_case:
+        name = name.upper() if options.table_case == "upper" else name.lower()
+    if name != table.name:
+        table.set("this", exp.to_identifier(name, quoted=table.this.args.get("quoted") or None))
+    if options.schema and not table.args.get("db"):
+        *catalog, schema = options.schema.split(".")
+        table.set("db", exp.to_identifier(schema))
+        if catalog and not table.args.get("catalog"):
+            table.set("catalog", exp.to_identifier(".".join(catalog)))
+
+
 def _name(create: exp.Create, options: DdlOptions) -> None:
     table = create.this.this if isinstance(create.this, exp.Schema) else create.this
     if not isinstance(table, exp.Table):
         return
-    if options.table_suffix:
-        table.set("this", exp.to_identifier(table.name + options.table_suffix))
-    if options.schema and not table.args.get("db"):
-        table.set("db", exp.to_identifier(options.schema))
+    _qualify(table, options)
+    for reference in create.find_all(exp.Reference):
+        target = reference.this.this if isinstance(reference.this, exp.Schema) else reference.this
+        if isinstance(target, exp.Table):
+            _qualify(target, options)
+
+
+def _keeps_array_sizes(target: Dialect) -> bool:
+    """DuckDB and PostgreSQL take ``FLOAT[3]``; every other engine's array type has no size."""
+    return isinstance(target, DuckDB) or (isinstance(target, Postgres) and not isinstance(target, QuestDB))
+
+
+def _questdb_types(create: exp.Create) -> None:
+    """QuestDB column types take no length: ``VARCHAR(25)`` and ``CHAR(25)`` are ``VARCHAR``.
+
+    A ``CHAR`` without a length stays QuestDB's single-character type; ``TIMESTAMP(6)`` loses its precision.
+    """
+    schema = create.this
+    if not isinstance(schema, exp.Schema):
+        return
+    for column in schema.find_all(exp.ColumnDef):
+        kind = column.args.get("kind")
+        if not isinstance(kind, exp.DataType):
+            continue
+        for data_type in kind.find_all(exp.DataType):
+            if not data_type.expressions:
+                continue
+            if data_type.is_type(exp.DType.CHAR, exp.DType.NCHAR, exp.DType.BPCHAR):
+                data_type.set("this", exp.DType.VARCHAR)
+                data_type.set("expressions", [])
+            elif data_type.is_type(exp.DType.VARCHAR, exp.DType.NVARCHAR, exp.DType.TIMESTAMP):
+                data_type.set("expressions", [])
+
+
+_NOT_ENFORCED = "NOT ENFORCED"
+
+
+def _not_enforced(node: exp.Expr) -> None:
+    options = node.args.get("options") or []
+    if not any(str(getattr(option, "name", option)).upper() == _NOT_ENFORCED for option in options):
+        node.set("options", [*options, exp.var(_NOT_ENFORCED)])
+
+
+def _bigquery_constraints(create: exp.Create) -> None:
+    """BigQuery takes ``PRIMARY KEY`` and ``FOREIGN KEY`` only as table-level, ``NOT ENFORCED`` clauses.
+
+    An inline ``PRIMARY KEY`` or ``REFERENCES`` becomes a table-level constraint, and every key
+    constraint is marked ``NOT ENFORCED``, the only mode BigQuery supports.
+    """
+    schema = create.this
+    if not isinstance(schema, exp.Schema):
+        return
+
+    primary: list[exp.Expr] = []
+    foreign: list[exp.ForeignKey] = []
+    for column in schema.find_all(exp.ColumnDef):
+        for constraint in list(column.args.get("constraints") or []):
+            kind = constraint.args.get("kind")
+            if isinstance(kind, exp.PrimaryKeyColumnConstraint):
+                primary.append(column.this.copy())
+                constraint.pop()
+            elif isinstance(kind, exp.Reference):
+                foreign.append(
+                    exp.ForeignKey(expressions=[column.this.copy()], reference=kind.copy())
+                )
+                constraint.pop()
+
+    has_table_key = any(isinstance(node, exp.PrimaryKey) for node in schema.find_all(exp.PrimaryKey))
+    if primary and not has_table_key:
+        schema.append("expressions", exp.PrimaryKey(expressions=primary))
+    for item in foreign:
+        schema.append("expressions", item)
+
+    for key in schema.find_all(exp.PrimaryKey):
+        _not_enforced(key)
+    for reference in schema.find_all(exp.Reference):
+        _not_enforced(reference)
 
 
 def transpile_ddl(
@@ -338,6 +440,8 @@ def transpile_ddl(
             if options.strip_not_null:
                 _strip_not_null(tree)
             _map_types(tree, options)
+            if isinstance(target, QuestDB):
+                _questdb_types(tree)
             _replace(tree, options)
             _exists(tree, options)
             if options.singlestore is not None:
@@ -345,6 +449,10 @@ def transpile_ddl(
             layout = options.layouts.get(table) or options.default_layout
             if layout is not None and _is_permanent_table(tree):
                 tail = apply_layout(tree, layout, target, opts, source_primary_key)
+            if not _keeps_array_sizes(target) and isinstance(tree.this, exp.Schema):
+                drop_array_sizes(list(tree.this.find_all(exp.ColumnDef)))
+            if isinstance(target, BigQuery):
+                _bigquery_constraints(tree)
             _name(tree, options)
         text = target.generate(tree, copy=False, **opts)
         if tail:
