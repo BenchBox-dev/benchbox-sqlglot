@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index 3c9813dd..7b27f745 100644
+index 3c9813dd..95b6dcc7 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
 @@ -17,7 +17,6 @@ from sqlglot.dialects.dialect import (
@@ -10,7 +10,7 @@ index 3c9813dd..7b27f745 100644
  from sqlglot.helper import is_int
  from sqlglot.tokens import TokenType
  
-@@ -235,69 +234,79 @@ class SQLiteGenerator(generator.Generator):
+@@ -235,69 +234,81 @@ class SQLiteGenerator(generator.Generator):
          self.unsupported("SQLite AUTOINCREMENT requires an INTEGER PRIMARY KEY")
          return ""
  
@@ -27,24 +27,24 @@ index 3c9813dd..7b27f745 100644
 -            and extract.args["return_type"].is_type(exp.DType.DECIMAL)
 -            for extract in root.find_all(exp.Extract)
 +    @staticmethod
-+    def _explicit_integer(node: exp.Expr) -> tuple[bool, bool]:
++    def _explicit_integer(node: exp.Expr) -> bool:
 +        """
-+        Whether `node` is integer-valued by its own syntax, and whether that rests on an explicit
-+        CAST to an integer type: integer literals, such casts and arithmetic over them.
++        Whether `node` is integer-valued by its own syntax: an integer literal, a CAST to an
++        integer type, or arithmetic over them.
 +        """
 +        while isinstance(node, (exp.Paren, exp.Neg)):
 +            node = node.this
 +        if isinstance(node, exp.Literal):
-+            return node.is_int, False
++            return node.is_int
 +        if isinstance(node, exp.Cast):
-+            return node.to.is_type(*exp.DataType.INTEGER_TYPES), True
++            return node.to.is_type(*exp.DataType.INTEGER_TYPES)
 +        if isinstance(node, (exp.Add, exp.Sub, exp.Mul, exp.Mod, exp.IntDiv, exp.Div)):
 +            if isinstance(node, exp.Div) and not node.args.get("typed"):
-+                return False, False
-+            left, left_cast = SQLiteGenerator._explicit_integer(node.this)
-+            right, right_cast = SQLiteGenerator._explicit_integer(node.expression)
-+            return left and right, left_cast or right_cast
-+        return False, False
++                return False
++            return SQLiteGenerator._explicit_integer(
++                node.this
++            ) and SQLiteGenerator._explicit_integer(node.expression)
++        return False
 +
 +    @staticmethod
 +    def _real_valued(node: exp.Expr) -> bool:
@@ -71,11 +71,12 @@ index 3c9813dd..7b27f745 100644
 +        if not expression.args.get("typed"):
 +            return False
 +        # SQLite divides two INTEGER values with truncation, and a column or aggregate that
-+        # looks decimal can still hold INTEGER storage, so without a schema only an explicit
-+        # CAST to an integer type asserts that the quotient is meant to truncate.
-+        left, left_cast = SQLiteGenerator._explicit_integer(expression.this)
-+        right, right_cast = SQLiteGenerator._explicit_integer(expression.expression)
-+        return left and right and (left_cast or right_cast)
++        # looks decimal can still hold INTEGER storage, so without a schema only operands that
++        # are integer by syntax (literals, CASTs to an integer type) keep the source's
++        # truncating division; `2020 / 3` from PostgreSQL stays 673.
++        return SQLiteGenerator._explicit_integer(
++            expression.this
++        ) and SQLiteGenerator._explicit_integer(expression.expression)
 +
 +    def _exact_quotients(self, expression: exp.Div) -> None:
 +        # `binary` writes directly nested divisions (a / b / c) without calling div_sql for the
@@ -85,7 +86,8 @@ index 3c9813dd..7b27f745 100644
 +                self._exact_quotients(operand)
 +        # A source `/` that may truncate integers (typed) writes a quotient SQLite computes
 +        # exactly: the dividend becomes REAL unless an operand already is REAL or both operands
-+        # are explicit integers (CAST to an integer type, with integer literals).
++        # are integer by syntax (integer literals, CASTs to an integer type), which keep the
++        # source's truncating division.
 +        if (
 +            expression.args.get("typed")
 +            and not self._truncating_division(expression)
@@ -151,15 +153,13 @@ index 3c9813dd..7b27f745 100644
  
      def _annotated(self, node: exp.Expr) -> exp.Expr:
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index c2d52127..0d283c9c 100644
+index c2d52127..0f826d8a 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
-@@ -93,7 +93,11 @@ class TestSQLite(Validator):
-                     self.assertEqual(connection.execute(sql).fetchone(), fields)
+@@ -94,6 +94,10 @@ class TestSQLite(Validator):
  
                  for query, expected in (
--                    ("SELECT 2020 / 3 > 673", (0 if dialect == "postgres" else 1,)),
-+                    ("SELECT 2020 / 3 > 673", (1,)),
+                     ("SELECT 2020 / 3 > 673", (0 if dialect == "postgres" else 1,)),
 +                    (
 +                        "SELECT CAST(2020 AS INTEGER) / 3 > 673",
 +                        (0 if dialect == "postgres" else 1,),
@@ -167,24 +167,34 @@ index c2d52127..0d283c9c 100644
                      ("SELECT -EXTRACT(YEAR FROM DATE '2020-06-01') / 3 < -673", (1,)),
                      ("SELECT EXTRACT(YEAR FROM CAST(NULL AS DATE)) / 3 IS NULL", (1,)),
                      (
-@@ -125,6 +129,85 @@ class TestSQLite(Validator):
+@@ -125,6 +129,95 @@ class TestSQLite(Validator):
          finally:
              connection.close()
  
 +    def test_integer_division_dividend_is_real(self):
 +        # SQLite divides two INTEGER values with truncation. A source `/` that may truncate
 +        # (typed: PostgreSQL, Netezza, MySQL...) is written as an exact quotient unless an
-+        # operand is already REAL or both operands are explicit integers (an integer CAST).
++        # operand is already REAL or both operands are integer by syntax (integer literals,
++        # integer CASTs), which keep the source's truncating division.
 +        for source in ("netezza", "postgres", "mysql", "duckdb"):
 +            with self.subTest(source=source):
 +                self.validate_all(
 +                    "SELECT CAST(a AS REAL) / b, CAST(SUM(a) AS REAL) / SUM(b), "
-+                    "CAST((a + 1) AS REAL) / 2, CAST(COUNT(*) AS REAL) / COUNT(b), "
-+                    "CAST(1000 AS REAL) / 10",
++                    "CAST((a + 1) AS REAL) / 2, CAST(COUNT(*) AS REAL) / COUNT(b)",
 +                    read={
-+                        source: "SELECT a / b, SUM(a) / SUM(b), (a + 1) / 2, COUNT(*) / COUNT(b), 1000 / 10"
++                        source: "SELECT a / b, SUM(a) / SUM(b), (a + 1) / 2, COUNT(*) / COUNT(b)"
 +                    },
 +                )
++        for source in ("netezza", "postgres"):
++            with self.subTest(source=source):
++                self.validate_all(
++                    "SELECT 2020 / 3, (1000 - 64) / 10, 7 / 2 / 2",
++                    read={source: "SELECT 2020 / 3, (1000 - 64) / 10, 7 / 2 / 2"},
++                )
++        self.validate_all(
++            "SELECT CAST(2020 AS REAL) / 3, CAST((1000 - 64) AS REAL) / 10",
++            read={"duckdb": "SELECT 2020 / 3, (1000 - 64) / 10"},
++        )
 +        for source in ("netezza", "postgres"):
 +            with self.subTest(source=source):
 +                self.validate_all(
@@ -247,8 +257,8 @@ index c2d52127..0d283c9c 100644
 +                            self.assertEqual(sqlite_row[0], duckdb_row[0])
 +                            self.assertAlmostEqual(sqlite_row[1], duckdb_row[1])
 +                            self.assertAlmostEqual(sqlite_row[3], duckdb_row[3])
-+                            self.assertAlmostEqual(sqlite_row[4], 93.6)
-+                            self.assertAlmostEqual(sqlite_row[5], 3.5)
++                            literals = (93.6, 3.5) if source == "duckdb" else (93, 3)
++                            self.assertEqual(sqlite_row[4:6], literals)
 +
      def test_date_interval_arithmetic(self):
          for operator, amount in (("+", "5"), ("-", "-5")):
