@@ -51,7 +51,7 @@ def smoke(*, coexist: bool = False, upstream_first: bool = False) -> None:
         unsupported_level=fork.ErrorLevel.RAISE,
     )[0]
     with sqlite3.connect(":memory:") as connection:
-        assert connection.execute(sql).fetchone() == (1012.0, "2024-03-01 00:00:00")
+        assert connection.execute(sql).fetchone() == (1012.0, "2024-03-01")
     marked = "SELECT 'sqlglot.parser', a /* sqlglot.meta x */ FROM t"
     assert "/* sqlglot.meta x */" in fork.parse_one(marked).sql()
     assert "'sqlglot.parser'" in fork.parse_one(marked).sql()

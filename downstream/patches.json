@@ -309,6 +309,23 @@
       "patch": "downstream/patches/sqlite-date-day-arithmetic.patch"
     },
     {
+      "id": "sqlite-day-offset-date",
+      "source": "7b929efa68cdd9a924c11f67b2f9dcac6712aa9a",
+      "status": "carried",
+      "depends": [
+        "sqlite-date-day-arithmetic"
+      ],
+      "paths": [
+        "sqlglot/generators/sqlite.py",
+        "tests/dialects/test_sqlite.py"
+      ],
+      "tests": [
+        "tests.dialects.test_sqlite"
+      ],
+      "reason": "Write a whole-day offset of a DATE (DATE +/- INTERVAL n DAY) as DATE(x, 'n DAY') instead of DATETIME(x, 'n DAY'): DATETIME returns 'YYYY-MM-DD 00:00:00', which sorts after the date text of a DATE column, so d BETWEEN DATETIME(.., '-30 DAY') AND .. dropped the lower boundary day (TPC-DS Q21/Q40). HOUR, MINUTE and SECOND offsets keep DATETIME; TIMESTAMP operands stay Unsupported.",
+      "patch": "downstream/patches/sqlite-day-offset-date.patch"
+    },
+    {
       "id": "snowflake-regexp-replace-groups",
       "source": "78c5cfc3060ef68131bfb7f1bde978e506447dad",
       "status": "carried",

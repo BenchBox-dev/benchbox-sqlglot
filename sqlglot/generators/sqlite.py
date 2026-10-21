@@ -429,7 +429,9 @@ class SQLiteGenerator(generator.Generator):
         unit = interval.unit.name.upper()
         if unit in ("DAY", "HOUR", "MINUTE", "SECOND"):
             modifier = exp.Literal.string(f"{amount} {unit}")
-            return self.func("DATETIME", date, modifier)
+            # A whole-day offset of a DATE is a DATE: DATETIME() would return
+            # 'YYYY-MM-DD 00:00:00', which sorts after the date text it is compared with.
+            return self.func("DATE" if unit == "DAY" else "DATETIME", date, modifier)
         if unit in ("MONTH", "YEAR") and isinstance(date, (exp.Cast, exp.Date)):
             # SQLite carries an overflowing month end into the next month, while the
             # source engines clamp it, so only inputs that cannot overflow are lowered:

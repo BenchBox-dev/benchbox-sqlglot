@@ -1,0 +1,158 @@
+diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
+index 37971340..3c9813dd 100644
+--- a/sqlglot/generators/sqlite.py
++++ b/sqlglot/generators/sqlite.py
+@@ -429,7 +429,9 @@ class SQLiteGenerator(generator.Generator):
+         unit = interval.unit.name.upper()
+         if unit in ("DAY", "HOUR", "MINUTE", "SECOND"):
+             modifier = exp.Literal.string(f"{amount} {unit}")
+-            return self.func("DATETIME", date, modifier)
++            # A whole-day offset of a DATE is a DATE: DATETIME() would return
++            # 'YYYY-MM-DD 00:00:00', which sorts after the date text it is compared with.
++            return self.func("DATE" if unit == "DAY" else "DATETIME", date, modifier)
+         if unit in ("MONTH", "YEAR") and isinstance(date, (exp.Cast, exp.Date)):
+             # SQLite carries an overflowing month end into the next month, while the
+             # source engines clamp it, so only inputs that cannot overflow are lowered:
+diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
+index 5b376bbb..c2d52127 100644
+--- a/tests/dialects/test_sqlite.py
++++ b/tests/dialects/test_sqlite.py
+@@ -128,19 +128,20 @@ class TestSQLite(Validator):
+     def test_date_interval_arithmetic(self):
+         for operator, amount in (("+", "5"), ("-", "-5")):
+             for unit in ("DAY", "HOUR", "MINUTE", "SECOND"):
++                function = "DATE" if unit == "DAY" else "DATETIME"
+                 self.validate_all(
+-                    f"SELECT DATETIME(DATE('2025-01-01'), '{amount} {unit}')",
++                    f"SELECT {function}(DATE('2025-01-01'), '{amount} {unit}')",
+                     read={
+                         "duckdb": f"SELECT DATE '2025-01-01' {operator} INTERVAL '5' {unit}",
+                         "postgres": f"SELECT DATE '2025-01-01' {operator} INTERVAL '5' {unit}",
+                     },
+                 )
+         self.validate_all(
+-            "SELECT DATETIME(DATE(d), '-1 DAY') FROM t",
++            "SELECT DATE(DATE(d), '-1 DAY') FROM t",
+             read={"postgres": "SELECT INTERVAL '-1' DAY + CAST(d AS DATE) FROM t"},
+         )
+         self.validate_all(
+-            "SELECT DATETIME(DATE(d), '1 DAY') FROM t",
++            "SELECT DATE(DATE(d), '1 DAY') FROM t",
+             read={"postgres": "SELECT CAST(d AS DATE) - INTERVAL '-1' DAY FROM t"},
+         )
+         for source in (
+@@ -198,7 +199,7 @@ class TestSQLite(Validator):
+         )
+         # The function form of a DATE is typed like a DATE literal.
+         self.validate_all(
+-            "SELECT DATETIME(DATE('1998-09-01'), '10 DAY') FROM t",
++            "SELECT DATE(DATE('1998-09-01'), '10 DAY') FROM t",
+             read={"duckdb": "SELECT DATE('1998-09-01') + INTERVAL '10' DAY FROM t"},
+         )
+ 
+@@ -385,7 +386,11 @@ class TestSQLite(Validator):
+                 ):
+                     for amount in (-5, 0, 5):
+                         query = f"SELECT DATE '2024-02-29' + INTERVAL '{amount}' {unit}"
+-                        expected = (datetime(2024, 2, 29) + amount * duration).isoformat(" ")
++                        moment = datetime(2024, 2, 29) + amount * duration
++                        # A whole-day offset of a DATE is date text; a time unit adds a time.
++                        expected = (
++                            moment.date().isoformat() if unit == "DAY" else moment.isoformat(" ")
++                        )
+                         sql = parse_one(query, read=dialect).sql(
+                             "sqlite", unsupported_level=ErrorLevel.RAISE
+                         )
+@@ -1161,3 +1166,92 @@ class TestSQLite(Validator):
+             (row,) = connection.execute(node.sql("sqlite"))
+             (expected,) = connection.execute("SELECT DATE('now', '-30 days')")
+         self.assertEqual(row, (expected[0], "2024-02-15"))
++
++    def test_date_day_offset_is_a_date(self):
++        # A whole-day offset of a DATE stays date text; only offsets with a time unit
++        # carry a time of day.
++        for source, expected in (
++            ("DATE '1998-04-08' - INTERVAL '30' DAY", "DATE(DATE('1998-04-08'), '-30 DAY')"),
++            ("DATE '1998-04-08' + INTERVAL '30' DAY", "DATE(DATE('1998-04-08'), '30 DAY')"),
++            ("INTERVAL '30' DAY + DATE '1998-04-08'", "DATE(DATE('1998-04-08'), '30 DAY')"),
++            ("DATE '1998-04-08' - INTERVAL '-30' DAY", "DATE(DATE('1998-04-08'), '30 DAY')"),
++            ("CAST(d AS DATE) - INTERVAL '30' DAY", "DATE(DATE(d), '-30 DAY')"),
++            (
++                "CAST('1998-04-08' AS DATE) + INTERVAL '30' DAY",
++                "DATE(DATE('1998-04-08'), '30 DAY')",
++            ),
++            ("DATE '1998-04-08' + INTERVAL '36' HOUR", "DATETIME(DATE('1998-04-08'), '36 HOUR')"),
++            ("DATE '1998-04-08' - INTERVAL '1' YEAR", "DATE('1998-04-08', '-1 year')"),
++            ("DATE '1998-04-08' + INTERVAL '2' MONTH", "DATE('1998-04-08', '+2 month')"),
++        ):
++            for dialect in ("postgres", "duckdb"):
++                with self.subTest(dialect=dialect, source=source):
++                    sql = parse_one(f"SELECT {source} FROM t", read=dialect).sql(
++                        "sqlite", unsupported_level=ErrorLevel.RAISE
++                    )
++                    self.assertEqual(sql, f"SELECT {expected} FROM t")
++
++        # A TIMESTAMP operand is not a DATE: its day offset stays Unsupported (DATETIME
++        # would drop fractional seconds) and its truncation stays a STRFTIME.
++        for source in (
++            "CAST(ts AS TIMESTAMP) + INTERVAL '1' DAY",
++            "CAST(ts AS TIMESTAMP) - INTERVAL '30' DAY",
++            "TIMESTAMP '1998-04-08 10:00:00' - INTERVAL '30' DAY",
++        ):
++            with self.subTest(source=source), self.assertRaises(UnsupportedError):
++                parse_one(f"SELECT {source}", read="postgres").sql(
++                    "sqlite", unsupported_level=ErrorLevel.RAISE
++                )
++        self.assertEqual(
++            parse_one("SELECT DATE_TRUNC('day', ts) FROM t", read="postgres").sql("sqlite"),
++            "SELECT STRFTIME('%Y-%m-%d 00:00:00', ts) FROM t",
++        )
++
++    @requires_engine("sqlite")
++    def test_date_day_offset_keeps_boundary_row_execution(self):
++        # TPC-DS Q21/Q40 filter a DATE column BETWEEN date - 30 days AND date + 30 days.
++        # Both bounds are date text, so rows on either boundary day are kept.
++        days = ("1998-03-08", "1998-03-09", "1998-04-08", "1998-05-08", "1998-05-09")
++        for dialect in ("postgres", "duckdb"):
++            for column in ("TEXT", "DATE"):
++                for lower, upper in (
++                    (
++                        "DATE '1998-04-08' - INTERVAL '30' DAY",
++                        "DATE '1998-04-08' + INTERVAL '30' DAY",
++                    ),
++                    (
++                        "CAST('1998-04-08' AS DATE) - INTERVAL '30' DAY",
++                        "CAST('1998-04-08' AS DATE) + INTERVAL '30' DAY",
++                    ),
++                ):
++                    with self.subTest(dialect=dialect, column=column, lower=lower):
++                        sql = parse_one(
++                            f"SELECT d FROM t WHERE d BETWEEN {lower} AND {upper} ORDER BY 1",
++                            read=dialect,
++                        ).sql("sqlite", unsupported_level=ErrorLevel.RAISE)
++                        with engines.connect("sqlite") as connection:
++                            connection.execute(f"CREATE TABLE t (d {column})")
++                            for value in days:
++                                connection.execute(f"INSERT INTO t VALUES ('{value}')")
++                            rows = connection.execute(sql)
++                        self.assertEqual(
++                            rows, [("1998-03-09",), ("1998-04-08",), ("1998-05-08",)], sql
++                        )
++
++        with engines.connect("sqlite") as connection:
++            for source, expected in (
++                ("DATE '1998-04-08' - INTERVAL '30' DAY", "1998-03-09"),
++                ("DATE '1998-04-08' + INTERVAL '1' MONTH", "1998-05-08"),
++                ("DATE '1998-04-08' - INTERVAL '1' YEAR", "1997-04-08"),
++                ("DATE '1998-04-08' + INTERVAL '36' HOUR", "1998-04-09 12:00:00"),
++            ):
++                sql = parse_one(f"SELECT {source}", read="postgres").sql(
++                    "sqlite", unsupported_level=ErrorLevel.RAISE
++                )
++                self.assertEqual(connection.execute(sql), [(expected,)], source)
++
++            # A TIMESTAMP column keeps its time through truncation.
++            connection.execute("CREATE TABLE ev (ts TEXT)")
++            connection.execute("INSERT INTO ev VALUES ('1998-04-08 13:45:10')")
++            sql = parse_one("SELECT DATE_TRUNC('day', ts) FROM ev", read="postgres").sql("sqlite")
++            self.assertEqual(connection.execute(sql), [("1998-04-08 00:00:00",)])

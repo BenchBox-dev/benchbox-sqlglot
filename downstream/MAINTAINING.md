@@ -210,6 +210,11 @@ fixes to write those nodes back (`DATEDIFF` in `DAY` units, and `DATE_SUB`), car
 `snowflake-regexp-replace-groups`. `tests/test_sqlite_idioms_execution.py` and
 `tests/test_regexp_replace_execution.py` execute them.
 
+A whole-day offset of a DATE is written as `DATE(x, 'n DAY')`, not `DATETIME(...)`: SQLite stores
+dates as text and `'1998-03-09 00:00:00'` sorts after `'1998-03-09'`, so a `DATETIME` bound dropped
+the boundary day of `d BETWEEN <date> - INTERVAL '30' DAY AND ...` (TPC-DS Q21 and Q40). That is the
+carried patch `sqlite-day-offset-date`; hour, minute and second offsets keep `DATETIME`.
+
 `ansi` and `standard` are not dialects the fork provides, and the fork has no alias
 dialects. The caller resolves them before calling SQLGlot: BenchBox's platform
 registry maps `ansi` and `standard` (and every platform name) to a dialect that
