@@ -469,6 +469,22 @@
         "tests.test_benchbox_ddl_engines"
       ],
       "reason": "TableLayout and the engine clause writers behind DdlOptions.layouts and default_layout: ClickHouse ENGINE, PARTITION BY, ORDER BY, PRIMARY KEY, SETTINGS and Nullable columns; Doris and StarRocks key models, key columns, partitioning, distribution and PROPERTIES; Redshift DISTSTYLE, DISTKEY, SORTKEY and Spectrum external tables; the strip_not_null, if_not_exists, schema and table_suffix options. Tables, key columns and tuning values are arguments; tests create the tables on chDB, Doris and StarRocks and compare the created layout."
+    },
+    {
+      "id": "benchbox-ddl-lakehouse",
+      "source": "0000000000000000000000000000000000000000",
+      "status": "original",
+      "depends": [
+        "real-engine-ci",
+        "benchbox-ddl-engines"
+      ],
+      "paths": [
+        "tests/test_benchbox_ddl_lakehouse.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_ddl_lakehouse"
+      ],
+      "reason": "Hive-family, lakehouse and warehouse table layouts in ddl_engines.py (an original file of benchbox-ddl-engines, so no patch is needed): Spark and Databricks USING, PARTITIONED BY, CLUSTER BY, CLUSTERED BY and TBLPROPERTIES for Delta, Iceberg, Hudi, Parquet and ORC; Hive and Athena PARTITIONED BY, ROW FORMAT, STORED AS and LOCATION for external and staging tables; Trino and Presto WITH properties; Synapse DISTRIBUTION; PostgreSQL access methods and the pg_mooncake mirror statements; tests create tables on PySpark and Trino and assert the rest as golden output."
     }
   ]
 }
