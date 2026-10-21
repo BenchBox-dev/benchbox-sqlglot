@@ -217,11 +217,11 @@ carried patch `sqlite-day-offset-date`; hour, minute and second offsets keep `DA
 
 SQLite divides two INTEGER values with truncation, and a column that looks decimal can hold INTEGER storage, so
 no schema-free rule can prove a dividend is not an integer. A division the source marks as possibly truncating
-(`typed`: PostgreSQL, Netezza, MySQL families) is therefore written with `CAST(dividend AS REAL)` unless an
+(`typed`: PostgreSQL and Netezza) is therefore written with `CAST(dividend AS REAL)` unless an
 operand is already REAL (a decimal literal, a CAST to a real type, `AVG`, arithmetic or a division involving
-one) or both operands are explicit integers (integer literals and CASTs to an integer type, with at least one
-CAST). Only the explicit CAST asserts that a quotient is meant to truncate; `1000 / 10` is not such an
-assertion. That is the carried patch `sqlite-exact-integer-division` (TPC-DS Q21's `inv_after / inv_before`
+one) or both operands are integer by syntax (integer literals, CASTs to an integer type, arithmetic over
+them), which keep the source's truncating division: `2020 / 3` from PostgreSQL stays 673. That is the
+carried patch `sqlite-exact-integer-division` (TPC-DS Q21's `inv_after / inv_before`
 is two integer SUMs); `tests/dialects/test_sqlite.py` executes the Q21 shape on SQLite and DuckDB.
 
 `ansi` and `standard` are not dialects the fork provides, and the fork has no alias
