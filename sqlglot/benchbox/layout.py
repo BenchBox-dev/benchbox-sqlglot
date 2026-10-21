@@ -77,11 +77,13 @@ class TableLayout:
         key_model: Doris and StarRocks table model: ``duplicate``, ``unique``, ``aggregate``
             or ``primary``.
         key_columns: the columns the key model should use, as a prefix of the table's
-            columns. Columns the statement does not define, columns that follow a missing
-            one, and columns of a type that cannot be a key end the prefix; with no usable
-            prefix the first keyable column is the key. ``primary`` uses ``key_columns``, or
-            the statement's own primary key when empty, and falls back to ``duplicate`` on
-            the first column unless those columns are the leading columns.
+            columns. ``duplicate`` only sorts rows, so its key is the leading run of
+            defined, keyable columns, or the first keyable column when there is none.
+            ``unique``, ``aggregate`` and ``primary`` use ``key_columns``, or the statement's
+            own primary key when empty, and raise ``ValueError`` unless those columns are
+            defined, keyable and the leading columns of the table (any order among them), or
+            when there are none: a narrower key would merge or replace rows, and a model is
+            never downgraded to ``duplicate``.
         location: storage location, written as a string literal.
         external: write ``CREATE EXTERNAL TABLE``.
         field_delimiter: ``ROW FORMAT DELIMITED FIELDS TERMINATED BY`` character.

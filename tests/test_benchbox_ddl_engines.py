@@ -197,7 +197,7 @@ class TestOlapLayouts(unittest.TestCase):
     def test_doris_models_random_distribution_and_partition_clause(self):
         layout = TableLayout(
             key_model="unique",
-            key_columns=["nothing_defined"],
+            key_columns=["f_key"],
             distribution="random",
             buckets=4,
             partition_clause='PARTITION BY RANGE(f_day) (PARTITION p1 VALUES LESS THAN ("1995-01-01"))',
@@ -239,13 +239,37 @@ class TestOlapLayouts(unittest.TestCase):
         )
         self.assertNotIn("FOREIGN", sql)
 
-    def test_starrocks_primary_model_needs_the_key_to_lead_the_columns(self):
-        sql = ddl(
-            "CREATE TABLE t (a INT, b INT, PRIMARY KEY (b))",
-            "starrocks",
-            default_layout=TableLayout(key_model="primary"),
-        )
-        self.assertIn(") DUPLICATE KEY (a) DISTRIBUTED BY HASH (a)", sql)
+    def test_composite_key_is_kept_whole_when_it_leads_the_columns(self):
+        for target in ("doris", "starrocks"):
+            for model, keyword in (("unique", "UNIQUE KEY"), ("primary", "PRIMARY KEY")):
+                with self.subTest(target=target, model=model):
+                    sql = ddl(
+                        "CREATE TABLE t (a INT NOT NULL, c INT NOT NULL, b INT, d INT)",
+                        target,
+                        default_layout=TableLayout(key_model=model, key_columns=["a", "c"]),
+                    )
+                    self.assertIn(f") {keyword} (a, c) DISTRIBUTED BY HASH (a)", sql)
+
+    def test_key_model_never_narrows_or_downgrades_the_key(self):
+        for target in ("doris", "starrocks"):
+            for model in ("unique", "primary", "aggregate"):
+                for statement, columns in (
+                    ("CREATE TABLE t (a INT, b INT, c INT, PRIMARY KEY (a, c))", []),
+                    ("CREATE TABLE t (a INT, b INT, c INT)", ["a", "c"]),
+                    ("CREATE TABLE t (a INT, b INT, PRIMARY KEY (b))", []),
+                    ("CREATE TABLE t (a INT, b INT)", []),
+                    ("CREATE TABLE t (a INT, b INT)", ["a", "missing"]),
+                    ("CREATE TABLE t (a INT, j JSON, c INT)", ["a", "j"]),
+                ):
+                    with self.subTest(target=target, model=model, statement=statement, key=columns):
+                        with self.assertRaises(ValueError):
+                            ddl(
+                                statement,
+                                target,
+                                default_layout=TableLayout(key_model=model, key_columns=columns),
+                            )
+
+    def test_primary_model_uses_the_statements_primary_key(self):
         sql = ddl(
             "CREATE TABLE t (a INT, b INT, PRIMARY KEY (a, b))",
             "starrocks",
@@ -547,12 +571,58 @@ class OlapOnService:
             self.conn.execute(f"SELECT length(t) FROM {self.DATABASE}.{name}"), [(200,)]
         )
 
+    KEY_MODELS: tuple = ()
+    LINEITEM = (
+        "CREATE TABLE fact (l_orderkey BIGINT NOT NULL, l_linenumber INT NOT NULL, "
+        "l_partkey INT, l_quantity INT, PRIMARY KEY (l_orderkey, l_linenumber))"
+    )
+    LINEITEM_REORDERED = (
+        "CREATE TABLE fact (l_orderkey BIGINT NOT NULL, l_partkey INT, "
+        "l_linenumber INT NOT NULL, l_quantity INT, PRIMARY KEY (l_orderkey, l_linenumber))"
+    )
+
+    def test_composite_key_keeps_rows_that_share_a_key_prefix(self):
+        for model in self.KEY_MODELS:
+            with self.subTest(model=model):
+                layout = TableLayout(
+                    key_model=model,
+                    key_columns=["l_orderkey", "l_linenumber"],
+                    distribute_by=["l_orderkey"],
+                    buckets=2,
+                    properties=self.PROPS,
+                )
+                name = self.create(self.LINEITEM, default_layout=layout)
+                self.assertIn(f"{model}key(l_orderkey,l_linenumber)", self.show_create(name))
+                table = f"{self.DATABASE}.{name}"
+                self.conn.execute(
+                    f"INSERT INTO {table} VALUES (1, 1, 10, 1), (1, 2, 20, 2), (2, 1, 30, 3), "
+                    "(1, 2, 21, 4)"
+                )
+                self.assertEqual(
+                    self.conn.execute(f"SELECT COUNT(*) FROM {table} WHERE l_orderkey = 1"), [(2,)]
+                )
+                self.assertEqual(self.conn.execute(f"SELECT COUNT(*) FROM {table}"), [(3,)])
+
+    def test_composite_key_that_does_not_lead_the_columns_is_refused(self):
+        for model in self.KEY_MODELS:
+            with self.subTest(model=model), self.assertRaises(ValueError):
+                self.create(
+                    self.LINEITEM_REORDERED,
+                    default_layout=TableLayout(
+                        key_model=model,
+                        key_columns=["l_orderkey", "l_linenumber"],
+                        buckets=2,
+                        properties=self.PROPS,
+                    ),
+                )
+
 
 @requires_engine("starrocks")
 class TestStarRocksLayoutOnStarRocks(OlapOnService, unittest.TestCase):
     ENGINE = "starrocks"
     DIALECT = "starrocks"
     TYPES = STARROCKS_TYPE_MAP
+    KEY_MODELS = ("unique", "primary")
 
     def test_primary_key_model_with_order_by(self):
         layout = TableLayout(
@@ -591,6 +661,7 @@ class TestDorisLayoutOnDoris(OlapOnService, unittest.TestCase):
     ENGINE = "doris"
     DIALECT = "doris"
     TYPES = DORIS_TYPE_MAP
+    KEY_MODELS = ("unique",)
 
     def test_unique_key_and_range_partitions(self):
         layout = TableLayout(

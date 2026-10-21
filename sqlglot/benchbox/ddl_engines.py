@@ -253,28 +253,34 @@ def _olap_keys(ctx: _Context) -> tuple[str, list[exp.ColumnDef]] | None:
         )
     columns = ctx.columns
     keyable = [c for c in columns if _key_type_ok(c)]
+
+    if model != "duplicate":
+        required = list(layout.key_columns) or list(ctx.source_primary_key)
+        if not required:
+            raise ValueError(
+                f"key_model {model!r} needs key_columns or a primary key in the statement; "
+                "a narrower key would merge or replace rows"
+            )
+        wanted = {c.lower() for c in required}
+        leading = columns[: len(wanted)]
+        if {c.name.lower() for c in leading} != wanted or not all(map(_key_type_ok, leading)):
+            raise ValueError(
+                f"key_model {model!r} needs the key columns ({', '.join(required)}) to be defined, "
+                "keyable and the leading columns of the table; a narrower key would merge or "
+                "replace rows"
+            )
+        return str(model), leading
+
     if not keyable:
         return None
-
-    wanted = [c.lower() for c in layout.key_columns]
-    if model == "primary":
-        wanted = wanted or [c.lower() for c in ctx.source_primary_key]
-        leading = columns[: len(wanted)]
-        if (
-            wanted
-            and [c.name.lower() for c in leading] == wanted
-            and all(map(_key_type_ok, leading))
-        ):
-            return "primary", leading
-        return "duplicate", keyable[:1]
-
+    wanted_columns = [c.lower() for c in layout.key_columns]
     prefix: list[exp.ColumnDef] = []
     for column in columns:
-        if column.name.lower() in wanted and _key_type_ok(column):
+        if column.name.lower() in wanted_columns and _key_type_ok(column):
             prefix.append(column)
         else:
             break
-    return str(model), prefix or keyable[:1]
+    return "duplicate", prefix or keyable[:1]
 
 
 def _olap(ctx: _Context, *, starrocks: bool) -> list[str]:
