@@ -252,9 +252,10 @@ def drop_literal_row_source(expression: E, alias: str, copy: bool = True) -> E:
     ``VALUES`` list, ``system.one`` or ``dual`` is needed. Engines that reject ``WHERE`` without a
     ``FROM`` (BigQuery) get a source back from ``add_row_source_to_fromless_selects``.
 
-    Only a ``SELECT`` whose single ``FROM`` item is a derived table named ``alias`` with one
-    numeric literal projection is rewritten, and only when it neither selects ``*`` nor references
-    the derived table's column.
+    Only a ``SELECT`` whose single ``FROM`` item is a derived table named ``alias`` over a
+    provably one-row inner ``SELECT`` (one numeric literal projection and no ``FROM``, ``WHERE``,
+    ``LIMIT``, ``GROUP BY``, ``HAVING``, ``DISTINCT`` or any other clause) is rewritten, and only
+    when it neither selects ``*`` nor references the derived table's column.
 
     Args:
         expression: the expression to rewrite.
@@ -277,7 +278,11 @@ def drop_literal_row_source(expression: E, alias: str, copy: bool = True) -> E:
         ):
             continue
         inner = subquery.this
-        if not isinstance(inner, exp.Select) or len(inner.expressions) != 1:
+        if (
+            not isinstance(inner, exp.Select)
+            or len(inner.expressions) != 1
+            or any(value for key, value in inner.args.items() if key != "expressions")
+        ):
             continue
         projection = inner.expressions[0]
         literal = projection.this if isinstance(projection, exp.Alias) else projection

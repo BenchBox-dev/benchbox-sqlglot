@@ -91,6 +91,17 @@ class RowSources:
         rewritten = drop_literal_row_source(self.parse(sql), "dual")
         self.assertEqual(self.rows_of(rewritten), [(114,)])
 
+    def test_non_single_row_sources_keep_their_row_counts(self):
+        for name, sql, expected in (
+            ("from", f"SELECT 0 AS r FROM (SELECT 1 FROM {ROWS} AS t) AS dual", [(0,)] * 6),
+            ("where_false", "SELECT 0 AS r FROM (SELECT 1 WHERE FALSE) AS dual", []),
+            ("limit_zero", "SELECT 0 AS r FROM (SELECT 1 LIMIT 0) AS dual", []),
+            ("count", f"SELECT COUNT(*) AS r FROM (SELECT 1 FROM {ROWS} AS t) AS dual", [(6,)]),
+        ):
+            with self.subTest(shape=name):
+                rewritten = drop_literal_row_source(self.parse(sql), "dual")
+                self.assertEqual(self.rows_of(rewritten), expected)
+
     def test_row_source_added_back_for_engines_that_need_one(self):
         fromless = f"SELECT id FROM {ROWS} AS t WHERE id IN (SELECT 1 WHERE 1 = 1 UNION ALL SELECT 3 WHERE 1 = 1) ORDER BY id"
         rewritten = add_row_source_to_fromless_selects(
