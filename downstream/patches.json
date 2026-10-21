@@ -310,7 +310,7 @@
     },
     {
       "id": "sqlite-day-offset-date",
-      "source": "ffa4f5f5708ffee929f63139a23a15e21b64d2cc",
+      "source": "7b929efa68cdd9a924c11f67b2f9dcac6712aa9a",
       "status": "carried",
       "depends": [
         "sqlite-date-day-arithmetic"
