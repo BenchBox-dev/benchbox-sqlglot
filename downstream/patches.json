@@ -134,7 +134,7 @@
       "tests": [
         "tests.test_benchbox_rewrites"
       ],
-      "reason": "Engine-neutral expression rewrites in a new package. The first member folds literal sum/difference BETWEEN bounds to exact decimals so engines that evaluate decimal literals as binary floats keep rows equal to a bound; the column and table gates are arguments.; date_integer_arithmetic_to_interval rewrites `date_column +/- <integer>` into a day interval for caller-named date columns; safe_division, deduplicate_output_aliases, unqualified_tables and flag_comparisons_to_boolean carry the adapter fix-ups (opt-in zero-divisor NULLs for BigQuery, Snowflake, Databricks and ClickHouse; Databricks output alias suffixing; the table nodes a caller qualifies; TPC-DI flag columns as booleans with the column list passed in)."
+      "reason": "Engine-neutral expression rewrites in a new package. The first member folds literal sum/difference BETWEEN bounds to exact decimals so engines that evaluate decimal literals as binary floats keep rows equal to a bound; the column and table gates are arguments.; date_integer_arithmetic_to_interval rewrites `date_column +/- <integer>` into a day interval for caller-named date columns; mark_date_columns types caller-named columns as DATE so the SQLite generator can lower date arithmetic and DATE_TRUNC comparisons without a schema; safe_division, deduplicate_output_aliases, unqualified_tables and flag_comparisons_to_boolean carry the adapter fix-ups (opt-in zero-divisor NULLs for BigQuery, Snowflake, Databricks and ClickHouse; Databricks output alias suffixing; the table nodes a caller qualifies; TPC-DI flag columns as booleans with the column list passed in)."
     },
     {
       "id": "sqlite-temporal-lowering",
@@ -341,6 +341,24 @@
       ],
       "reason": "Write a source division that may truncate integers (PostgreSQL and Netezza `/`) as an exact SQLite quotient: the dividend becomes CAST(x AS REAL) unless an operand is already REAL or both operands are integer by syntax (integer literals, integer CASTs, arithmetic over them), which keep the source's truncating division (postgres 2020 / 3 stays 673). So TPC-DS Q21's inv_after / inv_before no longer truncates before BETWEEN 2.0/3.0 AND 3.0/2.0. Replaces the extraction-only division resolver; nested a / b / c chains are resolved too.",
       "patch": "downstream/patches/sqlite-exact-integer-division.patch"
+    },
+    {
+      "id": "sqlite-date-integer-semantics",
+      "source": "adc40a9c2f4796b1eee57f356b35ee0a5861959d",
+      "status": "carried",
+      "depends": [
+        "benchbox-rewrites",
+        "sqlite-exact-integer-division"
+      ],
+      "paths": [
+        "sqlglot/generators/sqlite.py",
+        "tests/dialects/test_sqlite.py"
+      ],
+      "tests": [
+        "tests.dialects.test_sqlite"
+      ],
+      "reason": "Write a DATE plus or minus a whole number as a whole-day offset (DATE(x, 'n DAY')), DATE minus DATE as a day count, and a DATE_TRUNC result compared with a DATE (=, <>, <, <=, >, >=, BETWEEN) with the DATE as its midnight timestamp text, so SQLite no longer adds the number to the text ('2000-01-01' + 5 was 2005, TPC-DS Q72's d_date > d1.d_date + 5) or compares '2020-03-01 00:00:00' with '2020-03-01'. Operands count as DATE when the tree types them: a CAST, a DATE literal, a schema, or sqlglot.benchbox.rewrites.mark_date_columns; columns of unknown type keep their source text.",
+      "patch": "downstream/patches/sqlite-date-integer-semantics.patch"
     },
     {
       "id": "snowflake-regexp-replace-groups",

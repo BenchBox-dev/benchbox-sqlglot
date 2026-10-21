@@ -155,6 +155,40 @@ def date_integer_arithmetic_to_interval(
     return expression
 
 
+def mark_date_columns(
+    expression: E,
+    date_columns: t.Iterable[str],
+    copy: bool = True,
+) -> E:
+    """Record that the named columns hold dates, so a generator that needs types can use them.
+
+    SQLite keeps dates as text, so ``d_date + 5`` adds 5 to a number read from the text
+    and ``DATE_TRUNC('month', d) = date_col`` compares a timestamp text with a date text.
+    The SQLite generator writes the intended whole-day offsets and comparisons only for
+    operands it knows to be dates; without a schema that knowledge is this column set.
+    Source engines that need no type are unaffected, and the marking lives on the tree, so
+    pass the returned expression (not its SQL text) to the generator.
+
+    Which columns hold dates is data the caller owns, for example from a schema.
+
+    Args:
+        expression: the expression to mark.
+        date_columns: names (case-insensitive, qualifier ignored) of the columns known
+            to hold dates.
+        copy: mark a copy instead of mutating ``expression``.
+
+    Returns:
+        The expression with every matching column typed ``DATE``.
+    """
+    column_names = {name.lower() for name in date_columns}
+    if copy:
+        expression = expression.copy()
+    for column in expression.find_all(exp.Column):
+        if column.name.lower() in column_names:
+            column.type = exp.DataType.build("date")
+    return expression
+
+
 def _division_form(dialect: DialectType) -> str:
     from sqlglot.dialects.bigquery import BigQuery
     from sqlglot.dialects.clickhouse import ClickHouse

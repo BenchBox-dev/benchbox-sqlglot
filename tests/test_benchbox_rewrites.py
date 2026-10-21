@@ -7,6 +7,7 @@ from sqlglot.benchbox.rewrites import (
     deduplicate_output_aliases,
     flag_comparisons_to_boolean,
     fold_between_literal_arithmetic,
+    mark_date_columns,
     safe_division,
     unqualified_tables,
 )
@@ -301,6 +302,72 @@ class TestDateIntegerArithmeticToInterval(unittest.TestCase):
             self.rewrite("SELECT d_date + 5", write="duckdb"),
             "SELECT d_date + INTERVAL '5' DAY",
         )
+
+
+class TestMarkDateColumns(unittest.TestCase):
+    def test_named_columns_are_typed_date(self):
+        tree = mark_date_columns(
+            parse_one("SELECT D1.D_DATE, d_date_sk, qty FROM t AS d1", read="netezza"),
+            ["d_date"],
+        )
+        types = {column.name: column.type for column in tree.find_all(exp.Column)}
+        self.assertTrue(types["D_DATE"].is_type(exp.DType.DATE))
+        self.assertIsNone(types["d_date_sk"])
+        self.assertIsNone(types["qty"])
+
+    def test_no_columns_marks_nothing(self):
+        tree = mark_date_columns(parse_one("SELECT d_date FROM t"), [])
+        self.assertIsNone(tree.find(exp.Column).type)
+
+    def test_copy_flag(self):
+        tree = parse_one("SELECT d_date")
+        marked = mark_date_columns(tree, ["d_date"])
+        self.assertIsNot(marked, tree)
+        self.assertIsNone(tree.find(exp.Column).type)
+        self.assertIs(mark_date_columns(tree, ["d_date"], copy=False), tree)
+        self.assertTrue(tree.find(exp.Column).type.is_type(exp.DType.DATE))
+
+    def test_marking_does_not_change_other_dialects(self):
+        sql = "SELECT d_date + 5 FROM t"
+        marked = mark_date_columns(parse_one(sql, read="netezza"), ["d_date"])
+        self.assertEqual(marked.sql("postgres"), sql)
+
+    def test_sqlite_counts_whole_days(self):
+        marked = mark_date_columns(
+            parse_one(
+                "SELECT d3.d_date - d1.d_date, d1.d_date + 5 FROM t AS d1, t AS d3 "
+                "WHERE d3.d_date > d1.d_date + 5",
+                read="netezza",
+            ),
+            ["d_date"],
+        )
+        self.assertEqual(
+            marked.sql("sqlite"),
+            "SELECT CAST((JULIANDAY(d3.d_date) - JULIANDAY(d1.d_date)) AS INTEGER), "
+            "DATE(d1.d_date, '5 DAY') FROM t AS d1, t AS d3 "
+            "WHERE d3.d_date > DATE(d1.d_date, '5 DAY')",
+        )
+
+    @requires_engine("sqlite")
+    @requires_engine("duckdb")
+    def test_sqlite_matches_duckdb_on_a_tpcds_q72_predicate(self):
+        sql = (
+            "SELECT d1.d_date FROM date_dim AS d1 JOIN date_dim AS d3 ON d3.d_date > d1.d_date + 5 "
+            "WHERE d1.d_date < '2000-01-03' ORDER BY d1.d_date, d3.d_date"
+        )
+        days = ("2000-01-01", "2000-01-05", "2000-01-06", "2000-01-07", "2000-01-08")
+        results = {}
+        for engine in ("sqlite", "duckdb"):
+            with engines.connect(engine) as connection:
+                connection.execute(
+                    f"CREATE TABLE date_dim (d_date {'TEXT' if engine == 'sqlite' else 'DATE'})"
+                )
+                for day in days:
+                    connection.execute(f"INSERT INTO date_dim VALUES ('{day}')")
+                tree = mark_date_columns(parse_one(sql, read="netezza"), ["d_date"])
+                results[engine] = [(str(d),) for (d,) in connection.execute(tree.sql(engine))]
+        self.assertEqual(results["duckdb"], [("2000-01-01",), ("2000-01-01",)])
+        self.assertEqual(results["sqlite"], results["duckdb"])
 
 
 if __name__ == "__main__":
