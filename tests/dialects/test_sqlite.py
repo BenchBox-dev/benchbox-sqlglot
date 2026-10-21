@@ -93,7 +93,7 @@ class TestSQLite(Validator):
                     self.assertEqual(connection.execute(sql).fetchone(), fields)
 
                 for query, expected in (
-                    ("SELECT 2020 / 3 > 673", (1,)),
+                    ("SELECT 2020 / 3 > 673", (0 if dialect == "postgres" else 1,)),
                     (
                         "SELECT CAST(2020 AS INTEGER) / 3 > 673",
                         (0 if dialect == "postgres" else 1,),
@@ -132,17 +132,27 @@ class TestSQLite(Validator):
     def test_integer_division_dividend_is_real(self):
         # SQLite divides two INTEGER values with truncation. A source `/` that may truncate
         # (typed: PostgreSQL, Netezza, MySQL...) is written as an exact quotient unless an
-        # operand is already REAL or both operands are explicit integers (an integer CAST).
+        # operand is already REAL or both operands are integer by syntax (integer literals,
+        # integer CASTs), which keep the source's truncating division.
         for source in ("netezza", "postgres", "mysql", "duckdb"):
             with self.subTest(source=source):
                 self.validate_all(
                     "SELECT CAST(a AS REAL) / b, CAST(SUM(a) AS REAL) / SUM(b), "
-                    "CAST((a + 1) AS REAL) / 2, CAST(COUNT(*) AS REAL) / COUNT(b), "
-                    "CAST(1000 AS REAL) / 10",
+                    "CAST((a + 1) AS REAL) / 2, CAST(COUNT(*) AS REAL) / COUNT(b)",
                     read={
-                        source: "SELECT a / b, SUM(a) / SUM(b), (a + 1) / 2, COUNT(*) / COUNT(b), 1000 / 10"
+                        source: "SELECT a / b, SUM(a) / SUM(b), (a + 1) / 2, COUNT(*) / COUNT(b)"
                     },
                 )
+        for source in ("netezza", "postgres"):
+            with self.subTest(source=source):
+                self.validate_all(
+                    "SELECT 2020 / 3, (1000 - 64) / 10, 7 / 2 / 2",
+                    read={source: "SELECT 2020 / 3, (1000 - 64) / 10, 7 / 2 / 2"},
+                )
+        self.validate_all(
+            "SELECT CAST(2020 AS REAL) / 3, CAST((1000 - 64) AS REAL) / 10",
+            read={"duckdb": "SELECT 2020 / 3, (1000 - 64) / 10"},
+        )
         for source in ("netezza", "postgres"):
             with self.subTest(source=source):
                 self.validate_all(
@@ -205,8 +215,8 @@ class TestSQLite(Validator):
                             self.assertEqual(sqlite_row[0], duckdb_row[0])
                             self.assertAlmostEqual(sqlite_row[1], duckdb_row[1])
                             self.assertAlmostEqual(sqlite_row[3], duckdb_row[3])
-                            self.assertAlmostEqual(sqlite_row[4], 93.6)
-                            self.assertAlmostEqual(sqlite_row[5], 3.5)
+                            literals = (93.6, 3.5) if source == "duckdb" else (93, 3)
+                            self.assertEqual(sqlite_row[4:6], literals)
 
     def test_date_interval_arithmetic(self):
         for operator, amount in (("+", "5"), ("-", "-5")):

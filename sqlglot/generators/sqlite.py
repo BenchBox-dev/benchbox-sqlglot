@@ -235,24 +235,24 @@ class SQLiteGenerator(generator.Generator):
         return ""
 
     @staticmethod
-    def _explicit_integer(node: exp.Expr) -> tuple[bool, bool]:
+    def _explicit_integer(node: exp.Expr) -> bool:
         """
-        Whether `node` is integer-valued by its own syntax, and whether that rests on an explicit
-        CAST to an integer type: integer literals, such casts and arithmetic over them.
+        Whether `node` is integer-valued by its own syntax: an integer literal, a CAST to an
+        integer type, or arithmetic over them.
         """
         while isinstance(node, (exp.Paren, exp.Neg)):
             node = node.this
         if isinstance(node, exp.Literal):
-            return node.is_int, False
+            return node.is_int
         if isinstance(node, exp.Cast):
-            return node.to.is_type(*exp.DataType.INTEGER_TYPES), True
+            return node.to.is_type(*exp.DataType.INTEGER_TYPES)
         if isinstance(node, (exp.Add, exp.Sub, exp.Mul, exp.Mod, exp.IntDiv, exp.Div)):
             if isinstance(node, exp.Div) and not node.args.get("typed"):
-                return False, False
-            left, left_cast = SQLiteGenerator._explicit_integer(node.this)
-            right, right_cast = SQLiteGenerator._explicit_integer(node.expression)
-            return left and right, left_cast or right_cast
-        return False, False
+                return False
+            return SQLiteGenerator._explicit_integer(
+                node.this
+            ) and SQLiteGenerator._explicit_integer(node.expression)
+        return False
 
     @staticmethod
     def _real_valued(node: exp.Expr) -> bool:
@@ -279,11 +279,12 @@ class SQLiteGenerator(generator.Generator):
         if not expression.args.get("typed"):
             return False
         # SQLite divides two INTEGER values with truncation, and a column or aggregate that
-        # looks decimal can still hold INTEGER storage, so without a schema only an explicit
-        # CAST to an integer type asserts that the quotient is meant to truncate.
-        left, left_cast = SQLiteGenerator._explicit_integer(expression.this)
-        right, right_cast = SQLiteGenerator._explicit_integer(expression.expression)
-        return left and right and (left_cast or right_cast)
+        # looks decimal can still hold INTEGER storage, so without a schema only operands that
+        # are integer by syntax (literals, CASTs to an integer type) keep the source's
+        # truncating division; `2020 / 3` from PostgreSQL stays 673.
+        return SQLiteGenerator._explicit_integer(
+            expression.this
+        ) and SQLiteGenerator._explicit_integer(expression.expression)
 
     def _exact_quotients(self, expression: exp.Div) -> None:
         # `binary` writes directly nested divisions (a / b / c) without calling div_sql for the
@@ -293,7 +294,8 @@ class SQLiteGenerator(generator.Generator):
                 self._exact_quotients(operand)
         # A source `/` that may truncate integers (typed) writes a quotient SQLite computes
         # exactly: the dividend becomes REAL unless an operand already is REAL or both operands
-        # are explicit integers (CAST to an integer type, with integer literals).
+        # are integer by syntax (integer literals, CASTs to an integer type), which keep the
+        # source's truncating division.
         if (
             expression.args.get("typed")
             and not self._truncating_division(expression)
