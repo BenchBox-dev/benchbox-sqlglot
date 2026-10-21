@@ -1,0 +1,3 @@
+# DuckDB 2.0 removed the lambda arrow (->) that the upstream optimizer and executor
+# tests still execute. Remove once the tests use the new lambda syntax.
+duckdb<2
