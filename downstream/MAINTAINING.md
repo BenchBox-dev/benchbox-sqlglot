@@ -171,6 +171,12 @@ scalar subqueries, ordered list aggregates, window NULL ordering). Behavior that
 a carried patch: `empty-group-by-generator` (a `SUPPORTS_EMPTY_GROUP_BY` flag in the base generator, off for
 Snowflake and Spark). The DataFusion generator is a new file, so it needs no patch. `tests/test_benchbox_compat_engines.py` proves each piece on the engines in ENGINE-GAPS.md.
 
+`sqlglot.benchbox.subqueries` is the same kind of module for subquery rewrites: nullability of columns and the schema
+arrive as arguments, no table or query of a benchmark exists in the fork, and the module and its two test
+files are the `original` entry `benchbox-subqueries`. `decorrelate_subqueries` reuses `decorrelate` and `unnest`
+from `sqlglot.optimizer.unnest_subqueries` and replaces only that module's driver loop, so a refresh that changes
+their signatures fails at import; keep the loop in step with `unnest_subqueries`.
+
 ## Platform dialects
 
 The fork adds `netezza`, `greenplum`, `vertica`, `datafusion` and `questdb`, each a
