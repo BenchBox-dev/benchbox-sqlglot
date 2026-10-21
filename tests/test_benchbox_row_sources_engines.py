@@ -48,6 +48,11 @@ SPELLINGS = {
 }
 
 
+FROMLESS = frozenset({"fromless", "fromless_where"})
+DERIVED = frozenset({"derived_table", "derived_table_named_column"})
+VALUES_DERIVED = frozenset({"values_derived", "values_derived_unnamed"})
+
+
 def numbers(rows):
     return [tuple(int(float(cell)) for cell in row) for row in rows]
 
@@ -55,8 +60,10 @@ def numbers(rows):
 class RowSources:
     ENGINE = ""
     DIALECT = ""
-    # Spellings from SPELLINGS this engine runs, as established by executing them.
+    # Spellings from SPELLINGS the engine runs and the ones it rejects, as established by executing
+    # them. A spelling in neither set differs between engine versions and is not asserted.
     ACCEPTS: frozenset = frozenset()
+    REJECTS: frozenset = frozenset()
 
     def rows_of(self, expression):
         return numbers(engines.execute(self.ENGINE, expression.sql(dialect=self.DIALECT)))
@@ -65,15 +72,13 @@ class RowSources:
         return sqlglot.parse_one(sql, read="postgres")
 
     def test_spellings(self):
-        accepted = set()
         for name, sql in SPELLINGS.items():
-            try:
-                rows = numbers(engines.execute(self.ENGINE, sql))
-            except Exception:
-                continue
-            self.assertEqual(rows, [(7,)], name)
-            accepted.add(name)
-        self.assertEqual(accepted, set(self.ACCEPTS))
+            with self.subTest(spelling=name):
+                if name in self.ACCEPTS:
+                    self.assertEqual(numbers(engines.execute(self.ENGINE, sql)), [(7,)])
+                elif name in self.REJECTS:
+                    with self.assertRaises(Exception):
+                        engines.execute(self.ENGINE, sql)
 
     def test_dropping_the_literal_row_source_runs_the_dead_leg(self):
         rewritten = drop_literal_row_source(self.parse(DUAL_LEG), "dual")
@@ -111,113 +116,68 @@ class RowSources:
 class TestRowSourcesOnPostgres(RowSources, unittest.TestCase):
     ENGINE = "postgres"
     DIALECT = "postgres"
-    ACCEPTS = frozenset(
-        {
-            "fromless",
-            "fromless_where",
-            "derived_table",
-            "derived_table_named_column",
-            "values_derived",
-            "values_derived_unnamed",
-        }
-    )
+    ACCEPTS = FROMLESS | DERIVED | VALUES_DERIVED
+    REJECTS = frozenset({"from_values", "system_one", "numbers_1", "dual"})
 
 
 @requires_engine("duckdb")
 class TestRowSourcesOnDuckDB(RowSources, unittest.TestCase):
     ENGINE = "duckdb"
     DIALECT = "duckdb"
-    ACCEPTS = frozenset(
-        {
-            "fromless",
-            "fromless_where",
-            "derived_table",
-            "derived_table_named_column",
-            "values_derived",
-            "values_derived_unnamed",
-            "from_values",
-        }
-    )
+    ACCEPTS = FROMLESS | DERIVED | VALUES_DERIVED | {"from_values"}
+    REJECTS = frozenset({"system_one", "numbers_1", "dual"})
 
 
 @requires_engine("datafusion")
 class TestRowSourcesOnDataFusion(RowSources, unittest.TestCase):
     ENGINE = "datafusion"
     DIALECT = "datafusion"
-    ACCEPTS = frozenset(
-        {
-            "fromless",
-            "fromless_where",
-            "derived_table",
-            "derived_table_named_column",
-            "values_derived",
-            "values_derived_unnamed",
-            "from_values",
-        }
-    )
+    ACCEPTS = FROMLESS | DERIVED | VALUES_DERIVED | {"from_values"}
+    REJECTS = frozenset({"system_one", "numbers_1", "dual"})
 
 
 @requires_engine("pyspark")
 class TestRowSourcesOnPySpark(RowSources, unittest.TestCase):
     ENGINE = "pyspark"
     DIALECT = "spark"
-    ACCEPTS = frozenset(
-        {
-            "fromless",
-            "fromless_where",
-            "derived_table",
-            "derived_table_named_column",
-            "values_derived",
-            "values_derived_unnamed",
-            "from_values",
-        }
-    )
+    ACCEPTS = FROMLESS | DERIVED | VALUES_DERIVED | {"from_values"}
+    REJECTS = frozenset({"system_one", "numbers_1", "dual"})
 
 
 @requires_engine("chdb")
 class TestRowSourcesOnClickHouse(RowSources, unittest.TestCase):
     ENGINE = "chdb"
     DIALECT = "clickhouse"
-    ACCEPTS = frozenset(
-        {
-            "fromless",
-            "fromless_where",
-            "derived_table",
-            "derived_table_named_column",
-            "from_values",
-            "system_one",
-            "numbers_1",
-        }
-    )
+    # chDB 3.x rejects a VALUES derived table and recent releases accept it, so neither is asserted.
+    ACCEPTS = FROMLESS | DERIVED | {"from_values", "system_one", "numbers_1"}
+    REJECTS = frozenset({"dual"})
 
 
 @requires_engine("sqlite")
 class TestRowSourcesOnSqlite(RowSources, unittest.TestCase):
     ENGINE = "sqlite"
     DIALECT = "sqlite"
-    ACCEPTS = frozenset(
-        {
-            "fromless",
-            "fromless_where",
-            "derived_table",
-            "derived_table_named_column",
-            "values_derived_unnamed",
-        }
-    )
+    ACCEPTS = FROMLESS | DERIVED | {"values_derived_unnamed"}
+    REJECTS = frozenset({"values_derived", "from_values", "system_one", "numbers_1", "dual"})
 
 
 @requires_engine("starrocks")
 class TestRowSourcesOnStarRocks(RowSources, unittest.TestCase):
     ENGINE = "starrocks"
     DIALECT = "starrocks"
-    ACCEPTS = frozenset({"fromless", "fromless_where"})
+    ACCEPTS = FROMLESS | DERIVED | VALUES_DERIVED | {"dual"}
+    REJECTS = frozenset({"from_values", "system_one", "numbers_1"})
+    ORIGINAL_RUNS = False
 
 
 @requires_engine("doris")
 class TestRowSourcesOnDoris(RowSources, unittest.TestCase):
     ENGINE = "doris"
     DIALECT = "doris"
-    ACCEPTS = frozenset({"fromless", "fromless_where"})
+    # Doris does not implement a VALUES derived table with a column list.
+    ACCEPTS = FROMLESS | DERIVED | {"values_derived_unnamed", "dual"}
+    REJECTS = frozenset({"values_derived", "from_values", "system_one", "numbers_1"})
+    ORIGINAL_RUNS = False
 
 
 if __name__ == "__main__":
