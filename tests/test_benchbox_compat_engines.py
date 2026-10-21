@@ -13,9 +13,9 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.benchbox.compat import (
     add_row_source_to_fromless_selects,
+    drop_literal_row_source,
     filtered_aggregates_to_conditional,
     inline_select_aliases,
-    literal_subquery_to_values,
     name_literal_subquery_columns,
     order_list_aggregates,
     qualify_columns_by_name,
@@ -135,19 +135,19 @@ class OnEngine:
         fromless = f"SELECT id FROM {ROWS} AS t WHERE EXISTS(SELECT 1 WHERE t.k = 'a' OR t.y = 0) ORDER BY id"
         rewritten = self.generate(
             add_row_source_to_fromless_selects(
-                self.parse(fromless), "(VALUES (1)) AS one(c)", self.DIALECT
+                self.parse(fromless), "(SELECT 1 AS c) AS one", self.DIALECT
             )
         )
-        self.assertIn("AS one(c) WHERE", rewritten)
+        self.assertIn("AS one WHERE", rewritten)
         self.assertEqual(self.query(rewritten), [(i,) for i in (1, 2, 3, 5, 6)])
 
-    def test_literal_subquery_to_values(self):
+    def test_drop_literal_row_source(self):
         sql = (
             f"SELECT SUM(r) FROM (SELECT x AS r FROM {ROWS} AS t "
             "UNION ALL SELECT 0 AS r FROM (SELECT 1) AS dual WHERE FALSE) AS c"
         )
-        rewritten = self.generate(literal_subquery_to_values(self.parse(sql), "dual", "dual_col"))
-        self.assertIn("dual(dual_col)", rewritten)
+        rewritten = self.generate(drop_literal_row_source(self.parse(sql), "dual"))
+        self.assertNotIn("dual", rewritten)
         self.assertEqual(self.query(rewritten), [(10,)])
 
     def test_name_literal_subquery_columns(self):

@@ -117,9 +117,15 @@ every gate (which columns, which alias, which keys) to the caller and returns a 
   the `...OrNullIf` combinators for `clickhouse` (other aggregates raise `NotImplementedError`),
   `agg(IF(cond, x, NULL))` for everything else; `windows_only=True` leaves ordinary aggregates alone. The
   BigQuery generator already writes this form without a rewrite.
-- `literal_subquery_to_values(expression, alias, column)` turns `(SELECT 1) AS alias` into
-  `(VALUES (1)) AS alias(column)`; `name_literal_subquery_columns(expression, column)` aliases the
-  literal of an unnamed one-column derived table instead.
+- `drop_literal_row_source(expression, alias)` removes the one-row `(SELECT 1) AS alias` source from a
+  `SELECT` that never reads it, leaving a `FROM`-less `SELECT 0 AS r WHERE FALSE`. No rewrite writes
+  `FROM VALUES (1)`, `(VALUES (1)) AS d(c)`, `system.one` or `dual`: the `FROM`-less form runs on
+  PostgreSQL, DuckDB, DataFusion, Spark, ClickHouse, SQLite, StarRocks and Doris (BigQuery needs
+  `add_row_source_to_fromless_selects` afterwards). `name_literal_subquery_columns(expression, column)`
+  instead aliases the literal of an unnamed one-column derived table, for engines that need a named column.
+- `flatten_count_of_count(expression)` turns `SELECT COUNT(*) FROM (SELECT COUNT(*) AS c FROM t WHERE p)`,
+  which always returns 1, into the inner `SELECT COUNT(*) FROM t WHERE p`. It changes the returned value (1
+  becomes the source row count), so a caller applies it only where the row count is the intended answer.
 - `wrap_grouped_scalar_subqueries(expression, aggregate=exp.First)` wraps a scalar subquery projected
   by a `GROUP BY` select in an aggregate.
 - `order_list_aggregates(expression, order_by, dialect)` turns `LIST(x)` and unordered `ARRAY_AGG(x)`
