@@ -56,8 +56,10 @@ class TableLayout:
     Attributes:
         engine: ClickHouse table engine, written as given (``MergeTree()``).
         format: table format or file format: ``delta``, ``iceberg``, ``parquet``, ``orc``...
+            On Spark, Databricks, Hive and Athena it replaces a ``USING`` or ``STORED AS``
+            the statement already has.
         stored_as: Hive-style ``STORED AS`` file format. Dialects that take ``STORED AS`` use
-            it in preference to ``format``.
+            it in preference to ``format``, and it replaces the statement's own file format.
         partition_by: partition columns or expressions, in order.
         partition_clause: a complete ``PARTITION BY ...`` clause written for the target
             dialect, for partitioning that is more than a column list (Doris and StarRocks

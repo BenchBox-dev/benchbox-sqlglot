@@ -85,6 +85,10 @@ class DdlOptions:
             ``VARCHAR(25)`` mapped to ``TEXT`` becomes ``TEXT``.
         singlestore: SingleStore ``SHARD KEY``, ``SORT KEY`` and ``REFERENCE TABLE`` clauses.
         strip_not_null: remove ``NOT NULL`` from columns.
+        strip_with_properties: remove the properties the target writes in a ``WITH (...)`` clause
+            (a Trino ``format = 'PARQUET'`` read for PostgreSQL, which has no such storage
+            parameter). Temporary and external markers and every other clause are kept, and
+            a layout's own properties are added afterwards.
         if_not_exists: write ``CREATE TABLE IF NOT EXISTS`` for a permanent ``CREATE TABLE``
             that does not say it (and is not turned into ``CREATE OR REPLACE``).
         schema: qualify table names that have no schema with this one; a dotted value is read
@@ -115,6 +119,7 @@ class DdlOptions:
     type_map: Mapping[str, str] = field(default_factory=dict)
     drop_type_parameters: Collection[str] = field(default_factory=frozenset)
     singlestore: SingleStoreKeys | None = None
+    strip_with_properties: bool = False
     strip_not_null: bool = False
     if_not_exists: bool = False
     schema: str | None = None
@@ -299,6 +304,18 @@ def _strip_not_null(create: exp.Create) -> None:
                 constraint.pop()
 
 
+def _strip_with_properties(create: exp.Create, target: Dialect) -> None:
+    properties = create.args.get("properties")
+    post_with = exp.Properties.Location.POST_WITH
+    if not isinstance(properties, exp.Properties):
+        return
+    locations = target.generator_class.PROPERTIES_LOCATION
+    kept = [p for p in properties.expressions if locations.get(type(p)) != post_with]
+    properties.set("expressions", kept)
+    if not kept:
+        create.set("properties", None)
+
+
 def _exists(create: exp.Create, options: DdlOptions) -> None:
     if options.if_not_exists and _is_permanent_table(create) and not create.args.get("replace"):
         create.set("exists", True)
@@ -441,6 +458,8 @@ def transpile_ddl(
                     kinds.extend(classes)
             if kinds:
                 _strip_constraints(tree, tuple(kinds))
+            if options.strip_with_properties:
+                _strip_with_properties(tree, target)
             if options.strip_not_null:
                 _strip_not_null(tree)
             _map_types(tree, options)

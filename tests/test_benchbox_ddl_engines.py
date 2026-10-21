@@ -550,6 +550,20 @@ class TestStarRocksLayoutOnStarRocks(OlapOnService, unittest.TestCase):
         name = self.create(FACT, default_layout=layout)
         self.assertIn("partitionby", self.show_create(name))
 
+    def test_standard_ddl_keeps_lengths_and_the_primary_key_model(self):
+        layout = TableLayout(
+            key_model="primary", distribute_by=["f_key"], buckets=4, properties=self.PROPS
+        )
+        name = self.create(
+            "CREATE TABLE fact (f_key INTEGER NOT NULL, f_code CHAR(10) NOT NULL, "
+            "f_note VARCHAR(44), PRIMARY KEY (f_key))",
+            default_layout=layout,
+        )
+        self.assertIn("primarykey(f_key)", self.show_create(name))
+        types = self.column_types(name)
+        self.assertEqual(types["f_note"], "varchar(44)")
+        self.assertEqual(types["f_code"], "char(10)")
+
 
 @requires_engine("doris")
 class TestDorisLayoutOnDoris(OlapOnService, unittest.TestCase):
