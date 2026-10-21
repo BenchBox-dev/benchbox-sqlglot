@@ -526,6 +526,27 @@ class OlapOnService:
         self.assertIn("distributedbyrandom", text)
         self.assertTrue(self.column_types(name)["t"].startswith("varchar"))
 
+    def test_bare_varchar_is_full_length_and_float_vectors_stay_four_byte(self):
+        name = self.create(
+            "CREATE TABLE plain (a INTEGER, t VARCHAR, n VARCHAR(5), f FLOAT, v FLOAT[4])",
+            float_as_real=True,
+            default_layout=TableLayout(
+                key_model="duplicate", distribution="random", buckets=2, properties=self.PROPS
+            ),
+        )
+        types = self.column_types(name)
+        self.assertEqual(types["t"], "varchar(65533)")
+        self.assertEqual(types["n"], "varchar(5)")
+        self.assertEqual(types["f"], "float")
+        self.assertEqual(types["v"], "array<float>")
+        long = "x" * 200
+        self.conn.execute(
+            f"INSERT INTO {self.DATABASE}.{name} VALUES (1, '{long}', 'ab', 1.5, [1.5, 2.5, 3.5, 4.5])"
+        )
+        self.assertEqual(
+            self.conn.execute(f"SELECT length(t) FROM {self.DATABASE}.{name}"), [(200,)]
+        )
+
 
 @requires_engine("starrocks")
 class TestStarRocksLayoutOnStarRocks(OlapOnService, unittest.TestCase):
