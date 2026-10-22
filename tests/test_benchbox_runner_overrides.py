@@ -11,6 +11,7 @@ from sqlglot import exp
 from sqlglot.benchbox.compat import inline_order_by_aliases
 from sqlglot.benchbox.engine_rewrites import (
     alias_qualified_projections,
+    decimal_division_to_double,
     qualify_alias_shadowed_columns,
 )
 from sqlglot.benchbox.rewrites import nullif_zero_divisors, safe_division
@@ -247,6 +248,45 @@ class TestQualifyAliasShadowedColumns(unittest.TestCase):
         sql = "SELECT SUM(n) AS n, (SELECT MAX(n) FROM t) AS m FROM (SELECT 1 AS n) AS s"
         out = qualify_alias_shadowed_columns(parse(sql)).find(exp.Subquery).sql("clickhouse")
         self.assertEqual(out, "(SELECT MAX(n) FROM t)")
+
+
+class TestDecimalDivisionToDouble(unittest.TestCase):
+    def rewrite(self, sql):
+        return decimal_division_to_double(parse(sql, "clickhouse")).sql("clickhouse")
+
+    def test_dividend_is_cast_and_keeps_null(self):
+        self.assertEqual(
+            self.rewrite("SELECT SUM(a) / SUM(b), (a + 1) / 2 FROM t"),
+            "SELECT CAST(SUM(a) AS Nullable(Float64)) / SUM(b), CAST((a + 1) AS Nullable(Float64)) / 2 FROM t",
+        )
+
+    def test_real_dividends_and_chained_divisions_are_left_alone(self):
+        for sql in (
+            "SELECT 5.0 / 3 FROM t",
+            "SELECT 1e3 / 3 FROM t",
+            "SELECT CAST(a AS Float64) / b FROM t",
+            "SELECT CAST(a AS Nullable(Float64)) / b FROM t",
+        ):
+            with self.subTest(sql=sql):
+                self.assertEqual(self.rewrite(sql), parse(sql, "clickhouse").sql("clickhouse"))
+        self.assertEqual(
+            self.rewrite("SELECT a / b / c FROM t"),
+            "SELECT CAST(a AS Nullable(Float64)) / b / c FROM t",
+        )
+
+    def test_applying_twice_changes_nothing(self):
+        once = decimal_division_to_double(parse(Q66, "clickhouse"))
+        self.assertEqual(decimal_division_to_double(once).sql("clickhouse"), once.sql("clickhouse"))
+
+    def test_q66_per_square_foot_columns_are_cast(self):
+        sql = self.rewrite(Q66)
+        self.assertIn("sum(CAST(jan_sales AS Nullable(Float64)) / w_warehouse_sq_ft)", sql)
+        self.assertNotIn("sum(jan_sales / w_warehouse_sq_ft)", sql)
+
+    def test_input_is_not_mutated_by_default(self):
+        tree = parse("SELECT a / b FROM t", "clickhouse")
+        decimal_division_to_double(tree)
+        self.assertEqual(tree.sql("clickhouse"), "SELECT a / b FROM t")
 
 
 if __name__ == "__main__":

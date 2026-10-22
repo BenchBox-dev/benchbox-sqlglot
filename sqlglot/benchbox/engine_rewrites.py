@@ -504,3 +504,41 @@ def qualify_alias_shadowed_columns(expression: E, copy: bool = True) -> E:
             if len(owners) == 1:
                 column.set("table", owners[0].copy())
     return expression
+
+
+def decimal_division_to_double(expression: E, copy: bool = True) -> E:
+    """Divide as ``DOUBLE`` so ClickHouse keeps the fractional digits of a decimal quotient.
+
+    ClickHouse gives ``Decimal(p, s) / Decimal`` and ``Decimal(p, s) / Int`` the scale ``s`` of the
+    dividend and truncates the rest (``CAST(75 AS Decimal(9, 2)) / 7`` is ``10.71``, not
+    ``10.714285714285714``), where DuckDB, SQLite and DataFusion divide in double precision.
+    The rewrite casts the dividend of every ``/`` to ``DOUBLE`` (``CAST(x AS Nullable(Float64))`` on
+    ClickHouse, which keeps NULL), so the quotient is ``Float64`` whatever the operand types are.
+    Integer quotients are already ``Float64`` in ClickHouse and do not change. A dividend that is
+    already ``DOUBLE``/``FLOAT``, a literal with a decimal point or exponent (ClickHouse reads it as
+    ``Float64``) or another division is left alone, so applying the rewrite twice changes nothing.
+
+    A zero divisor then yields ``inf`` (as in DuckDB) instead of ClickHouse's decimal division error;
+    combine with ``safe_division`` or ``nullif_zero_divisors`` for NULL.
+
+    Args:
+        expression: the expression to rewrite.
+        copy: rewrite a copy instead of mutating ``expression``.
+
+    Returns:
+        The rewritten expression.
+    """
+    if copy:
+        expression = expression.copy()
+    real = (exp.DType.DOUBLE, exp.DType.FLOAT)
+    for node in expression.find_all(exp.Div):
+        dividend = node.this
+        bare = dividend.unnest()
+        if isinstance(bare, exp.Div):
+            continue
+        if isinstance(bare, exp.Literal) and bare.is_number and any(c in bare.name for c in ".eE"):
+            continue
+        if isinstance(bare, exp.Cast) and bare.to.this in real:
+            continue
+        node.set("this", exp.Cast(this=dividend, to=exp.DataType.build(exp.DType.DOUBLE)))
+    return expression
