@@ -185,3 +185,19 @@ with no behavior of their own yet, so their identity and transpilation tests
 
 A dialect that later overrides generator or parser behavior must add an engine or
 record why one cannot be obtained.
+
+### Exact integer division from a Netezza source (`netezza-exact-division`, `postgres-exact-division`)
+
+`tests/test_netezza_exact_division_engines.py` runs the TPC-DS Q21, Q78 and Q83 ratio shapes and
+integer-literal-only quotients on every engine in CI. Executed where `/` truncates integers: SQLite,
+DataFusion, PostgreSQL and Trino (the Athena, Presto, Starburst and Dune dialect family shares the Trino
+generator). Executed where `/` is already exact, to prove no cast is wanted: DuckDB, PySpark (Spark,
+Databricks, Hive), chDB (ClickHouse), StarRocks and Doris (the MySQL family). Dialects whose `/` truncates
+but that have no engine in CI get the `DOUBLE`-family cast (`FLOAT` on T-SQL) asserted as text in
+`tests/dialects/test_netezza.py`: T-SQL, Synapse and Fabric (SQL Server's container needs a license
+acceptance and is not Synapse T-SQL), Teradata, Drill, Dremio, Redshift (managed; `DECIMAL` there means
+`DECIMAL(18,0)`, hence `DOUBLE PRECISION`), Greenplum, Firebolt (maps to `postgres`), Materialize and
+RisingWave. No BenchBox platform targets Materialize, RisingWave or Druid; Druid SQL truncates integer
+division but its dialect does not declare `TYPED_DIVISION`, so it is not changed. Vertica divides integers
+to a `NUMERIC` since version 6 and keeps its `/`, as do Oracle, Exasol, Snowflake (Databend), BigQuery and
+ClickHouse.

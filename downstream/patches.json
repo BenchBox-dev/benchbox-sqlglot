@@ -488,7 +488,7 @@
     },
     {
       "id": "netezza-exact-division",
-      "source": "7d51e99c8e406ded8940503f88ad59f8c7282f2f",
+      "source": "e22d8fa2164cf6108bb5acde724bcdd762f90a96",
       "status": "original",
       "depends": [
         "real-engine-ci",
@@ -500,31 +500,36 @@
       "paths": [
         "sqlglot/benchbox/division.py",
         "sqlglot/generators/netezza.py",
+        "sqlglot/generators/vertica.py",
         "tests/test_netezza_exact_division_engines.py"
       ],
       "tests": [
         "tests.dialects.test_netezza",
         "tests.test_netezza_exact_division_engines"
       ],
-      "reason": "The Netezza parser marks every `/` as exact (sqlglot/benchbox/division.py); the Netezza generator keeps its own truncating division. Netezza-sourced benchmark queries mean a quotient, as DuckDB computes it, so PostgreSQL-family and DataFusion targets write the dividend of a division that is not integer-literal-only and has no real operand as DECIMAL (DOUBLE on DataFusion and QuestDB). The DataFusion, QuestDB, Netezza dialect and parser edits and the unit tests live in their existing original entries; the execution test runs the TPC-DS Q21, Q78 and Q83 shapes on DuckDB, DataFusion, PostgreSQL and SQLite."
+      "reason": "The Netezza parser marks every `/` as exact (sqlglot/benchbox/division.py); the Netezza and Vertica generators keep their own division (Vertica's `/` already returns a NUMERIC). Netezza-sourced benchmark queries mean a quotient, as DuckDB computes it, so every target whose `/` truncates integers writes the dividend of a division that is not integer-literal-only and has no real operand as an exact type (see postgres-exact-division). The Netezza, Vertica, DataFusion and QuestDB dialect and generator edits and the unit tests live in their existing original entries; the execution test runs the TPC-DS Q21, Q78 and Q83 shapes on every engine job (SQLite, DuckDB, DataFusion, PostgreSQL, Trino, PySpark, chDB, StarRocks, Doris)."
     },
     {
       "id": "postgres-exact-division",
-      "source": "1a23f20bf41a8abb5068d5fcbaf5f723201999dc",
+      "source": "068a68147766df1c104d585148d7874d00e0b849",
       "status": "carried",
       "depends": [
         "postgres-extract-return-types",
+        "empty-group-by-generator",
         "netezza-exact-division"
       ],
       "paths": [
-        "sqlglot/generators/postgres.py"
+        "sqlglot/generator.py",
+        "sqlglot/generators/postgres.py",
+        "sqlglot/generators/redshift.py"
       ],
       "tests": [
         "tests.dialects.test_netezza",
         "tests.dialects.test_postgres",
+        "tests.dialects.test_redshift",
         "tests.test_netezza_exact_division_engines"
       ],
-      "reason": "PostgreSQL's generator calls sqlglot.benchbox.division.make_quotients_exact for a division the Netezza parser marked, with EXACT_DIVISION_TYPE (DECIMAL; DataFusion and QuestDB override to DOUBLE) and EXACT_MARKED_DIVISION (off for Netezza). PostgreSQL and DataFusion truncate integer / integer, which returned 4 instead of 6 rows for TPC-DS Q21 and wrong ratios for Q78 and Q83; a division of integer literals keeps the source's truncating division and PostgreSQL-sourced SQL is unchanged.",
+      "reason": "The base generator's div_sql calls sqlglot.benchbox.division.make_quotients_exact for a division the Netezza parser marked, when the target dialect has TYPED_DIVISION (PostgreSQL, Redshift, T-SQL and Fabric, Presto, Trino and Athena, Teradata, Drill, Dremio), with EXACT_DIVISION_TYPE (DOUBLE; DECIMAL on PostgreSQL; DataFusion and QuestDB DOUBLE) and EXACT_MARKED_DIVISION (off for Netezza and Vertica). Integer / integer truncates on those engines, which returned 4 instead of 6 rows for TPC-DS Q21 and wrong ratios for Q78 and Q83; Redshift uses DOUBLE because a bare DECIMAL is DECIMAL(18,0). A division of integer literals keeps the source's truncating division and SQL read as one of those dialects is unchanged.",
       "patch": "downstream/patches/postgres-exact-division.patch"
     },
     {

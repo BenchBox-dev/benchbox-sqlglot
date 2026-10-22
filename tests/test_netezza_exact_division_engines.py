@@ -1,10 +1,13 @@
-"""Execute integer division read from Netezza on the engines whose `/` truncates.
+"""Execute integer division read from Netezza on every engine in CI.
 
-Run by the ``in-process`` and ``postgres`` jobs of ``benchbox-engines.yml``. The query shapes are the
-ratios of TPC-DS Q21 (``inv_after / inv_before``, two integer SUMs), Q78 (``ROUND(ss_qty / (...), 2)``)
-and Q83 (``x / (a + b + c) / 3.0 * 100``). DuckDB's `/` is exact and is the reference; PostgreSQL and
-DataFusion must return the same quotients, while a quotient of integer literals keeps the source's
-truncating division.
+Run by every engine job of ``benchbox-engines.yml``. The query shapes are the ratios of TPC-DS Q21
+(``inv_after / inv_before``, two integer SUMs), Q78 (``ROUND(ss_qty / (...), 2)``) and Q83
+(``x / (a + b + c) / 3.0 * 100``). DuckDB's `/` is exact and is the reference. Engines whose `/`
+truncates integers (PostgreSQL, DataFusion, Trino, SQLite) must return the same quotients, and so
+must the engines whose `/` is already exact (DuckDB, PySpark, chDB, StarRocks, Doris). A quotient of
+integer literals keeps the source's truncating division where the engine truncates. T-SQL, Teradata,
+Drill, Dremio, Redshift and Presto have no engine in CI: their casts are asserted as text in
+``tests/dialects/test_netezza.py`` (``downstream/ENGINE-GAPS.md``).
 """
 
 import unittest
@@ -13,11 +16,12 @@ import sqlglot
 from tests import engines
 from tests.engines import requires_engine
 
-SETUP = (
-    "CREATE TABLE inv (item INT, before_qty BIGINT, after_qty BIGINT, price DECIMAL(7, 2))",
-    "INSERT INTO inv VALUES (1, 4, 10, 1.25), (2, 3, 2, 2.50), (3, 7, 14, 0.75), (4, 0, 5, 1.00)",
+ROWS = (
+    "SELECT 1 AS item, 4 AS before_qty, 10 AS after_qty, 1.25 AS price "
+    "UNION ALL SELECT 2, 3, 2, 2.50 "
+    "UNION ALL SELECT 3, 7, 14, 0.75"
 )
-RATIOS = """
+RATIOS = f"""
 SELECT item,
        CASE WHEN before_qty > 0 THEN after_qty / before_qty ELSE NULL END AS q21,
        ROUND(after_qty / (before_qty + 1), 2) AS q78,
@@ -26,8 +30,7 @@ SELECT item,
        (after_qty + 1) / 2 AS parenthesised,
        after_qty / before_qty / 2 AS chained,
        price / after_qty AS decimal_dividend
-FROM inv
-WHERE before_qty > 0
+FROM ({ROWS}) AS inv
 ORDER BY item
 """
 LITERALS = "SELECT 2020 / 3, (1000 - 64) / 10, 7 / 2 / 2"
@@ -38,72 +41,52 @@ EXPECTED = [
 ]
 
 
-def run(engine, dialect, sql):
-    with engines.connect(engine) as connection:
-        for statement in SETUP:
-            connection.execute(
-                statement.replace("CREATE TABLE", "CREATE TEMP TABLE")
-                if engine == "postgres"
-                else statement
-            )
-        return connection.execute(sqlglot.transpile(sql, read="netezza", write=dialect)[0])
+def translate(engine, sql):
+    return sqlglot.transpile(sql, read="netezza", write=engines.ENGINES[engine].dialect)[0]
 
 
-class ExactDivisionCase(unittest.TestCase):
+class ExactDivisionMixin:
     engine = ""
+    truncating_literals = False
 
-    def assert_exact(self):
-        rows = run(self.engine, self.engine, RATIOS)
+    def test_quotients_are_exact(self):
+        with engines.connect(self.engine) as connection:
+            rows = connection.execute(translate(self.engine, RATIOS))
         self.assertEqual(len(rows), len(EXPECTED))
         for actual, expected in zip(rows, EXPECTED):
-            self.assertEqual(actual[0], expected[0])
+            self.assertEqual(int(actual[0]), expected[0])
             for left, right in zip(actual[1:], expected[1:]):
                 self.assertAlmostEqual(float(left), right, places=6)
 
-    def assert_literals_truncate(self):
+    def test_literal_quotients_follow_the_source(self):
         with engines.connect(self.engine) as connection:
-            rows = connection.execute(
-                sqlglot.transpile(LITERALS, read="netezza", write=self.engine)[0]
-            )
-        self.assertEqual([tuple(int(v) for v in row) for row in rows], [(673, 93, 1)])
+            rows = connection.execute(translate(self.engine, LITERALS))
+        values = [float(v) for v in rows[0]]
+        if self.truncating_literals:
+            self.assertEqual(values, [673, 93, 1])
+        else:
+            self.assertAlmostEqual(values[0], 2020 / 3, places=6)
 
 
-@requires_engine("duckdb")
-class TestExactDivisionOnDuckDB(ExactDivisionCase):
-    engine = "duckdb"
+def case(name, truncating):
+    @requires_engine(name)
+    class Case(ExactDivisionMixin, unittest.TestCase):
+        engine = name
+        truncating_literals = truncating
 
-    def test_reference(self):
-        self.assert_exact()
-
-
-@requires_engine("datafusion")
-class TestExactDivisionOnDataFusion(ExactDivisionCase):
-    engine = "datafusion"
-
-    def test_quotients_are_exact(self):
-        self.assert_exact()
-
-    def test_literal_quotients_truncate(self):
-        self.assert_literals_truncate()
+    Case.__name__ = Case.__qualname__ = f"TestExactDivisionOn{name.title()}"
+    return Case
 
 
-@requires_engine("postgres")
-class TestExactDivisionOnPostgres(ExactDivisionCase):
-    engine = "postgres"
-
-    def test_quotients_are_exact(self):
-        self.assert_exact()
-
-    def test_literal_quotients_truncate(self):
-        self.assert_literals_truncate()
-
-
-@requires_engine("sqlite")
-class TestExactDivisionOnSQLite(ExactDivisionCase):
-    engine = "sqlite"
-
-    def test_quotients_are_exact(self):
-        self.assert_exact()
+TestExactDivisionOnDuckdb = case("duckdb", False)
+TestExactDivisionOnSqlite = case("sqlite", True)
+TestExactDivisionOnDatafusion = case("datafusion", True)
+TestExactDivisionOnPostgres = case("postgres", True)
+TestExactDivisionOnTrino = case("trino", True)
+TestExactDivisionOnPyspark = case("pyspark", False)
+TestExactDivisionOnChdb = case("chdb", False)
+TestExactDivisionOnStarrocks = case("starrocks", False)
+TestExactDivisionOnDoris = case("doris", False)
 
 
 if __name__ == "__main__":

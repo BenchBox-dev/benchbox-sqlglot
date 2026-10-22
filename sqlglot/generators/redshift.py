@@ -18,6 +18,7 @@ from sqlglot.helper import seq_get
 
 
 class RedshiftGenerator(PostgresGenerator):
+    EXACT_DIVISION_TYPE = exp.DType.DOUBLE
     LOCKING_READS_SUPPORTED = False
     QUERY_HINTS = False
     CAST_TO_INT_ROUNDS = True

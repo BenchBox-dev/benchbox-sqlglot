@@ -8,6 +8,7 @@ from decimal import Decimal
 from functools import reduce, wraps
 
 from sqlglot import exp
+from sqlglot.benchbox.division import make_quotients_exact
 from sqlglot.errors import ErrorLevel, UnsupportedError, concat_messages
 from sqlglot.expressions import apply_index_offset
 from sqlglot.expressions.core import maybe_parse
@@ -360,6 +361,9 @@ class Generator:
 
     # Whether GROUP BY () is accepted
     SUPPORTS_EMPTY_GROUP_BY = True
+
+    EXACT_MARKED_DIVISION = True
+    EXACT_DIVISION_TYPE = exp.DType.DOUBLE
 
     # The string used for creating an index on a table
     INDEX_ON = "ON"
@@ -4608,6 +4612,9 @@ class Generator:
         return self.binary(expression, "||")
 
     def div_sql(self, expression: exp.Div) -> str:
+        if self.EXACT_MARKED_DIVISION and self.dialect.TYPED_DIVISION:
+            make_quotients_exact(expression, self.EXACT_DIVISION_TYPE)
+
         l, r = expression.left, expression.right
 
         if not self.dialect.SAFE_DIVISION and expression.args.get("safe"):

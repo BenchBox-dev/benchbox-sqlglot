@@ -224,14 +224,19 @@ them), which keep the source's truncating division: `2020 / 3` from PostgreSQL s
 carried patch `sqlite-exact-integer-division` (TPC-DS Q21's `inv_after / inv_before`
 is two integer SUMs); `tests/dialects/test_sqlite.py` executes the Q21 shape on SQLite and DuckDB.
 
-PostgreSQL and DataFusion truncate integer / integer too, so Netezza-sourced benchmark queries need the same exact
-quotient there. The Netezza parser marks every `/` it reads (`sqlglot/benchbox/division.py`, `original` entry
-`netezza-exact-division`); the PostgreSQL generator (carried patch `postgres-exact-division`, inherited by DataFusion,
-Greenplum, Vertica and QuestDB) writes the dividend of a marked division as `CAST(x AS DECIMAL)`, or `DOUBLE PRECISION` on
-DataFusion and QuestDB (`EXACT_DIVISION_TYPE`), with the SQLite rule for which operands need no cast (decimal literals,
-REAL casts, `AVG`, integer-literal-only quotients, which keep source semantics). Only Netezza sources are marked: PostgreSQL
-and DataFusion SQL read as such is unchanged, and Netezza output keeps its own `/` (`EXACT_MARKED_DIVISION = False`).
-`tests/test_netezza_exact_division_engines.py` runs the TPC-DS Q21, Q78 and Q83 shapes on DuckDB, DataFusion, PostgreSQL and SQLite.
+Every other target whose `/` truncates integers (the dialects with `TYPED_DIVISION`: PostgreSQL and its family, DataFusion,
+Redshift, T-SQL, Fabric, Presto, Trino, Athena, Teradata, Drill and Dremio) needs the same exact quotient for a
+Netezza-sourced benchmark query. The Netezza parser marks every `/` it reads (`sqlglot/benchbox/division.py`, `original`
+entry `netezza-exact-division`); the base generator's `div_sql` (carried patch `postgres-exact-division`, which also owns the
+PostgreSQL and Redshift edits) writes the dividend of a marked division as `CAST(x AS <EXACT_DIVISION_TYPE>)` when the target
+dialect has `TYPED_DIVISION`. `EXACT_DIVISION_TYPE` is `DOUBLE` (`FLOAT` on T-SQL), except `DECIMAL` on PostgreSQL,
+Greenplum, Materialize and RisingWave, where it is an unconstrained `NUMERIC`; Redshift stays `DOUBLE` because its bare
+`DECIMAL` is `DECIMAL(18,0)`. The SQLite rule decides which operands need no cast (decimal literals, REAL casts, `AVG`,
+integer-literal-only quotients, which keep source semantics). Only Netezza sources are marked: SQL read as PostgreSQL,
+DataFusion, T-SQL and so on is unchanged, and Netezza and Vertica output (`EXACT_MARKED_DIVISION = False`; Vertica's `/`
+already returns a `NUMERIC`) keeps its own `/`. Targets whose `/` is already exact (DuckDB, Spark, Snowflake, ClickHouse,
+BigQuery, MySQL family, Oracle) write the source's `/` unchanged. `tests/test_netezza_exact_division_engines.py` executes the
+TPC-DS Q21, Q78 and Q83 shapes; `downstream/ENGINE-GAPS.md` lists which targets are executed and which are asserted as text.
 
 `ansi` and `standard` are not dialects the fork provides, and the fork has no alias
 dialects. The caller resolves them before calling SQLGlot: BenchBox's platform
