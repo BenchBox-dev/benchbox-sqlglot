@@ -745,6 +745,22 @@
         "tests.test_benchbox_runner_overrides_engines"
       ],
       "reason": "Rewrites that replace the TPC-DS runner overrides in BenchBox, in original files (so no patch is needed): nullif_zero_divisors in rewrites.py (Q90 divisor pmc, every dialect), inline_order_by_aliases in compat.py (Q36, Q70, Q86 on PostgreSQL), alias_qualified_projections (Q47, Q57) and qualify_alias_shadowed_columns (Q66) in engine_rewrites.py for ClickHouse. Tests run the real queries on DuckDB, PostgreSQL and chDB with inline rows and assert each engine rejects the unrewritten text (downstream/ENGINE-GAPS.md)."
+    },
+    {
+      "id": "clickhouse-decimal-division",
+      "source": "46c076d442017495defb4da5aef72a09cfddb2eb",
+      "status": "original",
+      "depends": [
+        "tpcds-runner-override-rewrites"
+      ],
+      "paths": [
+        "sqlglot/benchbox/engine_rewrites.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_runner_overrides",
+        "tests.test_benchbox_runner_overrides_engines"
+      ],
+      "reason": "decimal_division_to_double in engine_rewrites.py (an original file, so no patch is needed) casts the dividend of every division to DOUBLE for ClickHouse, which truncates decimal quotients to the dividend's scale. Tests run TPC-DS Q36 and Q66 on chDB against DuckDB with quotients that do not fit two decimals, and assert the truncated rows differ without the rewrite (downstream/ENGINE-GAPS.md)."
     }
   ]
 }

@@ -67,8 +67,8 @@ asserts that the engine rejects the unrewritten text (`lochierarchy` unknown on 
 aggregate on ClickHouse, division by zero on PostgreSQL and ClickHouse; DuckDB returns `inf`), so the rewrites cannot become no-ops unnoticed. The
 data is a few inline rows per table. The queries also ran at scale factor 0.01 on dsdgen data (PostgreSQL 16.2, ClickHouse 26.1.9.5, the version
 of chDB's core, and DuckDB 1.5) when the rewrites were written. ClickHouse's Q36 and Q66 quotients differed from DuckDB's in the second decimal
-there, because ClickHouse keeps the dividend's scale when it divides decimals; no rewrite here changes that, and the tests use quotients that are
-exact at scale 2.
+there, because ClickHouse keeps the dividend's scale when it divides decimals; `decimal_division_to_double` fixes that, and its tests
+(`TestDecimalDivisionOnClickHouse` and Q66) use quotients that do not fit two decimals and assert the unrewritten rows differ from DuckDB's.
 `tests/test_benchbox_subqueries_engines.py` runs in the same two jobs: it creates small tables on Postgres, DuckDB,
 DataFusion and PySpark and compares the rows of the original query with the rows of its `decorrelate_subqueries`,
 `not_in_subquery_to_not_exists` and `in_aggregate_subquery_to_exists` rewrites (scalar subquery in `HAVING`, `NOT IN`,

@@ -125,6 +125,12 @@ takes an expression and options (every name or number it matches is an argument)
   `ILLEGAL_AGGREGATION` (TPC-DS Q66). `ORDER BY` keeps the alias, as SQL does, and the query-wide setting
   `prefer_column_name_to_alias` is not used because it also moves `ORDER BY total_sales` of Q33, Q56, Q60 and Q71
   to the column and breaks them.
+- `decimal_division_to_double(expression)` casts the dividend of every `/` to `DOUBLE`
+  (`CAST(x AS Nullable(Float64))` on ClickHouse). ClickHouse gives `Decimal / Decimal` and `Decimal / Int` the dividend's
+  scale and truncates (`CAST(75 AS Decimal(9, 2)) / 7` is `10.71`), where DuckDB divides in doubles. Integer quotients are
+  already `Float64` there; float dividends, float literals and chained divisions are left alone. A zero divisor then gives
+  `inf` as in DuckDB; pair it with `safe_division` or `nullif_zero_divisors` for NULL. It changes TPC-DS Q2, Q12, Q20,
+  Q36, Q59, Q66, Q98 and TPC-H Q8 at scale factor 0.01 and no query for the worse.
 
 StarRocks and Doris need no generator change: both already quote the reserved words that fail as aliases
 (checked unquoted on StarRocks 4.0.16 and Doris 4.1.3), write `SUBSTRING(x FROM a FOR b)` as

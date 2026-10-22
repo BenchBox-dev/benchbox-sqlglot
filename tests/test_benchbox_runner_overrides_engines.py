@@ -16,6 +16,7 @@ import sqlglot
 from sqlglot.benchbox.compat import inline_order_by_aliases
 from sqlglot.benchbox.engine_rewrites import (
     alias_qualified_projections,
+    decimal_division_to_double,
     qualify_alias_shadowed_columns,
 )
 from sqlglot.benchbox.rewrites import nullif_zero_divisors
@@ -386,7 +387,7 @@ def q66_data():
                     "TN",
                     "United States",
                 ),
-                (2, "Doors canno", 20, "Fairview", "Williamson County", "TN", "United States"),
+                (2, "Doors canno", 30, "Fairview", "Williamson County", "TN", "United States"),
             ],
         ),
         date_dim=union_all(
@@ -411,9 +412,47 @@ class TestWarehouseMonthlyQueryOnClickHouse(unittest.TestCase):
         with self.assertRaises(Exception) as caught:
             engines.execute("chdb", with_data(prefix, clickhouse_form(Q66)))
         self.assertIn("inside another aggregate", str(caught.exception))
-        rewritten = clickhouse_form(Q66, qualify_alias_shadowed_columns)
+        qualified = clickhouse_form(Q66, qualify_alias_shadowed_columns)
+        # The warehouse areas (70, 30) give quotients that do not fit two decimals, so ClickHouse
+        # truncates them until the dividend is cast to a double.
+        truncated = comparable(engines.execute("chdb", with_data(prefix, qualified)))
+        self.assertNotEqual(truncated, reference)
+        rewritten = clickhouse_form(Q66, qualify_alias_shadowed_columns, decimal_division_to_double)
         self.assertEqual(
             comparable(engines.execute("chdb", with_data(prefix, rewritten))), reference
+        )
+
+
+@requires_engine("duckdb")
+@requires_engine("chdb")
+class TestDecimalDivisionOnClickHouse(unittest.TestCase):
+    """ClickHouse truncates a decimal quotient to the dividend's scale; DuckDB divides in doubles."""
+
+    def test_q36_gross_margin(self):
+        reference = run_reference(Q36_DATA, Q36)
+        self.assertGreater(len(reference), 4)
+
+        def run(sql):
+            # ClickHouse fills the rolled-up columns with '' where DuckDB has NULL.
+            rows = comparable(engines.execute("chdb", with_data(Q36_DATA, sql)))
+            return [tuple(None if cell == "" else cell for cell in row) for row in rows]
+
+        self.assertNotEqual(run(clickhouse_form(Q36)), reference)
+        self.assertEqual(run(clickhouse_form(Q36, decimal_division_to_double)), reference)
+
+    def test_nulls_integers_and_float_literals_keep_their_values(self):
+        sql = (
+            "WITH t AS (SELECT CAST(75 AS Nullable(Decimal(9, 2))) AS a, 7 AS b, "
+            "CAST(NULL AS Nullable(Decimal(9, 2))) AS n) "
+            "SELECT a / b AS q, n / b AS null_q, b / 2 AS int_q, 5.0 / 3 AS float_q, "
+            "(a + 1) / (b * 2) AS expr_q FROM t"
+        )
+        tree = decimal_division_to_double(sqlglot.parse_one(sql, read="clickhouse"))
+        row = engines.execute("chdb", tree.sql("clickhouse"))[0]
+        self.assertEqual(row[1], "\\N")
+        self.assertEqual(
+            [round(float(v), 6) for i, v in enumerate(row) if i != 1],
+            [round(75 / 7, 6), 3.5, round(5 / 3, 6), round(76 / 14, 6)],
         )
 
 
