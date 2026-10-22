@@ -19,8 +19,7 @@ from tests.engines import requires_engine
 ROWS = (
     "SELECT 1 AS item, 4 AS before_qty, 10 AS after_qty, 1.25 AS price "
     "UNION ALL SELECT 2, 3, 2, 2.50 "
-    "UNION ALL SELECT 3, 7, 14, 0.75 "
-    "UNION ALL SELECT 4, 0, 5, 1.00"
+    "UNION ALL SELECT 3, 7, 14, 0.75"
 )
 RATIOS = f"""
 SELECT item,
@@ -32,7 +31,6 @@ SELECT item,
        after_qty / before_qty / 2 AS chained,
        price / after_qty AS decimal_dividend
 FROM ({ROWS}) AS inv
-WHERE before_qty > 0
 ORDER BY item
 """
 LITERALS = "SELECT 2020 / 3, (1000 - 64) / 10, 7 / 2 / 2"
