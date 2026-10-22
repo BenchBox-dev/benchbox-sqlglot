@@ -1978,6 +1978,13 @@ class Generator:
                     node = node.subquery(copy=False)
                     if not self.SET_OP_PARENTHESIZED_OPERANDS:
                         node = exp.select("*").from_(node, copy=False)
+                elif (
+                    not self.SET_OP_PARENTHESIZED_OPERANDS
+                    and isinstance(node, exp.Subquery)
+                    and not node.alias
+                    and isinstance(node.this, exp.Query)
+                ):
+                    node = exp.select("*").from_(node, copy=False)
                 sqls.append(self.sql(node))
 
         this = self.sep().join(sqls)
