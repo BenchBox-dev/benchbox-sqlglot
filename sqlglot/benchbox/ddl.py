@@ -22,6 +22,7 @@ from sqlglot.dialects.duckdb import DuckDB
 from sqlglot.dialects.doris import Doris
 from sqlglot.dialects.postgres import Postgres
 from sqlglot.dialects.questdb import QuestDB
+from sqlglot.dialects.singlestore import SingleStore
 from sqlglot.dialects.starrocks import StarRocks
 from sqlglot.dialects.tsql import TSQL
 from sqlglot.tokens import TokenType
@@ -107,6 +108,11 @@ class DdlOptions:
             the source dialect reads it as 8-byte (PostgreSQL), for DDL written with DuckDB's
             meaning of ``FLOAT``. Every target then gets its own 4-byte type (``FLOAT``,
             ``REAL``, ``Float32``) or, where it has none (BigQuery, Snowflake), its only float.
+        vector_type: for a T-SQL target that has the native ``VECTOR`` type (SQL Server 2025, Azure SQL),
+            write a fixed-size 4-byte float array (``FLOAT[n]`` read with ``float_as_real``) as
+            ``VECTOR(n)``. A T-SQL ``VECTOR`` holds 4-byte floats only, so any other element is a
+            ``ValueError``. Without the option an array column on T-SQL (Synapse, Fabric Warehouse and
+            plain SQL Server, which have no array type) is a ``ValueError``; no invalid DDL is written.
         layouts: table name to the ``TableLayout`` written for that table. Names are matched
             case-insensitively, without any schema qualifier.
         default_layout: the ``TableLayout`` for permanent tables that have no entry in
@@ -134,6 +140,7 @@ class DdlOptions:
     table_suffix: str = ""
     table_case: str | None = None
     float_as_real: bool = False
+    vector_type: bool = False
     layouts: Mapping[str, TableLayout] = field(default_factory=dict)
     default_layout: TableLayout | None = None
 
@@ -412,6 +419,93 @@ def _target_types(create: exp.Create, target: Dialect) -> None:
             data_type.replace(exp.DataType(this=exp.DType.USERDEFINED, kind="REAL"))
 
 
+_SINGLESTORE_VECTOR_ELEMENTS = frozenset(
+    {
+        exp.DType.TINYINT,
+        exp.DType.SMALLINT,
+        exp.DType.INT,
+        exp.DType.BIGINT,
+        exp.DType.FLOAT,
+        exp.DType.DOUBLE,
+    }
+)
+
+
+def _singlestore_vectors(create: exp.Create) -> None:
+    """SingleStore has no ``ARRAY`` column; a fixed-size numeric array is ``VECTOR(n, element)``.
+
+    ``FLOAT[256]`` read with 4-byte floats is ``VECTOR(256, F32)`` and ``DOUBLE[256]`` is
+    ``VECTOR(256, F64)``. An array without a size has no dimension to give ``VECTOR`` and a
+    non-numeric element has no vector element type, so both are a ``ValueError``.
+    """
+    schema = create.this
+    if not isinstance(schema, exp.Schema):
+        return
+    for column in schema.find_all(exp.ColumnDef):
+        kind = column.args.get("kind")
+        if not isinstance(kind, exp.DataType) or not kind.is_type(exp.DType.ARRAY):
+            continue
+        sizes = kind.args.get("values") or []
+        element = kind.expressions[0] if kind.expressions else None
+        if len(sizes) != 1 or not isinstance(sizes[0], exp.Literal) or not sizes[0].is_int:
+            raise ValueError(
+                f"SingleStore column {column.name!r}: an array needs a fixed size to become a VECTOR"
+            )
+        if (
+            not isinstance(element, exp.DataType)
+            or element.this not in _SINGLESTORE_VECTOR_ELEMENTS
+        ):
+            raise ValueError(
+                f"SingleStore column {column.name!r}: VECTOR elements are integers or floats"
+            )
+        kind.replace(
+            exp.DataType(
+                this=exp.DType.VECTOR,
+                expressions=[
+                    exp.DataType(this=element.this),
+                    exp.DataTypeParam(this=exp.Literal.number(sizes[0].name)),
+                ],
+            )
+        )
+
+
+def _tsql_arrays(create: exp.Create, vector_type: bool) -> None:
+    """T-SQL has no array column type; only the native ``VECTOR(n)`` holds an array of floats.
+
+    With ``vector_type`` a fixed-size array of 4-byte floats is ``VECTOR(n)``; every other array
+    column, and every array column without the option, is a ``ValueError``.
+    """
+    schema = create.this
+    if not isinstance(schema, exp.Schema):
+        return
+    for column in schema.find_all(exp.ColumnDef):
+        kind = column.args.get("kind")
+        if not isinstance(kind, exp.DataType) or not kind.is_type(exp.DType.ARRAY):
+            continue
+        if not vector_type:
+            raise ValueError(
+                f"T-SQL column {column.name!r}: T-SQL has no array column type; "
+                "set vector_type for a target with the native VECTOR type"
+            )
+        sizes = kind.args.get("values") or []
+        element = kind.expressions[0] if kind.expressions else None
+        if len(sizes) != 1 or not isinstance(sizes[0], exp.Literal) or not sizes[0].is_int:
+            raise ValueError(
+                f"T-SQL column {column.name!r}: an array needs a fixed size to become a VECTOR"
+            )
+        if not isinstance(element, exp.DataType) or not element.is_type(exp.DType.FLOAT):
+            raise ValueError(
+                f"T-SQL column {column.name!r}: VECTOR holds 4-byte floats; "
+                "read the DDL with float_as_real for a FLOAT array"
+            )
+        kind.replace(
+            exp.DataType(
+                this=exp.DType.VECTOR,
+                expressions=[exp.DataTypeParam(this=exp.Literal.number(sizes[0].name))],
+            )
+        )
+
+
 def _questdb_types(create: exp.Create) -> None:
     """QuestDB column types take no length: ``VARCHAR(25)`` and ``CHAR(25)`` are ``VARCHAR``.
 
@@ -525,6 +619,10 @@ def transpile_ddl(
             _map_types(tree, options)
             if isinstance(target, QuestDB):
                 _questdb_types(tree)
+            if isinstance(target, SingleStore):
+                _singlestore_vectors(tree)
+            if isinstance(target, TSQL):
+                _tsql_arrays(tree, options.vector_type)
             _target_types(tree, target)
             _replace(tree, options)
             _exists(tree, options)
