@@ -4,6 +4,7 @@ import re
 import typing as t
 
 from sqlglot import exp
+from sqlglot.benchbox.division import mark_exact_division
 from sqlglot.parsers.postgres import PostgresParser
 from sqlglot.tokens import TokenType
 
@@ -60,6 +61,7 @@ class NetezzaParser(PostgresParser):
     def _parse_factor(self, parse_mod: bool = True) -> exp.Expr | None:
         start = self._index
         this = super()._parse_factor(parse_mod=parse_mod)
+        mark_exact_division(this)
         if (
             isinstance(this, exp.Literal)
             and this.is_number

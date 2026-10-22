@@ -34,6 +34,38 @@ class TestNetezza(Validator):
             },
         )
 
+    def test_exact_division(self):
+        source = "SELECT a / b, SUM(a) / SUM(b), a / b / c, (a + 1) / 2, x / 3.0, 2020 / 3, (1000 - 64) / 10"
+
+        def exact(type_name):
+            return (
+                f"SELECT CAST(a AS {type_name}) / b, CAST(SUM(a) AS {type_name}) / SUM(b), "
+                f"CAST(a AS {type_name}) / b / c, CAST((a + 1) AS {type_name}) / 2, "
+                "x / 3.0, 2020 / 3, (1000 - 64) / 10"
+            )
+
+        self.validate_all(
+            source,
+            read={"netezza": source},
+            write={
+                "netezza": source,
+                "duckdb": source,
+                "postgres": exact("DECIMAL"),
+                "greenplum": exact("DECIMAL"),
+                "datafusion": exact("DOUBLE PRECISION"),
+                "questdb": exact("DOUBLE PRECISION"),
+            },
+        )
+
+    def test_exact_division_applies_only_to_netezza_sources(self):
+        for source in ("postgres", "datafusion"):
+            for target in ("postgres", "datafusion"):
+                with self.subTest(source=source, target=target):
+                    self.assertEqual(
+                        parse_one("SELECT a / b FROM t", read=source).sql(target),
+                        "SELECT a / b FROM t",
+                    )
+
     def test_dialect_is_registered(self):
         dialect = Dialect.get_or_raise("netezza")
         self.assertEqual(type(dialect).__name__, "Netezza")
