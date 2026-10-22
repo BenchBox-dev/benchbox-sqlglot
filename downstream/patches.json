@@ -764,12 +764,14 @@
     },
     {
       "id": "clickhouse-rollup-nulls",
-      "source": "3155cec7085895a0bdc8aa34b9217efbe39f4849",
+      "source": "6b4585aa202bf7c08957c0d52b88adee35ae4069",
       "status": "original",
       "depends": [
         "clickhouse-decimal-division"
       ],
-      "paths": [],
+      "paths": [
+        "sqlglot/benchbox/engine_rewrites.py"
+      ],
       "tests": [
         "tests.test_benchbox_runner_overrides",
         "tests.test_benchbox_runner_overrides_engines"
