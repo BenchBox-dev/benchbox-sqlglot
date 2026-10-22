@@ -487,6 +487,47 @@
       "reason": "Engine-compatibility rewrites in sqlglot.benchbox.compat (alias inlining, column qualification by name, one-row sources for FROM-less selects, FILTER removal for BigQuery, ClickHouse and others, literal-subquery naming and VALUES, grouped scalar subqueries, ordered list aggregates) with every gate an argument, the DataFusion generator that drops an unsupported GROUP BY (), and execution tests on Postgres, DuckDB, DataFusion, PySpark and chDB."
     },
     {
+      "id": "netezza-exact-division",
+      "source": "7d51e99c8e406ded8940503f88ad59f8c7282f2f",
+      "status": "original",
+      "depends": [
+        "real-engine-ci",
+        "platform-dialect-modules",
+        "netezza-sqlite-idioms",
+        "engine-compat-rewrites",
+        "sqlite-exact-integer-division"
+      ],
+      "paths": [
+        "sqlglot/benchbox/division.py",
+        "sqlglot/generators/netezza.py",
+        "tests/test_netezza_exact_division_engines.py"
+      ],
+      "tests": [
+        "tests.dialects.test_netezza",
+        "tests.test_netezza_exact_division_engines"
+      ],
+      "reason": "The Netezza parser marks every `/` as exact (sqlglot/benchbox/division.py); the Netezza generator keeps its own truncating division. Netezza-sourced benchmark queries mean a quotient, as DuckDB computes it, so PostgreSQL-family and DataFusion targets write the dividend of a division that is not integer-literal-only and has no real operand as DECIMAL (DOUBLE on DataFusion and QuestDB). The DataFusion, QuestDB, Netezza dialect and parser edits and the unit tests live in their existing original entries; the execution test runs the TPC-DS Q21, Q78 and Q83 shapes on DuckDB, DataFusion, PostgreSQL and SQLite."
+    },
+    {
+      "id": "postgres-exact-division",
+      "source": "1a23f20bf41a8abb5068d5fcbaf5f723201999dc",
+      "status": "carried",
+      "depends": [
+        "postgres-extract-return-types",
+        "netezza-exact-division"
+      ],
+      "paths": [
+        "sqlglot/generators/postgres.py"
+      ],
+      "tests": [
+        "tests.dialects.test_netezza",
+        "tests.dialects.test_postgres",
+        "tests.test_netezza_exact_division_engines"
+      ],
+      "reason": "PostgreSQL's generator calls sqlglot.benchbox.division.make_quotients_exact for a division the Netezza parser marked, with EXACT_DIVISION_TYPE (DECIMAL; DataFusion and QuestDB override to DOUBLE) and EXACT_MARKED_DIVISION (off for Netezza). PostgreSQL and DataFusion truncate integer / integer, which returned 4 instead of 6 rows for TPC-DS Q21 and wrong ratios for Q78 and Q83; a division of integer literals keeps the source's truncating division and PostgreSQL-sourced SQL is unchanged.",
+      "patch": "downstream/patches/postgres-exact-division.patch"
+    },
+    {
       "id": "benchbox-subqueries",
       "source": "fdf569dec6aafcbee1d1d0585ca8ffa718453929",
       "status": "original",
