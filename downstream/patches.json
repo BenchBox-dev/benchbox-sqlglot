@@ -753,7 +753,9 @@
       "depends": [
         "tpcds-runner-override-rewrites"
       ],
-      "paths": [],
+      "paths": [
+        "sqlglot/benchbox/engine_rewrites.py"
+      ],
       "tests": [
         "tests.test_benchbox_runner_overrides",
         "tests.test_benchbox_runner_overrides_engines"
