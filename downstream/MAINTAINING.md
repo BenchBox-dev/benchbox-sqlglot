@@ -247,6 +247,25 @@ unparenthesised `a UNION b INTERSECT c` left to right too (INTERSECT does not bi
 DuckDB). The fork leaves that upstream parser behavior alone; no TPC-H or TPC-DS query mixes the operators
 without parentheses.
 
+SQLite has no `ROLLUP`, `CUBE`, `GROUPING SETS` or `GROUPING()`, and no `STDDEV_SAMP`. The SQLite generator
+runs `sqlglot.benchbox.grouping_sets.expand_grouping_sets` before it writes SQL: each grouping set becomes one
+`GROUP BY` select in a `UNION ALL`, the grouped expressions outside the set read `NULL`, `GROUPING(a, b)`
+becomes its integer (the leftmost argument is the high bit) and the empty set drops its `GROUP BY` so it
+returns the one grand-total row even on empty input. Window functions, `ORDER BY`, `LIMIT`, `OFFSET` and
+`DISTINCT` run over the union in an outer select (TPC-DS Q36, Q70 and Q86 rank over `GROUPING()` and
+aggregates; the outer select reads them as hidden columns). A shape the rewrite cannot prove equivalent keeps
+its grouping sets and fails loudly on SQLite: a select with `QUALIFY` or named windows, a column that is neither
+grouped nor aggregated, an empty set with no aggregate (it would return every row, not one), a window in
+`ORDER BY`, and `GROUP BY ALL` or `WITH TOTALS`. `sqlglot.benchbox.moments.expand_moments` writes
+`STDDEV`, `STDDEV_SAMP`, `STDDEV_POP`, `VARIANCE` and `VAR_POP` as
+`(n * SUM(x*x) - SUM(x)^2) / (n * (n - 1))` (`n * n` for the population forms) over `CAST(x AS REAL)` with
+`SQRT(MAX(0.0, ...))`; groups with fewer than two rows divide by zero, which SQLite answers with NULL, as
+`STDDEV_SAMP` does. DISTINCT, FILTER and OVER forms warn as unsupported, and `SQRT` needs SQLite built with
+`SQLITE_ENABLE_MATH_FUNCTIONS` (the shell enables it by default from 3.35; `SELECT SQRT(4)` tells a build). The generator hook is
+the carried patch `sqlite-grouping-sets`; the modules and `tests/test_benchbox_grouping_sets.py`, which
+executes the Q27, Q36 and Q67 shapes and the variances on SQLite against DuckDB, are the `original` entry
+`sqlite-grouping-sets-modules`.
+
 `ansi` and `standard` are not dialects the fork provides, and the fork has no alias
 dialects. The caller resolves them before calling SQLGlot: BenchBox's platform
 registry maps `ansi` and `standard` (and every platform name) to a dialect that
