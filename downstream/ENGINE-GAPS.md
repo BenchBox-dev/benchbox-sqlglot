@@ -69,6 +69,8 @@ data is a few inline rows per table. The queries also ran at scale factor 0.01 o
 of chDB's core, and DuckDB 1.5) when the rewrites were written. ClickHouse's Q36 and Q66 quotients differed from DuckDB's in the second decimal
 there, because ClickHouse keeps the dividend's scale when it divides decimals; `decimal_division_to_double` fixes that, and its tests
 (`TestDecimalDivisionOnClickHouse` and Q66) use quotients that do not fit two decimals and assert the unrewritten rows differ from DuckDB's.
+`TestRollupNullsOnClickHouse` runs a Q5-shaped rollup over literal channel keys and `TestDiscountBoundsOnClickHouse` TPC-H Q6 with rows on the
+discount bounds; each asserts the unrewritten ClickHouse rows differ from DuckDB's.
 `tests/test_benchbox_subqueries_engines.py` runs in the same two jobs: it creates small tables on Postgres, DuckDB,
 DataFusion and PySpark and compares the rows of the original query with the rows of its `decorrelate_subqueries`,
 `not_in_subquery_to_not_exists` and `in_aggregate_subquery_to_exists` rewrites (scalar subquery in `HAVING`, `NOT IN`,

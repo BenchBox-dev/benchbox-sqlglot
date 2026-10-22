@@ -131,6 +131,12 @@ takes an expression and options (every name or number it matches is an argument)
   already `Float64` there; float dividends, float literals and chained divisions are left alone. A zero divisor then gives
   `inf` as in DuckDB; pair it with `safe_division` or `nullif_zero_divisors` for NULL. It changes TPC-DS Q2, Q12, Q20,
   Q36, Q59, Q66, Q98 and TPC-H Q8 at scale factor 0.01 and no query for the worse.
+- `use_nulls_for_rollups(expression)` adds `SETTINGS group_by_use_nulls = 1` to a ClickHouse query with `ROLLUP`, `CUBE` or
+  `GROUPING SETS`. Without it ClickHouse writes `''` or `0` in a rolled-up key whose column is not `Nullable` (a literal from a
+  `UNION ALL` branch, TPC-DS Q5, Q14, Q77 and Q80), where SQL has NULL. Other queries are unchanged.
+- `fold_between_literal_arithmetic(expression, columns, tables)` also fixes ClickHouse, which reads `0.07 - 0.01` as a double:
+  TPC-H Q6 (`l_discount BETWEEN 0.07 - 0.01 AND 0.07 + 0.01`) drops the rows at the bounds without it
+  (`columns=["l_discount"], tables=["lineitem"]`).
 
 StarRocks and Doris need no generator change: both already quote the reserved words that fail as aliases
 (checked unquoted on StarRocks 4.0.16 and Doris 4.1.3), write `SUBSTRING(x FROM a FOR b)` as

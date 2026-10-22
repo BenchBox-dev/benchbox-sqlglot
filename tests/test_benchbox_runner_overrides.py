@@ -13,6 +13,7 @@ from sqlglot.benchbox.engine_rewrites import (
     alias_qualified_projections,
     decimal_division_to_double,
     qualify_alias_shadowed_columns,
+    use_nulls_for_rollups,
 )
 from sqlglot.benchbox.rewrites import nullif_zero_divisors, safe_division
 from tests.tpcds_queries import Q36, Q47, Q57, Q66, Q70, Q86, Q90
@@ -287,6 +288,30 @@ class TestDecimalDivisionToDouble(unittest.TestCase):
         tree = parse("SELECT a / b FROM t", "clickhouse")
         decimal_division_to_double(tree)
         self.assertEqual(tree.sql("clickhouse"), "SELECT a / b FROM t")
+
+
+class TestUseNullsForRollups(unittest.TestCase):
+    def rewrite(self, sql):
+        return use_nulls_for_rollups(parse(sql, "clickhouse")).sql("clickhouse")
+
+    def test_rollup_cube_and_grouping_sets_get_the_setting(self):
+        for grouping in ("ROLLUP (a, b)", "CUBE (a, b)", "GROUPING SETS ((a), ())"):
+            with self.subTest(grouping=grouping):
+                self.assertEqual(
+                    self.rewrite(f"SELECT a, b, SUM(c) FROM t GROUP BY {grouping}"),
+                    f"SELECT a, b, SUM(c) FROM t GROUP BY {grouping} SETTINGS group_by_use_nulls = 1",
+                )
+
+    def test_plain_grouping_is_unchanged(self):
+        self.assertEqual(
+            self.rewrite("SELECT a, SUM(c) FROM t GROUP BY a"), "SELECT a, SUM(c) FROM t GROUP BY a"
+        )
+
+    def test_existing_setting_is_replaced_not_repeated(self):
+        self.assertEqual(
+            self.rewrite("SELECT a FROM t GROUP BY ROLLUP (a) SETTINGS group_by_use_nulls = 0"),
+            "SELECT a FROM t GROUP BY ROLLUP (a) SETTINGS group_by_use_nulls = 1",
+        )
 
 
 if __name__ == "__main__":

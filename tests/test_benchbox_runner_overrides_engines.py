@@ -10,6 +10,7 @@ The same queries ran at scale factor 0.01 against the generated TPC-DS data (``d
 """
 
 import unittest
+from datetime import date
 from decimal import Decimal
 
 import sqlglot
@@ -18,8 +19,9 @@ from sqlglot.benchbox.engine_rewrites import (
     alias_qualified_projections,
     decimal_division_to_double,
     qualify_alias_shadowed_columns,
+    use_nulls_for_rollups,
 )
-from sqlglot.benchbox.rewrites import nullif_zero_divisors
+from sqlglot.benchbox.rewrites import fold_between_literal_arithmetic, nullif_zero_divisors
 from tests import engines
 from tests.engines import requires_engine
 from tests.tpcds_queries import Q36, Q47, Q57, Q66, Q70, Q86, Q90
@@ -28,6 +30,8 @@ from tests.tpcds_queries import Q36, Q47, Q57, Q66, Q70, Q86, Q90
 def literal(value):
     if value is None:
         return "NULL"
+    if isinstance(value, date):
+        return f"CAST('{value.isoformat()}' AS DATE)"
     if isinstance(value, Decimal):
         return f"CAST({value} AS DECIMAL(9, 2))"
     return repr(value)
@@ -453,6 +457,75 @@ class TestDecimalDivisionOnClickHouse(unittest.TestCase):
         self.assertEqual(
             [round(float(v), 6) for i, v in enumerate(row) if i != 1],
             [round(75 / 7, 6), 3.5, round(5 / 3, 6), round(76 / 14, 6)],
+        )
+
+
+# TPC-DS Q5, Q14, Q77 and Q80 roll up a channel literal and an id that come from UNION ALL branches.
+ROLLUP_QUERY = """
+SELECT channel, id, SUM(sales) AS sales, COUNT(*) AS n
+FROM (
+  SELECT 'store channel' AS channel, s_id AS id, s_amt AS sales FROM s
+  UNION ALL
+  SELECT 'catalog channel', c_id, c_amt FROM c
+) AS x
+GROUP BY ROLLUP (channel, id)
+ORDER BY channel, id
+"""
+ROLLUP_DATA = data(
+    s=union_all(("s_id", "s_amt"), [(1, d("10.00")), (2, d("5.50")), (2, d("1.50"))]),
+    c=union_all(("c_id", "c_amt"), [(1, d("7.00")), (3, d("2.00"))]),
+)
+
+
+@requires_engine("duckdb")
+@requires_engine("chdb")
+class TestRollupNullsOnClickHouse(unittest.TestCase):
+    def test_rolled_up_keys_are_null_with_the_setting(self):
+        reference = run_reference(ROLLUP_DATA, ROLLUP_QUERY)
+        self.assertIn((None, None), [row[:2] for row in reference])
+        sql = clickhouse_form(ROLLUP_QUERY)
+        plain = comparable(engines.execute("chdb", with_data(ROLLUP_DATA, sql)))
+        self.assertNotEqual(sorted(plain, key=repr), sorted(reference, key=repr))
+        rewritten = clickhouse_form(ROLLUP_QUERY, use_nulls_for_rollups)
+        rows = comparable(engines.execute("chdb", with_data(ROLLUP_DATA, rewritten)))
+        self.assertEqual(sorted(rows, key=repr), sorted(reference, key=repr))
+
+
+# TPC-H Q6 as BenchBox generates it for DuckDB (seed 1).
+H_Q6 = """
+SELECT SUM("l_extendedprice" * "l_discount") AS "revenue" FROM "lineitem" WHERE "l_shipdate" >= CAST('1993-01-01' AS DATE) AND "l_shipdate" < CAST('1993-01-01' AS DATE) + INTERVAL '1' YEAR AND "l_discount" BETWEEN 0.07 - 0.01 AND 0.07 + 0.01 AND "l_quantity" < 25
+"""
+H_Q6_DATA = data(
+    lineitem=union_all(
+        ("l_extendedprice", "l_discount", "l_quantity", "l_shipdate"),
+        [
+            (d("100.00"), d("0.05"), d("10.00"), date(1993, 3, 1)),
+            (d("200.00"), d("0.06"), d("10.00"), date(1993, 3, 2)),
+            (d("300.00"), d("0.07"), d("10.00"), date(1993, 3, 3)),
+            (d("400.00"), d("0.08"), d("10.00"), date(1993, 3, 4)),
+            (d("500.00"), d("0.09"), d("10.00"), date(1993, 3, 5)),
+            (d("600.00"), d("0.07"), d("30.00"), date(1993, 3, 6)),
+            (d("700.00"), d("0.07"), d("10.00"), date(1994, 3, 7)),
+        ],
+    )
+)
+
+
+@requires_engine("duckdb")
+@requires_engine("chdb")
+class TestDiscountBoundsOnClickHouse(unittest.TestCase):
+    """ClickHouse reads ``0.07 - 0.01`` as a double, so a discount of exactly 0.06 falls outside the range."""
+
+    def test_q6_keeps_the_rows_on_the_bounds_once_the_bounds_are_folded(self):
+        reference = run_reference(H_Q6_DATA, H_Q6)
+        self.assertEqual(reference, [(round(200 * 0.06 + 300 * 0.07 + 400 * 0.08, 6),)])
+        tree = sqlglot.parse_one(H_Q6, read="duckdb")
+        plain = comparable(engines.execute("chdb", with_data(H_Q6_DATA, write(tree, "clickhouse"))))
+        self.assertNotEqual(plain, reference)
+        folded = fold_between_literal_arithmetic(tree, ["l_discount"], ["lineitem"])
+        self.assertEqual(
+            comparable(engines.execute("chdb", with_data(H_Q6_DATA, write(folded, "clickhouse")))),
+            reference,
         )
 
 
