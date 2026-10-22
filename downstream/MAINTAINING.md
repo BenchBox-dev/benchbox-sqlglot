@@ -237,8 +237,10 @@ SQLite rejects a parenthesised operand of `UNION`, `INTERSECT` and `EXCEPT`, so 
 `SET_OP_PARENTHESIZED_OPERANDS` off writes `(SELECT ...) EXCEPT (SELECT ...)` as
 `SELECT * FROM (SELECT ...) EXCEPT SELECT * FROM (SELECT ...)` (TPC-DS Q87). That is the carried patch
 `sqlite-set-operation-operands`; `tests/dialects/test_sqlite.py` executes the shape on SQLite and DuckDB. SQLite
-also evaluates a compound select left to right with no operator precedence, and the parser already groups
-`a UNION b INTERSECT c` the same way, so the fork does not reorder unparenthesised chains.
+also evaluates a compound select left to right with no operator precedence, and SQLGlot's parser reads an
+unparenthesised `a UNION b INTERSECT c` left to right too (INTERSECT does not bind tighter, as in PostgreSQL and
+DuckDB). The fork leaves that upstream parser behavior alone; no TPC-H or TPC-DS query mixes the operators
+without parentheses.
 
 `ansi` and `standard` are not dialects the fork provides, and the fork has no alias
 dialects. The caller resolves them before calling SQLGlot: BenchBox's platform
