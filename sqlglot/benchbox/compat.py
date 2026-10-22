@@ -21,6 +21,9 @@ E = t.TypeVar("E", bound=exp.Expr)
 
 _NOT_SCALAR_CONTEXT = (exp.AggFunc, exp.Exists, exp.In, exp.Any, exp.All, exp.Window, exp.Select)
 
+# Nodes whose operands need parentheses around a lower-precedence operand.
+_OPERATORS = (exp.Binary, exp.Unary, exp.Between, exp.In)
+
 _CLICKHOUSE_FILTER_COMBINATORS = {
     exp.Sum: "sumOrNullIf",
     exp.Avg: "avgOrNullIf",
@@ -69,6 +72,63 @@ def inline_select_aliases(
                     continue
                 if column.find_ancestor(exp.Select) is select:
                     column.replace(aliases[column.name].copy())
+    return expression
+
+
+def inline_order_by_aliases(
+    expression: E,
+    names: t.Collection[str] | None = None,
+    copy: bool = True,
+) -> E:
+    """Replace projection aliases used inside ``ORDER BY`` expressions with the aliased expression.
+
+    PostgreSQL (and engines built on it) resolve an output alias in ``ORDER BY`` only when it is the
+    whole sort key: ``ORDER BY lochierarchy DESC`` works, ``ORDER BY CASE WHEN lochierarchy = 0 THEN
+    i_category END`` fails with ``column "lochierarchy" does not exist``. The rewrite turns the second
+    form into ``CASE WHEN GROUPING(i_category) + GROUPING(i_class) = 0 THEN i_category END``. A sort
+    key that is just the alias stays as it is (every engine reads it), qualified columns and columns
+    of nested ``SELECT`` scopes are never replaced, and ``GROUP BY`` and ``HAVING`` are not touched
+    (see ``inline_select_aliases``). If a source column has the alias's name, PostgreSQL would read the
+    column inside an expression; the rewrite makes the alias win, which is what the query says.
+
+    Args:
+        expression: the expression to rewrite.
+        names: only alias names in this collection (case-insensitive) are inlined; ``None`` inlines all.
+        copy: rewrite a copy instead of mutating ``expression``.
+
+    Returns:
+        The rewritten expression.
+    """
+    if copy:
+        expression = expression.copy()
+    wanted = None if names is None else {name.lower() for name in names}
+    for select in list(expression.find_all(exp.Select)):
+        order = select.args.get("order")
+        if order is None:
+            continue
+        aliases = {
+            projection.alias.lower(): projection.this
+            for projection in select.expressions
+            if isinstance(projection, exp.Alias) and projection.alias
+        }
+        if wanted is not None:
+            aliases = {name: value for name, value in aliases.items() if name in wanted}
+        if not aliases:
+            continue
+        for ordered in order.expressions:
+            key = ordered.this
+            if isinstance(key, exp.Column):
+                continue
+            for column in list(key.find_all(exp.Column)):
+                if (
+                    not column.table
+                    and column.name.lower() in aliases
+                    and column.find_ancestor(exp.Select) is select
+                ):
+                    value = aliases[column.name.lower()].copy()
+                    if isinstance(value, _OPERATORS) and isinstance(column.parent, _OPERATORS):
+                        value = exp.Paren(this=value)
+                    column.replace(value)
     return expression
 
 

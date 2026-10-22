@@ -366,3 +366,141 @@ def qualify_order_by_columns(
                 continue
             column.set("table", exp.to_identifier(table, quoted=column.this.args.get("quoted")))
     return expression
+
+
+def alias_qualified_projections(expression: E, top_level: bool = False, copy: bool = True) -> E:
+    """Name every qualified column projected by a nested ``SELECT`` after the column.
+
+    ClickHouse can name the output of ``SELECT v1.d_year FROM v1, v1 AS v1_lag`` ``v1.d_year`` when the
+    same table appears more than once in the ``FROM`` clause, so an outer ``WHERE d_year = 2001`` fails
+    with an unknown identifier. SQL names the column ``d_year``. The rewrite writes ``v1.d_year AS
+    d_year`` in every ``SELECT`` that sits in a ``WITH`` or a subquery. A projection is left alone when
+    the name would repeat another output name of the same ``SELECT`` (the engine then keeps the
+    qualified names apart) and ``*`` projections are never touched.
+
+    Args:
+        expression: the expression to rewrite.
+        top_level: also alias the projections of the outermost query, which only changes the result
+            column names a client reads.
+        copy: rewrite a copy instead of mutating ``expression``.
+
+    Returns:
+        The rewritten expression.
+    """
+    if copy:
+        expression = expression.copy()
+    for select in list(expression.find_all(exp.Select)):
+        if not top_level and select.find_ancestor(exp.CTE, exp.Subquery) is None:
+            continue
+        names = [projection.alias_or_name.lower() for projection in select.expressions]
+        for projection in list(select.expressions):
+            if (
+                isinstance(projection, exp.Column)
+                and projection.table
+                and not isinstance(projection.this, exp.Star)
+                and names.count(projection.name.lower()) == 1
+            ):
+                projection.replace(exp.Alias(this=projection.copy(), alias=projection.this.copy()))
+    return expression
+
+
+def _query_output_names(query: exp.Expr) -> set[str] | None:
+    """Return the lowercase output names of a query, or ``None`` when a ``*`` hides them."""
+    node = query
+    while isinstance(node, (exp.Subquery, exp.SetOperation)):
+        node = node.this
+    if not isinstance(node, exp.Select):
+        return None
+    names: set[str] = set()
+    for projection in node.expressions:
+        if isinstance(projection, exp.Star) or (
+            isinstance(projection, exp.Column) and isinstance(projection.this, exp.Star)
+        ):
+            return None
+        names.add(projection.alias_or_name.lower())
+    return names
+
+
+def _derived_sources(select: exp.Select) -> dict[str, tuple[exp.Identifier, set[str]]] | None:
+    """Map each ``FROM``/``JOIN`` source of ``select`` to its alias and output names.
+
+    Only derived tables and references to a ``WITH`` entry have output names that can be read
+    from the query, so any other source (a base table, a table function) makes the result ``None``.
+    """
+    ctes: dict[str, exp.Expr] = {}
+    ancestor: exp.Expr | None = select
+    while ancestor is not None:
+        clause = ancestor.args.get("with_")
+        if clause is not None:
+            for cte in clause.expressions:
+                ctes.setdefault(cte.alias.lower(), cte.this)
+        ancestor = ancestor.parent
+    sources = [select.args["from_"].this] if select.args.get("from_") else []
+    sources.extend(join.this for join in select.args.get("joins") or [])
+    found: dict[str, tuple[exp.Identifier, set[str]]] = {}
+    for source in sources:
+        alias = source.args.get("alias")
+        if isinstance(source, exp.Subquery) and alias is not None:
+            names = _query_output_names(source.this)
+        elif isinstance(source, exp.Table) and not source.db and source.name.lower() in ctes:
+            names = _query_output_names(ctes[source.name.lower()])
+        else:
+            return None
+        if names is None:
+            return None
+        found[source.alias_or_name.lower()] = (
+            alias.this.copy() if alias is not None else source.this.copy(),
+            names,
+        )
+    return found
+
+
+def qualify_alias_shadowed_columns(expression: E, copy: bool = True) -> E:
+    """Qualify a column that a projection alias of the same name hides, outside ``ORDER BY``.
+
+    ClickHouse resolves a name to a projection alias before a column of the same name, so
+    ``SELECT SUM(jan_sales) AS jan_sales, SUM(jan_sales / sq_ft) AS jan_per_sq_foot FROM (...) AS x``
+    reads the second ``jan_sales`` as the first aggregate and fails with ``ILLEGAL_AGGREGATION``; in a
+    ``WHERE`` or ``GROUP BY`` the alias can silently replace the column. SQL resolves those clauses
+    against the ``FROM`` sources, and the rewrite writes that reading out: ``SUM(x.jan_sales / sq_ft)``.
+
+    A column is qualified only when its nearest ``SELECT`` projects an alias of that name (other than
+    the same column under its own name), every ``FROM`` and ``JOIN`` source is a derived table or a
+    ``WITH`` entry with a readable output list, and exactly one source outputs that name. ``ORDER BY``
+    keeps the alias, as SQL does, and a ``SELECT`` with any other source is left alone because its
+    columns are unknown.
+
+    Args:
+        expression: the expression to rewrite.
+        copy: rewrite a copy instead of mutating ``expression``.
+
+    Returns:
+        The rewritten expression.
+    """
+    if copy:
+        expression = expression.copy()
+    for select in list(expression.find_all(exp.Select)):
+        aliases = {
+            projection.alias.lower()
+            for projection in select.expressions
+            if isinstance(projection, exp.Alias)
+            and not (
+                isinstance(projection.this, exp.Column)
+                and projection.this.name.lower() == projection.alias.lower()
+            )
+        }
+        if not aliases:
+            continue
+        sources = _derived_sources(select)
+        if not sources:
+            continue
+        for column in list(select.find_all(exp.Column)):
+            name = column.name.lower()
+            if column.table or name not in aliases:
+                continue
+            if column.find_ancestor(exp.Select) is not select or column.find_ancestor(exp.Order):
+                continue
+            owners = [alias for alias, names in sources.values() if name in names]
+            if len(owners) == 1:
+                column.set("table", owners[0].copy())
+    return expression

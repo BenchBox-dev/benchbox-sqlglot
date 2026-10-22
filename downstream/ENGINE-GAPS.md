@@ -61,6 +61,14 @@ expected rows, the Spark and Databricks forms execute on PySpark (`in-process` j
 (`trino` job; Presto and Athena are not engines of their own there). BigQuery's `UNNEST` form is a gap: it executes as its text
 transpiled to DuckDB with `SAFE_OFFSET(i)` read as `SAFE_ORDINAL(i + 1)` (the DuckDB generator drops the base shift for a column
 offset), and `tests/test_benchbox_list_aggregates.py` pins the BigQuery text.
+`tests/test_benchbox_runner_overrides_engines.py` runs TPC-DS Q36, Q70, Q86 and Q90 on PostgreSQL (`postgres` job), Q47, Q57, Q66 and Q90 on
+chDB (`in-process` and `postgres` jobs) and the guarded Q90 on DuckDB, which also runs each query unrewritten as the reference. Each test
+asserts that the engine rejects the unrewritten text (`lochierarchy` unknown on PostgreSQL, `d_year` unknown on ClickHouse, an aggregate inside an
+aggregate on ClickHouse, division by zero on PostgreSQL and ClickHouse; DuckDB returns `inf`), so the rewrites cannot become no-ops unnoticed. The
+data is a few inline rows per table. The queries also ran at scale factor 0.01 on dsdgen data (PostgreSQL 16.2, ClickHouse 26.1.9.5, the version
+of chDB's core, and DuckDB 1.5) when the rewrites were written. ClickHouse's Q36 and Q66 quotients differed from DuckDB's in the second decimal
+there, because ClickHouse keeps the dividend's scale when it divides decimals; no rewrite here changes that, and the tests use quotients that are
+exact at scale 2.
 `tests/test_benchbox_subqueries_engines.py` runs in the same two jobs: it creates small tables on Postgres, DuckDB,
 DataFusion and PySpark and compares the rows of the original query with the rows of its `decorrelate_subqueries`,
 `not_in_subquery_to_not_exists` and `in_aggregate_subquery_to_exists` rewrites (scalar subquery in `HAVING`, `NOT IN`,
