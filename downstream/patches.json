@@ -748,7 +748,7 @@
     },
     {
       "id": "clickhouse-decimal-division",
-      "source": "0000000000000000000000000000000000000000",
+      "source": "46c076d442017495defb4da5aef72a09cfddb2eb",
       "status": "original",
       "depends": [
         "tpcds-runner-override-rewrites"
