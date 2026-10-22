@@ -2,7 +2,7 @@ import math
 import unittest
 from decimal import Decimal
 
-from sqlglot import ErrorLevel, UnsupportedError, parse_one
+from sqlglot import ErrorLevel, UnsupportedError, exp, parse_one
 from sqlglot.benchbox.grouping_sets import expand_grouping_sets
 from tests import engines
 from tests.engines import requires_engine
@@ -124,6 +124,18 @@ class TestGroupingSetsTranslation(unittest.TestCase):
         sql = self.sqlite("SELECT a, SUM(x) AS s FROM t GROUP BY ROLLUP (a) ORDER BY a LIMIT 3")
         self.assertTrue(sql.startswith("SELECT _grouping_sets.a, _grouping_sets.s FROM (SELECT"))
         self.assertTrue(sql.endswith("ORDER BY a NULLS LAST LIMIT 3"))
+
+    def test_having_never_stands_without_group_by(self):
+        # SQLite before 3.39 rejects HAVING without GROUP BY, so the grand-total row is filtered
+        # by a WHERE over it.
+        sql = self.sqlite(
+            "SELECT a, SUM(x) AS s FROM t GROUP BY ROLLUP (a) HAVING SUM(x) > 20 OR GROUPING(a) = 1"
+        )
+        self.assertTrue(sql.count("HAVING") == 1)
+        for select in parse_one(sql, read="sqlite").find_all(exp.Select):
+            if select.args.get("having"):
+                self.assertTrue(select.args.get("group"))
+        self.assertIn("WHERE _gs_having", sql)
 
     def test_union_operand_is_a_subselect(self):
         sql = self.sqlite(

@@ -22,6 +22,8 @@ _CONSTRUCTS = (exp.Rollup, exp.Cube, exp.GroupingSets)
 _WRAPPER_ALIAS = "_grouping_sets"
 _HIDDEN_PREFIX = "_gs_"
 _UNNAMED_PREFIX = "_col_"
+_HAVING_ALIAS = "_gs_having"
+_FILTER_ALIAS = "_gs_total"
 
 
 class _Unsupported(Exception):
@@ -206,6 +208,20 @@ def _children(node: exp.Expr) -> list[tuple[str, exp.Expr]]:
     return children
 
 
+def _filter_grand_total(branch: exp.Select, condition: exp.Expr) -> exp.Select:
+    """Apply HAVING to a grand-total row as a WHERE over it, which SQLite before 3.39 requires."""
+    outputs = [exp.column(projection.alias) for projection in branch.expressions]
+    branch.set(
+        "expressions",
+        [*branch.expressions, exp.alias_(condition.copy(), _HAVING_ALIAS, copy=False)],
+    )
+    return (
+        exp.select(*outputs)
+        .from_(branch.subquery(_FILTER_ALIAS, copy=False), copy=False)
+        .where(exp.column(_HAVING_ALIAS))
+    )
+
+
 def _expand(select: exp.Select) -> exp.Expr:
     if select.args.get("qualify") or select.args.get("windows") or select.args.get("laterals"):
         raise _Unsupported
@@ -268,14 +284,16 @@ def _expand(select: exp.Select) -> exp.Expr:
             branch.set(arg, None)
         branch.set("expressions", [_bind(p, universe, kept) for p in inner])
         bound_having = _bind(having, universe, kept) if having else None
-        branch.set("having", bound_having)
         present = [item for item, keep in zip(universe, kept) if keep]
         if present:
+            branch.set("having", bound_having)
             branch.set("group", exp.Group(expressions=[item.copy() for item in present]))
         elif not any(
             node.find(exp.AggFunc) for node in (*branch.expressions, bound_having) if node
         ):
             raise _Unsupported
+        elif bound_having:
+            branch = _filter_grand_total(branch, bound_having.this)
         branches.append(branch)
 
     combined: exp.Expr = branches[0]
