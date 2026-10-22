@@ -688,6 +688,24 @@
       ],
       "reason": "The SQLite generator expands ROLLUP, CUBE, GROUPING SETS and GROUPING() into a UNION ALL of GROUP BY selects before writing SQL, and writes STDDEV, STDDEV_SAMP, STDDEV_POP, VARIANCE and VAR_POP (plain aggregates only; DISTINCT, FILTER and OVER warn as unsupported) with COUNT, SUM and SQRT, which needs SQLite's math functions. TPC-DS Q5, Q14, Q17, Q18, Q22, Q27, Q36, Q39, Q67, Q70, Q77, Q80 and Q86 return DuckDB's rows on SQLite.",
       "patch": "downstream/patches/sqlite-grouping-sets.patch"
+    },
+    {
+      "id": "benchbox-ddl-warehouse-layouts",
+      "source": "0000000000000000000000000000000000000000",
+      "status": "original",
+      "depends": [
+        "benchbox-ddl-parity"
+      ],
+      "paths": [
+        "sqlglot/benchbox/ddl.py",
+        "sqlglot/benchbox/ddl_engines.py",
+        "sqlglot/benchbox/layout.py",
+        "tests/test_benchbox_ddl_parity.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_ddl_parity"
+      ],
+      "reason": "Warehouse layouts in ddl_engines.py and layout.py (original files, so no patch is needed): BigQuery PARTITION BY (a DATE column, DATE(), TIMESTAMP_TRUNC(), DATETIME_TRUNC(), DATE_TRUNC(), RANGE_BUCKET(), _PARTITIONDATE), CLUSTER BY (at most four clusterable columns) and OPTIONS; Snowflake CLUSTER BY; Synapse index, PARTITION and multi-column HASH distribution; temporary tables keep their own name under schema, table_suffix and table_case. Layouts are validated against the statement's columns and raise ValueError for unsupported combinations; BigQuery and Synapse are asserted as text and parsed back (downstream/ENGINE-GAPS.md)."
     }
   ]
 }

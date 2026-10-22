@@ -16,6 +16,7 @@ from collections.abc import Sequence
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.dialects.bigquery import BigQuery
 from sqlglot.dialects.clickhouse import ClickHouse
 from sqlglot.dialects.dialect import Dialect
 from sqlglot.dialects.doris import Doris
@@ -27,6 +28,7 @@ from sqlglot.dialects.presto import Presto
 from sqlglot.dialects.spark import Spark
 from sqlglot.dialects.tsql import TSQL
 from sqlglot.dialects.redshift import Redshift
+from sqlglot.dialects.snowflake import Snowflake
 from sqlglot.dialects.starrocks import StarRocks
 from sqlglot.benchbox.layout import TableLayout
 
@@ -376,6 +378,173 @@ def _redshift(ctx: _Context) -> list[str]:
     return groups
 
 
+# -- BigQuery, Snowflake ----------------------------------------------------------------
+
+_BQ_PARTITION_FUNCTIONS = frozenset(
+    {"DATE", "TIMESTAMP_TRUNC", "DATETIME_TRUNC", "DATE_TRUNC", "RANGE_BUCKET"}
+)
+_BQ_PSEUDO_COLUMNS = frozenset({"_partitiondate", "_partitiontime"})
+_BQ_MAX_CLUSTER_COLUMNS = 4
+_BQ_TIME_TYPES = frozenset(
+    {"DATE", "DATETIME", "TIMESTAMP", "TIMESTAMPTZ", "TIMESTAMPLTZ", "TIMESTAMPNTZ"}
+)
+_BQ_PARTITION_OPTIONS = frozenset({"partition_expiration_days", "require_partition_filter"})
+_BQ_TABLE_OPTIONS = _BQ_PARTITION_OPTIONS | {
+    "expiration_timestamp",
+    "kms_key_name",
+    "friendly_name",
+    "description",
+    "labels",
+    "tags",
+    "default_rounding_mode",
+    "max_staleness",
+    "enable_change_history",
+}
+_BQ_NON_CLUSTER_TYPES = frozenset(
+    {"FLOAT", "DOUBLE", "JSON", "ARRAY", "STRUCT", "MAP", "GEOGRAPHY", "VARIANT", "OBJECT"}
+)
+
+
+def _type_name(column: exp.ColumnDef) -> str | None:
+    kind = column.args.get("kind")
+    if not isinstance(kind, exp.DataType):
+        return None
+    return kind.this.value if isinstance(kind.this, exp.DType) else str(kind.this).upper()
+
+
+def _parse_expression(ctx: _Context, text: str, what: str) -> exp.Expr:
+    try:
+        with _Quiet():
+            return sqlglot.parse_one(text, read=ctx.target, into=exp.Expr)
+    except sqlglot.errors.SqlglotError as error:
+        raise ValueError(f"{what} {text!r} is not valid {type(ctx.target).__name__} SQL") from error
+
+
+def _check_columns(ctx: _Context, tree: exp.Expr, what: str) -> list[exp.ColumnDef]:
+    """The statement's columns that ``tree`` mentions; an undefined one is a ``ValueError``."""
+    defined = ctx.defined
+    found: list[exp.ColumnDef] = []
+    for column in tree.find_all(exp.Column):
+        name = column.name.lower()
+        if name in _BQ_PSEUDO_COLUMNS or not defined:
+            continue
+        if name not in defined:
+            raise ValueError(f"{what} column {column.name!r} is not defined by the statement")
+        found.append(defined[name])
+    return found
+
+
+def _bigquery_partition(ctx: _Context) -> str | None:
+    layout = ctx.layout
+    if layout.partition_clause:
+        raise ValueError("BigQuery partitioning takes partition_by, not partition_clause")
+    if not layout.partition_by:
+        return None
+    if len(layout.partition_by) > 1:
+        raise ValueError("BigQuery partitions a table by one column or expression")
+    entry = layout.partition_by[0].strip()
+    tree = _parse_expression(ctx, entry, "BigQuery partition_by")
+    columns = _check_columns(ctx, tree, "BigQuery partition_by")
+    if isinstance(tree, (exp.Column, exp.Identifier)):
+        pseudo = tree.name.lower() in _BQ_PSEUDO_COLUMNS
+        if not pseudo and columns and _type_name(columns[0]) != "DATE":
+            raise ValueError(
+                f"BigQuery partitions a {_type_name(columns[0])} column "
+                f"{tree.name!r} only through DATE(), TIMESTAMP_TRUNC(), DATETIME_TRUNC() or "
+                "RANGE_BUCKET(); a bare partition column must be DATE"
+            )
+        return f"PARTITION BY {ctx.name(entry)}"
+    function = re.match(r"\s*([A-Za-z_]+)\s*\(", entry)
+    if function is None or function.group(1).upper() not in _BQ_PARTITION_FUNCTIONS:
+        raise ValueError(
+            f"BigQuery partition_by {entry!r} must be a column, one of "
+            f"{', '.join(sorted(_BQ_PARTITION_FUNCTIONS))}, or _PARTITIONDATE"
+        )
+    function_name = function.group(1).upper()
+    for column in columns:
+        kind = _type_name(column)
+        if function_name == "RANGE_BUCKET":
+            ok = kind in {"BIGINT", "INT", "SMALLINT", "TINYINT"}
+        else:
+            ok = kind in _BQ_TIME_TYPES
+        if kind is not None and not ok:
+            raise ValueError(
+                f"BigQuery {function_name}() cannot partition the {kind} column {column.name!r}"
+            )
+    return f"PARTITION BY {entry}"
+
+
+def _bigquery_options(ctx: _Context, partitioned: bool) -> str | None:
+    items: list[str] = []
+    for key, raw in ctx.layout.properties.items():
+        name = key.lower()
+        if name not in _BQ_TABLE_OPTIONS:
+            raise ValueError(
+                f"BigQuery table option {key!r} is not supported; expected one of "
+                f"{sorted(_BQ_TABLE_OPTIONS)}"
+            )
+        if name in _BQ_PARTITION_OPTIONS and not partitioned:
+            raise ValueError(f"BigQuery option {key!r} needs partition_by")
+        text = str(raw)
+        if name == "expiration_timestamp":
+            value = (
+                text if text.upper().startswith("TIMESTAMP") else f"TIMESTAMP {ctx.literal(text)}"
+            )
+        elif text.startswith("[") or re.fullmatch(r"-?\d+(\.\d+)?|true|false", text, re.I):
+            value = text
+        else:
+            value = ctx.literal(text)
+        items.append(f"{name}={value}")
+    return f"OPTIONS ({', '.join(items)})" if items else None
+
+
+def _bigquery(ctx: _Context) -> list[str]:
+    layout = ctx.layout
+    if layout.cluster_by_auto:
+        raise ValueError("BigQuery has no automatic clustering clause; give cluster_by columns")
+    partition = _bigquery_partition(ctx)
+    cluster: str | None = None
+    if layout.cluster_by:
+        if len(layout.cluster_by) > _BQ_MAX_CLUSTER_COLUMNS:
+            raise ValueError(
+                f"BigQuery clusters a table by at most {_BQ_MAX_CLUSTER_COLUMNS} columns, "
+                f"not {len(layout.cluster_by)}"
+            )
+        if len({c.lower() for c in layout.cluster_by}) != len(layout.cluster_by):
+            raise ValueError("BigQuery cluster_by names a column twice")
+        defined = ctx.defined
+        for name in layout.cluster_by:
+            if not _PLAIN_NAME.match(name):
+                raise ValueError(f"BigQuery cluster_by takes column names, not {name!r}")
+            column = defined.get(name.lower())
+            if defined and column is None:
+                raise ValueError(
+                    f"BigQuery cluster_by column {name!r} is not defined by the statement"
+                )
+            if column is not None and _type_name(column) in _BQ_NON_CLUSTER_TYPES:
+                raise ValueError(
+                    f"BigQuery cannot cluster by the {_type_name(column)} column {name!r}"
+                )
+        cluster = f"CLUSTER BY {ctx.names(layout.cluster_by)}"
+    # A statement that has its own PARTITION BY keeps it, so its OPTIONS are checked against it.
+    properties = ctx.create.args.get("properties")
+    own_partition = isinstance(properties, exp.Properties) and any(
+        isinstance(p, exp.PartitionedByProperty) for p in properties.expressions
+    )
+    options = _bigquery_options(ctx, partition is not None or own_partition)
+    return [g for g in (partition, cluster, options) if g]
+
+
+def _snowflake(ctx: _Context) -> list[str]:
+    """Snowflake clusters a table by expressions; it has no partitioning clause."""
+    layout = ctx.layout
+    if layout.partition_by or layout.partition_clause:
+        raise ValueError("Snowflake has no PARTITION BY; give cluster_by columns")
+    if layout.cluster_by_auto:
+        raise ValueError("Snowflake has no CLUSTER BY AUTO; give cluster_by columns")
+    return [f"CLUSTER BY ({ctx.names(layout.cluster_by)})"] if layout.cluster_by else []
+
+
 # -- Spark, Databricks, Hive, Athena --------------------------------------------------
 
 
@@ -507,6 +676,49 @@ def _trino(ctx: _Context) -> list[str]:
 _TSQL_DISTRIBUTIONS = {"round_robin": "ROUND_ROBIN", "replicate": "REPLICATE", "hash": "HASH"}
 
 
+_TSQL_INDEXES = {
+    "clustered_columnstore": "CLUSTERED COLUMNSTORE INDEX",
+    "heap": "HEAP",
+    "clustered_index": "CLUSTERED INDEX",
+}
+_TSQL_MAX_HASH_COLUMNS = 8
+
+
+def _tsql_index(ctx: _Context) -> str | None:
+    layout = ctx.layout
+    if layout.index is None:
+        return None
+    if layout.index not in _TSQL_INDEXES:
+        raise ValueError(
+            f"T-SQL index must be one of {sorted(_TSQL_INDEXES)}, not {layout.index!r}"
+        )
+    text = _TSQL_INDEXES[layout.index]
+    if layout.index == "clustered_index":
+        if not layout.sort_by:
+            raise ValueError("T-SQL clustered_index needs sort_by")
+        return f"{text} ({ctx.names(layout.sort_by)})"
+    if layout.index == "clustered_columnstore" and layout.sort_by:
+        return f"{text} ORDER ({ctx.names(layout.sort_by)})"
+    if layout.index == "heap" and layout.sort_by:
+        raise ValueError("a T-SQL heap has no sort order; drop sort_by or use clustered_index")
+    return text
+
+
+def _tsql_partition(ctx: _Context) -> str | None:
+    layout = ctx.layout
+    if not layout.partition_by:
+        if layout.partition_values:
+            raise ValueError("T-SQL partition_values needs partition_by")
+        return None
+    if len(layout.partition_by) > 1:
+        raise ValueError("T-SQL partitions a table by one column")
+    column = layout.partition_by[0]
+    if ctx.defined and column.lower() not in ctx.defined:
+        raise ValueError(f"T-SQL partition_by column {column!r} is not defined by the statement")
+    values = ", ".join(ctx.value(v) for v in layout.partition_values)
+    return f"PARTITION ({ctx.name(column)} RANGE RIGHT FOR VALUES ({values}))"
+
+
 def _tsql(ctx: _Context) -> list[str]:
     layout = ctx.layout
     style = layout.distribution or ("hash" if layout.distribute_by else None)
@@ -520,8 +732,15 @@ def _tsql(ctx: _Context) -> list[str]:
         if style == "hash":
             if not layout.distribute_by:
                 raise ValueError("T-SQL hash distribution needs distribute_by")
+            if len(layout.distribute_by) > _TSQL_MAX_HASH_COLUMNS:
+                raise ValueError(
+                    f"T-SQL hashes a table by at most {_TSQL_MAX_HASH_COLUMNS} columns"
+                )
             value = f"HASH({ctx.names(layout.distribute_by)})"
         options.append(f"DISTRIBUTION = {value}")
+    for option in (_tsql_index(ctx), _tsql_partition(ctx)):
+        if option:
+            options.append(option)
     options.extend(f"{k} = {ctx.value(v)}" for k, v in layout.properties.items())
     return [f"WITH ({', '.join(options)})"] if options else []
 
@@ -621,6 +840,10 @@ def _family(target: Dialect, layout: TableLayout) -> _Builder | None:
         return lambda ctx: _olap(ctx, starrocks=True)
     if isinstance(target, Redshift):
         return _redshift
+    if isinstance(target, BigQuery):
+        return _bigquery
+    if isinstance(target, Snowflake):
+        return _snowflake
     if isinstance(target, Spark):
         return _spark
     if isinstance(target, (Hive, Athena)):
