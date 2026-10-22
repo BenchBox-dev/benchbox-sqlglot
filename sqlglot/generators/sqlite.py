@@ -16,6 +16,8 @@ from sqlglot.dialects.dialect import (
     rename_func,
     strposition_sql,
 )
+from sqlglot.benchbox.grouping_sets import expand_grouping_sets
+from sqlglot.benchbox.moments import SUPPORTED as MOMENT_AGGREGATES, expand_moments, is_expandable
 from sqlglot.generator import unsupported_args
 from sqlglot.helper import is_int
 from sqlglot.tokens import TokenType
@@ -37,6 +39,15 @@ TRUNC_FORMATS = {
     "MINUTE": "%Y-%m-%d %H:%M:00",
     "SECOND": "%Y-%m-%d %H:%M:%S",
 }
+
+
+def _moments_sql(self: SQLiteGenerator, expression: exp.Expr) -> str:
+    if is_expandable(expression):
+        return self.sql(expand_moments(expression))
+    self.unsupported(
+        f"SQLite has no {type(expression).__name__.upper()}; only a plain aggregate is expanded"
+    )
+    return self.function_fallback_sql(t.cast(exp.Func, expression))
 
 
 def _transform_create(expression: exp.Expr) -> exp.Expr:
@@ -191,6 +202,7 @@ class SQLiteGenerator(generator.Generator):
         exp.Pivot: no_pivot_sql,
         exp.Rand: rename_func("RANDOM"),
         exp.RegexpLike: lambda self, e: self.binary(e, "REGEXP"),
+        **{kind: _moments_sql for kind in MOMENT_AGGREGATES},
         exp.Select: transforms.preprocess(
             [
                 _offset_to_limit,
@@ -673,6 +685,9 @@ class SQLiteGenerator(generator.Generator):
             coalesces.append(exp.Coalesce(this=rotated[0], expressions=rotated[1:]))
 
         return self.func(name, *coalesces)
+
+    def preprocess(self, expression: exp.Expr) -> exp.Expr:
+        return super().preprocess(expand_grouping_sets(expression, copy=False))
 
     def greatest_sql(self, expression: exp.Greatest) -> str:
         return self._greatest_least_sql(expression)

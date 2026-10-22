@@ -651,6 +651,43 @@
       ],
       "reason": "SQLite rejects a parenthesised operand of UNION, INTERSECT and EXCEPT, so a dialect with SET_OP_PARENTHESIZED_OPERANDS off writes every parenthesised query operand as SELECT * FROM (...) (TPC-DS Q87's (SELECT DISTINCT ...) EXCEPT (SELECT DISTINCT ...) failed with a syntax error). Execution tests compare SQLite with DuckDB rows over EXCEPT, INTERSECT, UNION, ORDER BY and LIMIT operands.",
       "patch": "downstream/patches/sqlite-set-operation-operands.patch"
+    },
+    {
+      "id": "sqlite-grouping-sets-modules",
+      "source": "0000000000000000000000000000000000000000",
+      "status": "original",
+      "depends": [
+        "real-engine-ci",
+        "benchbox-rewrites"
+      ],
+      "paths": [
+        "sqlglot/benchbox/grouping_sets.py",
+        "sqlglot/benchbox/moments.py",
+        "tests/test_benchbox_grouping_sets.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_grouping_sets"
+      ],
+      "reason": "expand_grouping_sets turns a select that groups by ROLLUP, CUBE or GROUPING SETS into a UNION ALL of plain GROUP BY selects (grouped expressions outside the set read NULL, GROUPING() becomes its integer, the empty set drops its GROUP BY so it keeps the one grand-total row; window functions, ORDER BY, LIMIT, OFFSET and DISTINCT run over the union in an outer select; a shape it cannot prove equivalent is left unchanged), and expand_moments writes STDDEV, STDDEV_SAMP, STDDEV_POP, VARIANCE and VAR_POP with COUNT, SUM and SQRT. Execution tests compare SQLite with DuckDB rows over the TPC-DS Q36, Q27 and Q67 shapes, NULL group values, empty input, HAVING, CUBE, GROUPING SETS and variances of groups of zero, one and many rows."
+    },
+    {
+      "id": "sqlite-grouping-sets",
+      "source": "0000000000000000000000000000000000000000",
+      "status": "carried",
+      "depends": [
+        "sqlite-grouping-sets-modules",
+        "sqlite-set-operation-operands",
+        "sqlite-date-integer-semantics"
+      ],
+      "paths": [
+        "sqlglot/generators/sqlite.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_grouping_sets",
+        "tests.dialects.test_sqlite"
+      ],
+      "reason": "The SQLite generator expands ROLLUP, CUBE, GROUPING SETS and GROUPING() into a UNION ALL of GROUP BY selects before writing SQL, and writes STDDEV, STDDEV_SAMP, STDDEV_POP, VARIANCE and VAR_POP (plain aggregates only; DISTINCT, FILTER and OVER warn as unsupported) with COUNT, SUM and SQRT, which needs SQLite's math functions. TPC-DS Q5, Q14, Q17, Q18, Q22, Q27, Q36, Q39, Q67, Q70, Q77, Q80 and Q86 return DuckDB's rows on SQLite.",
+      "patch": "downstream/patches/sqlite-grouping-sets.patch"
     }
   ]
 }
