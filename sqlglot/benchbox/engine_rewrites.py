@@ -542,3 +542,26 @@ def decimal_division_to_double(expression: E, copy: bool = True) -> E:
             continue
         node.set("this", exp.Cast(this=dividend, to=exp.DataType.build(exp.DType.DOUBLE)))
     return expression
+
+
+def use_nulls_for_rollups(expression: E, copy: bool = True) -> E:
+    """Add ``SETTINGS group_by_use_nulls = 1`` to a ClickHouse query that has ``ROLLUP``, ``CUBE`` or ``GROUPING SETS``.
+
+    ClickHouse fills a rolled-up key with the default value of its type (``''`` for a string, ``0`` for
+    a number) unless the key column is ``Nullable``, so the grand-total row of
+    ``GROUP BY ROLLUP (channel, id)`` over literal branches (TPC-DS Q5, Q14, Q77, Q80) carries ``''``
+    and ``0`` where SQL, and every other engine, has NULL. The setting makes ClickHouse write NULL.
+    Queries without a rollup, cube or grouping set are returned unchanged.
+
+    Args:
+        expression: the expression to rewrite.
+        copy: rewrite a copy instead of mutating ``expression``.
+
+    Returns:
+        The rewritten expression.
+    """
+    if copy:
+        expression = expression.copy()
+    if expression.find(exp.Rollup, exp.Cube, exp.GroupingSets) is None:
+        return expression
+    return add_query_settings(expression, {"group_by_use_nulls": 1}, copy=False)

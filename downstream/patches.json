@@ -761,6 +761,22 @@
         "tests.test_benchbox_runner_overrides_engines"
       ],
       "reason": "decimal_division_to_double in engine_rewrites.py (an original file, so no patch is needed) casts the dividend of every division to DOUBLE for ClickHouse, which truncates decimal quotients to the dividend's scale. Tests run TPC-DS Q36 and Q66 on chDB against DuckDB with quotients that do not fit two decimals, and assert the truncated rows differ without the rewrite (downstream/ENGINE-GAPS.md)."
+    },
+    {
+      "id": "clickhouse-rollup-nulls",
+      "source": "e5e1b3592010d2902e11a471473909eef0602856",
+      "status": "original",
+      "depends": [
+        "clickhouse-decimal-division"
+      ],
+      "paths": [
+        "sqlglot/benchbox/engine_rewrites.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_runner_overrides",
+        "tests.test_benchbox_runner_overrides_engines"
+      ],
+      "reason": "use_nulls_for_rollups in engine_rewrites.py (an original file, so no patch is needed) sets group_by_use_nulls = 1 on ClickHouse queries with ROLLUP, CUBE or GROUPING SETS so rolled-up keys are NULL, not '' or 0. Tests run a Q5-shaped rollup and TPC-H Q6 with fold_between_literal_arithmetic on chDB against DuckDB (downstream/ENGINE-GAPS.md)."
     }
   ]
 }
