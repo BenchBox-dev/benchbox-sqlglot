@@ -44,16 +44,47 @@ class TestNetezza(Validator):
                 "x / 3.0, 2020 / 3, (1000 - 64) / 10"
             )
 
+        truncating = {
+            "postgres": "DECIMAL",
+            "greenplum": "DECIMAL",
+            "materialize": "DECIMAL",
+            "risingwave": "DECIMAL",
+            "redshift": "DOUBLE PRECISION",
+            "datafusion": "DOUBLE PRECISION",
+            "questdb": "DOUBLE PRECISION",
+            "teradata": "DOUBLE PRECISION",
+            "tsql": "FLOAT",
+            "fabric": "FLOAT",
+            "presto": "DOUBLE",
+            "trino": "DOUBLE",
+            "athena": "DOUBLE",
+            "dune": "DOUBLE",
+            "drill": "DOUBLE",
+            "dremio": "DOUBLE",
+        }
+        exact_already = (
+            "netezza",
+            "vertica",
+            "duckdb",
+            "snowflake",
+            "spark",
+            "databricks",
+            "hive",
+            "clickhouse",
+            "bigquery",
+            "mysql",
+            "doris",
+            "starrocks",
+            "singlestore",
+            "oracle",
+            "exasol",
+        )
         self.validate_all(
             source,
             read={"netezza": source},
             write={
-                "netezza": source,
-                "duckdb": source,
-                "postgres": exact("DECIMAL"),
-                "greenplum": exact("DECIMAL"),
-                "datafusion": exact("DOUBLE PRECISION"),
-                "questdb": exact("DOUBLE PRECISION"),
+                **{dialect: source for dialect in exact_already},
+                **{dialect: exact(type_name) for dialect, type_name in truncating.items()},
             },
         )
 

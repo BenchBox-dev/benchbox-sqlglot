@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from sqlglot.dialects.postgres import Postgres
+from sqlglot.generators.vertica import VerticaGenerator
 
 
 class Vertica(Postgres):
@@ -9,3 +10,5 @@ class Vertica(Postgres):
     Behaves as `Postgres` until a difference is proved against the engine; its own
     class gives callers an explicit key to read and write.
     """
+
+    Generator = VerticaGenerator
