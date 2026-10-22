@@ -654,7 +654,7 @@
     },
     {
       "id": "sqlite-grouping-sets-modules",
-      "source": "322eee095c4335b97093a589aca84ebe1118ba59",
+      "source": "4c4c5666e565712922eb25926a73097325a8b4ab",
       "status": "original",
       "depends": [
         "real-engine-ci",
@@ -672,7 +672,7 @@
     },
     {
       "id": "sqlite-grouping-sets",
-      "source": "fe90ac3c4f5661b3156e898c579e9aabe0ec8bca",
+      "source": "f476781c4885dddf0b419b80bd46ac2e5a641b68",
       "status": "carried",
       "depends": [
         "sqlite-grouping-sets-modules",
