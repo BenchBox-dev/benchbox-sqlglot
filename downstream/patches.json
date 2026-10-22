@@ -764,7 +764,7 @@
     },
     {
       "id": "clickhouse-rollup-nulls",
-      "source": "6b4585aa202bf7c08957c0d52b88adee35ae4069",
+      "source": "e5e1b3592010d2902e11a471473909eef0602856",
       "status": "original",
       "depends": [
         "clickhouse-decimal-division"
