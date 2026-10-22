@@ -233,6 +233,13 @@ REAL casts, `AVG`, integer-literal-only quotients, which keep source semantics).
 and DataFusion SQL read as such is unchanged, and Netezza output keeps its own `/` (`EXACT_MARKED_DIVISION = False`).
 `tests/test_netezza_exact_division_engines.py` runs the TPC-DS Q21, Q78 and Q83 shapes on DuckDB, DataFusion, PostgreSQL and SQLite.
 
+SQLite rejects a parenthesised operand of `UNION`, `INTERSECT` and `EXCEPT`, so a generator with
+`SET_OP_PARENTHESIZED_OPERANDS` off writes `(SELECT ...) EXCEPT (SELECT ...)` as
+`SELECT * FROM (SELECT ...) EXCEPT SELECT * FROM (SELECT ...)` (TPC-DS Q87). That is the carried patch
+`sqlite-set-operation-operands`; `tests/dialects/test_sqlite.py` executes the shape on SQLite and DuckDB. SQLite
+also evaluates a compound select left to right with no operator precedence, and the parser already groups
+`a UNION b INTERSECT c` the same way, so the fork does not reorder unparenthesised chains.
+
 `ansi` and `standard` are not dialects the fork provides, and the fork has no alias
 dialects. The caller resolves them before calling SQLGlot: BenchBox's platform
 registry maps `ansi` and `standard` (and every platform name) to a dialect that
