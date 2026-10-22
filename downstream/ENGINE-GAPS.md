@@ -90,8 +90,10 @@ below). The same file executes the Spark forms on PySpark (a layout format repla
 columns) and, in the `postgres` job, that PostgreSQL rejects `WITH (format = ...)` unless
 `strip_with_properties` removes it. `tests/test_benchbox_ddl_engines.py` also creates a StarRocks table
 from standard DDL in the `starrocks` job and reads back its `PRIMARY KEY` model and `varchar(44)` /
-`char(10)` lengths. Doris and StarRocks bare `VARCHAR` length, `ARRAY<FLOAT>` vectors and `float` columns are read back there too (`float_as_real`). Redshift `SORTKEY`, BigQuery `BIGNUMERIC` and SingleStore `DATETIME` output stay golden output (the
-Redshift and SingleStore rows below).
+`char(10)` lengths. Doris and StarRocks bare `VARCHAR` length, `ARRAY<FLOAT>` vectors and `float` columns are read back there too (`float_as_real`). Redshift `SORTKEY`, BigQuery `BIGNUMERIC`, SingleStore `DATETIME` and `VECTOR(n, F32|F64)` columns, and
+T-SQL `VECTOR(n)` (SQL Server 2025 and Azure SQL only, behind `vector_type`) stay golden output (the Redshift,
+SingleStore and T-SQL rows below). Synapse and Fabric Warehouse have no vector type, so an array column on
+T-SQL without `vector_type` is a `ValueError` rather than invalid DDL.
 
 `tests/test_engine_rewrites_execution.py` runs in the `in-process`, `starrocks` and `doris` jobs. On chDB it
 executes the ClickHouse rewrites (lowercased identifiers, decimal zero literals with the zero-divisor

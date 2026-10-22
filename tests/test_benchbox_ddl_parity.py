@@ -1,4 +1,4 @@
-"""DDL parity with the engines' own grammars: QuestDB layouts, BigQuery constraints, array types.
+"""DDL parity with the engines' own grammars: QuestDB layouts, BigQuery constraints, array and vector types.
 
 The QuestDB class runs in the ``questdb`` job (and locally with ``BENCHBOX_ENGINE_QUESTDB``):
 it creates the tables on a real QuestDB and reads the column types, designated timestamp and
@@ -104,13 +104,14 @@ class TestTypeIntent(unittest.TestCase):
             ("spark", "FLOAT", "ARRAY<FLOAT>"),
             ("trino", "REAL", "ARRAY(REAL)"),
             ("clickhouse", "Nullable(Float32)", "Array(Nullable(Float32))"),
-            ("tsql", "REAL", "ARRAY<REAL>"),
         ):
             with self.subTest(write=write):
                 [sql] = ddl(self.SQL, write, float_as_real=True)
                 self.assertIn(f"c {real},", sql)
                 self.assertIn(f"d {real},", sql)
                 self.assertIn(f"v {vector},", sql)
+        [sql] = ddl("CREATE TABLE t (c FLOAT, d REAL)", "tsql", float_as_real=True)
+        self.assertEqual(sql, "CREATE TABLE t (c REAL, d REAL)")
         [wide] = ddl(self.SQL, "starrocks")
         self.assertIn("c DOUBLE,", wide)
         self.assertIn("e DOUBLE,", ddl(self.SQL, "starrocks", float_as_real=True)[0])
@@ -151,6 +152,53 @@ class TestArraySizes(unittest.TestCase):
         self.assertEqual(
             ddl(self.SQL, "postgres"), ["CREATE TABLE v (id BIGINT, e DOUBLE PRECISION[256])"]
         )
+
+
+class TestVectorColumns(unittest.TestCase):
+    def test_singlestore_array_is_a_vector_of_its_element_width(self):
+        for source, options, expected in (
+            ("DOUBLE[256]", {}, "VECTOR(256, F64)"),
+            ("FLOAT[128]", {}, "VECTOR(128, F64)"),
+            ("FLOAT[128]", {"float_as_real": True}, "VECTOR(128, F32)"),
+            ("INT[4]", {}, "VECTOR(4, I32)"),
+            ("BIGINT[4]", {}, "VECTOR(4, I64)"),
+        ):
+            with self.subTest(source=source, options=options):
+                self.assertEqual(
+                    ddl(f"CREATE TABLE v (id BIGINT, e {source})", "singlestore", **options),
+                    [f"CREATE TABLE v (id BIGINT, e {expected})"],
+                )
+
+    def test_singlestore_array_without_a_dimension_or_numeric_element_raises(self):
+        for source in ("ARRAY<DOUBLE>", "TEXT[3]"):
+            with self.subTest(source=source):
+                with self.assertRaises(ValueError):
+                    ddl(f"CREATE TABLE v (e {source})", "singlestore")
+
+    def test_tsql_float_array_is_vector_only_with_the_option(self):
+        for write in ("tsql", "fabric"):
+            with self.subTest(write=write):
+                self.assertEqual(
+                    ddl(
+                        "CREATE TABLE v (id BIGINT, e FLOAT[128])",
+                        write,
+                        float_as_real=True,
+                        vector_type=True,
+                    ),
+                    ["CREATE TABLE v (id BIGINT, e VECTOR(128))"],
+                )
+
+    def test_tsql_array_without_the_option_or_with_wide_elements_raises(self):
+        for write in ("tsql", "fabric"):
+            for source, options in (
+                ("FLOAT[128]", {"float_as_real": True}),
+                ("DOUBLE[8]", {"vector_type": True}),
+                ("FLOAT[8]", {"vector_type": True}),
+                ("ARRAY<REAL>", {"vector_type": True, "float_as_real": True}),
+            ):
+                with self.subTest(write=write, source=source, options=options):
+                    with self.assertRaises(ValueError):
+                        ddl(f"CREATE TABLE v (e {source})", write, **options)
 
 
 class TestBigQueryConstraints(unittest.TestCase):
