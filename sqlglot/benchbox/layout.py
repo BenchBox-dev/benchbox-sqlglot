@@ -47,7 +47,12 @@ class TableLayout:
                        for ``format="iceberg"``), ``sort_by``, ``distribute_by`` +
                        ``buckets`` (``bucketed_by``), ``properties``
     T-SQL (Synapse)    ``distribution`` (``round_robin``, ``replicate`` or ``hash`` with
-                       ``distribute_by``), ``properties``
+                       ``distribute_by``), ``index`` (+ ``sort_by``), ``partition_by`` (one
+                       column) + ``partition_values``, ``properties``
+    BigQuery           ``partition_by`` (one column or ``DATE(col)``, ``TIMESTAMP_TRUNC(...)``,
+                       ``DATETIME_TRUNC(...)``, ``DATE_TRUNC(...)``, ``RANGE_BUCKET(...)``),
+                       ``cluster_by`` (at most 4), ``properties`` (``OPTIONS``)
+    Snowflake          ``cluster_by`` (``CLUSTER BY (...)``)
     PostgreSQL         ``format`` (the table access method, ``USING <format>``)
     QuestDB            ``symbol_columns``, ``timestamp_columns``, ``designated_timestamp``,
                        ``time_partition``
@@ -66,13 +71,18 @@ class TableLayout:
             ``RANGE`` and ``LIST``). Used instead of ``partition_by``.
         sort_by: sort columns, in order.
         primary_key: ClickHouse ``PRIMARY KEY`` columns, written after ``ORDER BY``.
-        cluster_by: clustering columns (Delta liquid clustering).
+        cluster_by: clustering columns (Delta liquid clustering, BigQuery ``CLUSTER BY``,
+            Snowflake ``CLUSTER BY``).
         cluster_by_auto: write ``CLUSTER BY AUTO``.
         distribution: ``hash``, ``random``, ``even``, ``all``, ``key``, ``auto``,
             ``round_robin`` or ``replicate``. Empty means ``hash`` when ``distribute_by`` is
             given (Redshift: ``key``) and nothing otherwise.
         distribute_by: distribution or bucketing columns, in order.
         buckets: bucket count of a hash distribution or bucketed table.
+        index: T-SQL (Synapse) table index: ``clustered_columnstore`` (``sort_by`` becomes its
+            ``ORDER`` columns), ``heap`` or ``clustered_index`` (the ``sort_by`` columns).
+        partition_values: T-SQL (Synapse) ``RANGE RIGHT`` boundary values of the
+            ``partition_by`` column; none gives ``FOR VALUES ()``.
         sort_auto: Redshift ``SORTKEY AUTO`` when ``sort_by`` is empty.
         key_model: Doris and StarRocks table model: ``duplicate``, ``unique``, ``aggregate``
             or ``primary``.
@@ -126,6 +136,8 @@ class TableLayout:
     distribution: str | None = None
     distribute_by: Sequence[str] = ()
     buckets: int | None = None
+    index: str | None = None
+    partition_values: Sequence[str] = ()
     sort_auto: bool = False
     key_model: str | None = None
     key_columns: Sequence[str] = ()
@@ -148,6 +160,7 @@ class TableLayout:
             "cluster_by",
             "distribute_by",
             "key_columns",
+            "partition_values",
             "symbol_columns",
             "timestamp_columns",
         ):
@@ -155,6 +168,8 @@ class TableLayout:
         object.__setattr__(self, "properties", MappingProxyType(dict(self.properties)))
         if self.distribution is not None:
             object.__setattr__(self, "distribution", self.distribution.lower())
+        if self.index is not None:
+            object.__setattr__(self, "index", self.index.lower())
         if self.key_model is not None:
             object.__setattr__(self, "key_model", self.key_model.lower())
         if self.time_partition is not None:

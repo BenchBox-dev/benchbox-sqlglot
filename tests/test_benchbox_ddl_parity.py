@@ -1,4 +1,4 @@
-"""DDL parity with the engines' own grammars: QuestDB layouts, BigQuery constraints, array and vector types.
+"""DDL parity with the engines' own grammars: QuestDB layouts, BigQuery constraints and layouts, Snowflake and Synapse layouts, array and vector types.
 
 The QuestDB class runs in the ``questdb`` job (and locally with ``BENCHBOX_ENGINE_QUESTDB``):
 it creates the tables on a real QuestDB and reads the column types, designated timestamp and
@@ -545,6 +545,217 @@ class TestOlapReadDialect(unittest.TestCase):
                 "DISTRIBUTED BY HASH (a) BUCKETS 8"
             ],
         )
+
+
+class TestBigQueryLayout(unittest.TestCase):
+    """BigQuery has no engine in CI, so layouts are asserted as text and parsed back."""
+
+    ORDERS = (
+        "CREATE TABLE orders (id BIGINT, o_date DATE, ts TIMESTAMP, price DOUBLE PRECISION, "
+        "tags INT[], note TEXT)"
+    )
+    OPTIONS = {"or_replace": True, "schema": "proj.ds", "table_case": "upper"}
+
+    def run_layout(self, layout, source=ORDERS, read="postgres", **options):
+        options = {**self.OPTIONS, **options}
+        [sql] = ddl(source, "bigquery", read=read, default_layout=layout, **options)
+        tree = sqlglot.parse_one(sql, read="bigquery")
+        self.assertIsInstance(tree, exp.Create)
+        return sql
+
+    def test_adapter_forms(self):
+        # partitioning_field -> DATE(col); clustering_fields -> CLUSTER BY
+        sql = self.run_layout(TableLayout(partition_by=["DATE(ts)"], cluster_by=["note", "id"]))
+        self.assertTrue(
+            sql.endswith(
+                "price FLOAT64, tags ARRAY<INT64>, note STRING) PARTITION BY DATE(ts) CLUSTER BY note, id"
+            ),
+            sql,
+        )
+        self.assertTrue(sql.startswith("CREATE OR REPLACE TABLE proj.ds.ORDERS (id INT64"), sql)
+
+    def test_partition_forms(self):
+        for partition, expected in (
+            ("o_date", "PARTITION BY o_date"),
+            ("DATE(ts)", "PARTITION BY DATE(ts)"),
+            ("TIMESTAMP_TRUNC(ts, MONTH)", "PARTITION BY TIMESTAMP_TRUNC(ts, MONTH)"),
+            ("DATETIME_TRUNC(ts, DAY)", "PARTITION BY DATETIME_TRUNC(ts, DAY)"),
+            ("DATE_TRUNC(o_date, YEAR)", "PARTITION BY DATE_TRUNC(o_date, YEAR)"),
+            ("_PARTITIONDATE", "PARTITION BY _PARTITIONDATE"),
+            (
+                "RANGE_BUCKET(id, GENERATE_ARRAY(0, 1000000, 10000))",
+                "PARTITION BY RANGE_BUCKET(id, GENERATE_ARRAY(0, 1000000, 10000))",
+            ),
+        ):
+            with self.subTest(partition=partition):
+                sql = self.run_layout(TableLayout(partition_by=[partition]))
+                self.assertTrue(sql.endswith(f") {expected}"), sql)
+
+    def test_cluster_by_up_to_four_columns_and_options(self):
+        sql = self.run_layout(
+            TableLayout(
+                partition_by=["o_date"],
+                cluster_by=["id", "note", "o_date", "ts"],
+                properties={
+                    "partition_expiration_days": "90",
+                    "require_partition_filter": "true",
+                    "description": "it's orders",
+                    "labels": '[("team", "bench")]',
+                    "expiration_timestamp": "2030-01-01 00:00:00 UTC",
+                },
+            )
+        )
+        self.assertIn(") PARTITION BY o_date CLUSTER BY id, note, o_date, ts OPTIONS (", sql)
+        self.assertIn("partition_expiration_days=90, require_partition_filter=TRUE", sql)
+        self.assertIn("description='it\\'s orders'", sql)
+        self.assertIn("labels=[('team', 'bench')]", sql)
+        self.assertIn("expiration_timestamp=CAST('2030-01-01 00:00:00 UTC' AS TIMESTAMP)", sql)
+
+    def test_options_without_partitioning_are_allowed_when_independent(self):
+        sql = self.run_layout(TableLayout(properties={"description": "d"}))
+        self.assertTrue(sql.endswith(") OPTIONS (description='d')"), sql)
+
+    def test_statement_clauses_are_kept(self):
+        sql = self.run_layout(
+            TableLayout(
+                partition_by=["DATE(o_date)"], cluster_by=["id"], properties={"description": "x"}
+            ),
+            "CREATE TABLE orders (id INT64, o_date DATE) PARTITION BY o_date CLUSTER BY o_date "
+            "OPTIONS (description='own')",
+            read="bigquery",
+        )
+        self.assertTrue(
+            sql.endswith(
+                "(id INT64, o_date DATE) PARTITION BY o_date CLUSTER BY o_date OPTIONS (description='own')"
+            ),
+            sql,
+        )
+
+    def test_a_statement_partition_allows_partition_options(self):
+        sql = self.run_layout(
+            TableLayout(properties={"partition_expiration_days": "7"}),
+            "CREATE TABLE orders (id INT64, o_date DATE) PARTITION BY o_date",
+            read="bigquery",
+        )
+        self.assertTrue(
+            sql.endswith("PARTITION BY o_date OPTIONS (partition_expiration_days=7)"), sql
+        )
+
+    def test_ctas_takes_clauses_before_as(self):
+        sql = self.run_layout(
+            TableLayout(cluster_by=["a"]), "CREATE TABLE t AS SELECT 1 AS a", read="bigquery"
+        )
+        self.assertEqual(sql, "CREATE OR REPLACE TABLE proj.ds.T CLUSTER BY a AS SELECT 1 AS a")
+
+    def test_identifiers_are_quoted_when_needed(self):
+        sql = self.run_layout(
+            TableLayout(cluster_by=["select"]), "CREATE TABLE t (`select` INT64)", read="bigquery"
+        )
+        self.assertTrue(sql.endswith("CLUSTER BY `select`"), sql)
+
+    def test_temporary_tables_are_left_alone(self):
+        sql = ddl(
+            "CREATE TEMP TABLE t AS SELECT 1 AS a", "bigquery", read="bigquery", **self.OPTIONS
+        )[0]
+        self.assertEqual(sql, "CREATE TEMPORARY TABLE t AS SELECT 1 AS a")
+
+    def test_unsupported_layouts_raise(self):
+        for layout in (
+            TableLayout(partition_by=["o_date", "ts"]),
+            TableLayout(partition_by=["ts"]),
+            TableLayout(partition_by=["note"]),
+            TableLayout(partition_by=["DATE(note)"]),
+            TableLayout(partition_by=["RANGE_BUCKET(o_date, GENERATE_ARRAY(0, 10, 1))"]),
+            TableLayout(partition_by=["MONTH(o_date)"]),
+            TableLayout(partition_by=["DATE(missing)"]),
+            TableLayout(partition_by=["DATE((("]),
+            TableLayout(partition_clause="PARTITION BY o_date"),
+            TableLayout(cluster_by=["id", "note", "o_date", "ts", "price"]),
+            TableLayout(cluster_by=["id", "ID"]),
+            TableLayout(cluster_by=["price"]),
+            TableLayout(cluster_by=["tags"]),
+            TableLayout(cluster_by=["missing"]),
+            TableLayout(cluster_by=["DATE(ts)"]),
+            TableLayout(cluster_by_auto=True),
+            TableLayout(properties={"partition_expiration_days": "7"}),
+            TableLayout(partition_by=["o_date"], properties={"unknown_option": "1"}),
+        ):
+            with self.subTest(layout=layout), self.assertRaises(ValueError):
+                self.run_layout(layout)
+
+
+class TestSnowflakeLayout(unittest.TestCase):
+    def test_cluster_by(self):
+        [sql] = ddl(
+            "CREATE TABLE t (a INT, b DATE)",
+            "snowflake",
+            default_layout=TableLayout(cluster_by=["b", "a"]),
+        )
+        self.assertEqual(sql, "CREATE TABLE t (a INT, b DATE) CLUSTER BY (b, a)")
+        self.assertIsInstance(sqlglot.parse_one(sql, read="snowflake"), exp.Create)
+
+    def test_no_partitioning_clause(self):
+        for layout in (
+            TableLayout(partition_by=["b"]),
+            TableLayout(cluster_by_auto=True),
+            TableLayout(partition_clause="x"),
+        ):
+            with self.subTest(layout=layout), self.assertRaises(ValueError):
+                ddl("CREATE TABLE t (a INT, b DATE)", "snowflake", default_layout=layout)
+
+
+class TestSynapseLayout(unittest.TestCase):
+    T = "CREATE TABLE t (id INT, d DATE)"
+
+    def run_layout(self, layout):
+        return ddl(self.T, "tsql", default_layout=layout)[0]
+
+    def test_adapter_form(self):
+        sql = self.run_layout(
+            TableLayout(distribute_by=["id"], index="clustered_columnstore", partition_by=["d"])
+        )
+        self.assertEqual(
+            sql,
+            "CREATE TABLE t (id INTEGER, d DATE) WITH (DISTRIBUTION = HASH(id), "
+            "CLUSTERED COLUMNSTORE INDEX, PARTITION (d RANGE RIGHT FOR VALUES ()))",
+        )
+
+    def test_indexes_and_partition_values(self):
+        self.assertTrue(
+            self.run_layout(TableLayout(distribution="round_robin", index="heap")).endswith(
+                "WITH (DISTRIBUTION=ROUND_ROBIN, HEAP)"
+            )
+        )
+        self.assertTrue(
+            self.run_layout(
+                TableLayout(
+                    index="clustered_index",
+                    sort_by=["id", "d"],
+                    partition_by=["d"],
+                    partition_values=["2020-01-01", "2021-01-01"],
+                )
+            ).endswith(
+                "WITH (CLUSTERED INDEX (id, d), PARTITION (d RANGE RIGHT FOR VALUES ('2020-01-01', '2021-01-01')))"
+            )
+        )
+        self.assertTrue(
+            self.run_layout(TableLayout(index="clustered_columnstore", sort_by=["id"])).endswith(
+                "WITH (CLUSTERED COLUMNSTORE INDEX ORDER (id))"
+            )
+        )
+
+    def test_invalid_layouts_raise(self):
+        for layout in (
+            TableLayout(index="btree"),
+            TableLayout(index="clustered_index"),
+            TableLayout(index="heap", sort_by=["id"]),
+            TableLayout(partition_by=["id", "d"]),
+            TableLayout(partition_by=["missing"]),
+            TableLayout(partition_values=["1"]),
+            TableLayout(distribute_by=[f"c{i}" for i in range(9)]),
+        ):
+            with self.subTest(layout=layout), self.assertRaises(ValueError):
+                self.run_layout(layout)
 
 
 if __name__ == "__main__":

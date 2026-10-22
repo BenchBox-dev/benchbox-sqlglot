@@ -354,6 +354,10 @@ def _name(create: exp.Create, options: DdlOptions) -> None:
     table = create.this.this if isinstance(create.this, exp.Schema) else create.this
     if not isinstance(table, exp.Table):
         return
+    # A temporary table is session-scoped: its name takes no schema, suffix or case (BigQuery
+    # rejects a dataset-qualified TEMP table name).
+    if any(isinstance(p, exp.TemporaryProperty) for p in create.find_all(exp.Property)):
+        return
     _qualify(table, options)
     for reference in create.find_all(exp.Reference):
         target = reference.this.this if isinstance(reference.this, exp.Schema) else reference.this
