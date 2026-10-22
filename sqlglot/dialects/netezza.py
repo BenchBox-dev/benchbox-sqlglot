@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from sqlglot.dialects.postgres import Postgres
+from sqlglot.generators.netezza import NetezzaGenerator
 from sqlglot.parsers.netezza import NetezzaParser
 
 
@@ -13,3 +14,4 @@ class Netezza(Postgres):
     """
 
     Parser = NetezzaParser
+    Generator = NetezzaGenerator
