@@ -1,0 +1,81 @@
+diff --git a/sqlglot/generator.py b/sqlglot/generator.py
+index 0660e848..db181a44 100644
+--- a/sqlglot/generator.py
++++ b/sqlglot/generator.py
+@@ -1978,6 +1978,13 @@ class Generator:
+                     node = node.subquery(copy=False)
+                     if not self.SET_OP_PARENTHESIZED_OPERANDS:
+                         node = exp.select("*").from_(node, copy=False)
++                elif (
++                    not self.SET_OP_PARENTHESIZED_OPERANDS
++                    and isinstance(node, exp.Subquery)
++                    and not node.alias
++                    and isinstance(node.this, exp.Query)
++                ):
++                    node = exp.select("*").from_(node, copy=False)
+                 sqls.append(self.sql(node))
+ 
+         this = self.sep().join(sqls)
+diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
+index 72ef6c0b..1db6df18 100644
+--- a/tests/dialects/test_sqlite.py
++++ b/tests/dialects/test_sqlite.py
+@@ -218,6 +218,58 @@ class TestSQLite(Validator):
+                             literals = (93.6, 3.5) if source == "duckdb" else (93, 3)
+                             self.assertEqual(sqlite_row[4:6], literals)
+ 
++    def test_parenthesised_set_operation_operands(self):
++        self.validate_all(
++            "SELECT * FROM (SELECT * FROM (SELECT a FROM t) EXCEPT SELECT * FROM (SELECT a FROM u)) AS x",
++            read={"duckdb": "SELECT * FROM ((SELECT a FROM t) EXCEPT (SELECT a FROM u)) AS x"},
++        )
++        self.validate_all(
++            "SELECT * FROM (SELECT 1) UNION ALL SELECT * FROM (SELECT 2) ORDER BY 1 NULLS LAST LIMIT 3",
++            read={"duckdb": "(SELECT 1) UNION ALL (SELECT 2) ORDER BY 1 LIMIT 3"},
++        )
++        self.validate_all(
++            "SELECT * FROM (SELECT a FROM t ORDER BY a NULLS LAST LIMIT 2) INTERSECT SELECT a FROM u",
++            read={"duckdb": "(SELECT a FROM t ORDER BY a LIMIT 2) INTERSECT SELECT a FROM u"},
++        )
++        self.validate_all(
++            "SELECT a FROM t UNION SELECT a FROM u",
++            read={"duckdb": "SELECT a FROM t UNION SELECT a FROM u"},
++        )
++
++    @requires_engine("sqlite")
++    @requires_engine("duckdb")
++    def test_parenthesised_set_operation_execution(self):
++        # TPC-DS Q87 shape: a count over (SELECT DISTINCT ...) EXCEPT (SELECT DISTINCT ...) EXCEPT (...).
++        setup = (
++            "CREATE TABLE s (a INTEGER, b VARCHAR)",
++            "CREATE TABLE c (a INTEGER, b VARCHAR)",
++            "CREATE TABLE w (a INTEGER, b VARCHAR)",
++            "INSERT INTO s VALUES (1, 'x'), (1, 'x'), (2, 'y'), (3, 'z'), (4, NULL), (5, 'q'), (6, 'r')",
++            "INSERT INTO c VALUES (2, 'y'), (2, 'y'), (7, 'u'), (6, 'r')",
++            "INSERT INTO w VALUES (3, 'z'), (8, 'v'), (4, NULL)",
++        )
++        queries = (
++            "SELECT COUNT(*) FROM ((SELECT DISTINCT a, b FROM s) EXCEPT (SELECT DISTINCT a, b FROM c) "
++            "EXCEPT (SELECT DISTINCT a, b FROM w)) AS cool_cust",
++            "SELECT * FROM ((SELECT a, b FROM s) EXCEPT (SELECT a, b FROM c)) AS d ORDER BY a",
++            "(SELECT a FROM s) UNION (SELECT a FROM c) UNION ALL (SELECT a FROM w) ORDER BY a",
++            "((SELECT a FROM s) INTERSECT (SELECT a FROM c)) UNION ALL (SELECT a FROM w) ORDER BY a",
++            "(SELECT a FROM s ORDER BY a DESC LIMIT 3) UNION ALL (SELECT a FROM c ORDER BY a LIMIT 2) ORDER BY a",
++            "SELECT a, b FROM s EXCEPT (SELECT a, b FROM c) ORDER BY a",
++        )
++        for query in queries:
++            with self.subTest(query=query):
++                results = {}
++                for engine in ("sqlite", "duckdb"):
++                    with engines.connect(engine) as connection:
++                        for statement in setup:
++                            connection.execute(statement)
++                        results[engine] = connection.execute(
++                            parse_one(query, read="duckdb").sql(engine)
++                        )
++                self.assertTrue(results["duckdb"])
++                self.assertEqual(results["sqlite"], results["duckdb"])
++
+     def test_date_interval_arithmetic(self):
+         for operator, amount in (("+", "5"), ("-", "-5")):
+             for unit in ("DAY", "HOUR", "MINUTE", "SECOND"):

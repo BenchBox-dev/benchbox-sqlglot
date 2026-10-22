@@ -238,6 +238,15 @@ already returns a `NUMERIC`) keeps its own `/`. Targets whose `/` is already exa
 BigQuery, MySQL family, Oracle) write the source's `/` unchanged. `tests/test_netezza_exact_division_engines.py` executes the
 TPC-DS Q21, Q78 and Q83 shapes; `downstream/ENGINE-GAPS.md` lists which targets are executed and which are asserted as text.
 
+SQLite rejects a parenthesised operand of `UNION`, `INTERSECT` and `EXCEPT`, so a generator with
+`SET_OP_PARENTHESIZED_OPERANDS` off writes `(SELECT ...) EXCEPT (SELECT ...)` as
+`SELECT * FROM (SELECT ...) EXCEPT SELECT * FROM (SELECT ...)` (TPC-DS Q87). That is the carried patch
+`sqlite-set-operation-operands`; `tests/dialects/test_sqlite.py` executes the shape on SQLite and DuckDB. SQLite
+also evaluates a compound select left to right with no operator precedence, and SQLGlot's parser reads an
+unparenthesised `a UNION b INTERSECT c` left to right too (INTERSECT does not bind tighter, as in PostgreSQL and
+DuckDB). The fork leaves that upstream parser behavior alone; no TPC-H or TPC-DS query mixes the operators
+without parentheses.
+
 `ansi` and `standard` are not dialects the fork provides, and the fork has no alias
 dialects. The caller resolves them before calling SQLGlot: BenchBox's platform
 registry maps `ansi` and `standard` (and every platform name) to a dialect that

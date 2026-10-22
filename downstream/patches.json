@@ -632,6 +632,25 @@
         "tests.test_benchbox_row_sources_engines"
       ],
       "reason": "One-row sources without VALUES in compat.py (an original file of engine-compat-rewrites, so no patch is needed): drop_literal_row_source replaces the literal_subquery_to_values rewrite that wrote (VALUES (1)) AS d(c), which ClickHouse rejects, with a FROM-less SELECT, and flatten_count_of_count turns a COUNT(*) over a nested COUNT(*) (always 1) into the source row count. Tests execute every single-row spelling and both rewrites on SQLite, DuckDB, DataFusion, PySpark, chDB, PostgreSQL, StarRocks and Doris."
+    },
+    {
+      "id": "sqlite-set-operation-operands",
+      "source": "11bbf0319c08bba01fd19af2135a0a3f669ae9e3",
+      "status": "carried",
+      "depends": [
+        "empty-group-by-generator",
+        "sqlite-date-integer-semantics"
+      ],
+      "paths": [
+        "sqlglot/generator.py",
+        "tests/dialects/test_sqlite.py"
+      ],
+      "tests": [
+        "tests.dialects.test_sqlite",
+        "tests.test_generator"
+      ],
+      "reason": "SQLite rejects a parenthesised operand of UNION, INTERSECT and EXCEPT, so a dialect with SET_OP_PARENTHESIZED_OPERANDS off writes every parenthesised query operand as SELECT * FROM (...) (TPC-DS Q87's (SELECT DISTINCT ...) EXCEPT (SELECT DISTINCT ...) failed with a syntax error). Execution tests compare SQLite with DuckDB rows over EXCEPT, INTERSECT, UNION, ORDER BY and LIMIT operands.",
+      "patch": "downstream/patches/sqlite-set-operation-operands.patch"
     }
   ]
 }
