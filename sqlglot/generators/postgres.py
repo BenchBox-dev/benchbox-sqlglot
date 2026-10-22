@@ -3,6 +3,7 @@ from __future__ import annotations
 import typing as t
 
 from sqlglot import exp, generator, transforms
+from sqlglot.benchbox.division import make_quotients_exact
 from sqlglot.dialects.dialect import (
     DATE_ADD_OR_SUB,
     JSON_EXTRACT_TYPE,
@@ -257,6 +258,8 @@ class PostgresGenerator(generator.Generator):
     SELECT_KINDS: tuple[str, ...] = ()
     TRY_SUPPORTED = False
     SUPPORTS_DECODE_CASE = False
+    EXACT_MARKED_DIVISION = True
+    EXACT_DIVISION_TYPE = exp.DType.DECIMAL
 
     AFTER_HAVING_MODIFIER_TRANSFORMS = generator.AFTER_HAVING_MODIFIER_TRANSFORMS
 
@@ -439,6 +442,11 @@ class PostgresGenerator(generator.Generator):
             exp.Literal.string(expression.this.encode("latin-1").hex()),
             exp.Literal.string("hex"),
         )
+
+    def div_sql(self, expression: exp.Div) -> str:
+        if self.EXACT_MARKED_DIVISION:
+            make_quotients_exact(expression, self.EXACT_DIVISION_TYPE)
+        return super().div_sql(expression)
 
     def extract_sql(self, expression: exp.Extract) -> str:
         return_type = expression.args.get("return_type")
