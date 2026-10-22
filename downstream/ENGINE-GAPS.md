@@ -56,6 +56,11 @@ drop runs on all four (DataFusion and PySpark also assert the engine rejects the
 BigQuery text transpiled to each engine, because BigQuery itself is a gap above; Trino and Presto get
 the same generic `IF` form executed on the four engines, not on Trino. The Snowflake `GROUP BY ()` drop and
 the BigQuery `FIRST_VALUE`/`LAST_VALUE`/`NTH_VALUE` window NULLS handling (`bigquery-window-nulls-ordering`) are AST/golden tests because Snowflake and BigQuery are gaps; BigQuery rejects the clause itself, so the rule comes from BigQuery's grammar and a live BigQuery run of TPC-Havoc 3_v9. The `IS NULL` sort key and the dropped clause are also executed as text on DuckDB (`TestBigQueryValueWindowNullOrderingOnDuckDB`) to prove they order rows as the original clause does.
+`tests/test_benchbox_list_aggregates_engines.py` runs the TPC-Havoc `1_v7` query and a NULL/uneven-zip query: DuckDB gives the
+expected rows, the Spark and Databricks forms execute on PySpark (`in-process` job) and the Presto, Trino and Athena forms on Trino
+(`trino` job; Presto and Athena are not engines of their own there). BigQuery's `UNNEST` form is a gap: it executes as its text
+transpiled to DuckDB with `SAFE_OFFSET(i)` read as `SAFE_ORDINAL(i + 1)` (the DuckDB generator drops the base shift for a column
+offset), and `tests/test_benchbox_list_aggregates.py` pins the BigQuery text.
 `tests/test_benchbox_subqueries_engines.py` runs in the same two jobs: it creates small tables on Postgres, DuckDB,
 DataFusion and PySpark and compares the rows of the original query with the rows of its `decorrelate_subqueries`,
 `not_in_subquery_to_not_exists` and `in_aggregate_subquery_to_exists` rewrites (scalar subquery in `HAVING`, `NOT IN`,
