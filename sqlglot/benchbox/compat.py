@@ -12,7 +12,10 @@ from sqlglot import exp
 from sqlglot.dialects.bigquery import BigQuery
 from sqlglot.dialects.clickhouse import ClickHouse
 from sqlglot.dialects.dialect import Dialect, DialectType
+from sqlglot.dialects.presto import Presto
 from sqlglot.dialects.spark2 import Spark2
+from sqlglot.errors import OptimizeError
+from sqlglot.optimizer.scope import Scope, traverse_scope
 
 E = t.TypeVar("E", bound=exp.Expr)
 
@@ -489,4 +492,390 @@ def order_list_aggregates(
         if node is expression:
             return replacement  # type: ignore[return-value]
         node.replace(replacement)
+    return expression
+
+
+_LIST_FOLDS = {"LIST_SUM": "sum", "LIST_AVG": "avg"}
+_LIST_ARRAY_TYPES = (exp.List, exp.ArrayAgg, exp.Array, exp.Transform)
+
+
+def _list_family(dialect: DialectType) -> str | None:
+    resolved = Dialect.get_or_raise(dialect)
+    if isinstance(resolved, BigQuery):
+        return "bigquery"
+    if isinstance(resolved, Spark2):
+        return "spark"
+    if isinstance(resolved, Presto):
+        return "presto"
+    return None
+
+
+def _build(sql: str, dialect: DialectType, **parts: exp.Expr) -> exp.Expr:
+    """Parse ``sql`` and swap each unqualified column named like a key of ``parts`` for that part."""
+    tree: exp.Expr = exp.maybe_parse(sql, dialect=dialect)
+    for column in list(tree.find_all(exp.Column)):
+        replacement = parts.get(column.name)
+        if replacement is None or column.table:
+            continue
+        if column is tree:
+            return replacement.copy()
+        column.replace(replacement.copy())
+    return tree
+
+
+class _Mapped:
+    """An array an aggregate reads: ``LIST_TRANSFORM(LIST_ZIP(a, b, ...), x -> f(x[1], x[2], ...))``.
+
+    ``arrays`` are the zipped (or single) arrays and ``body`` the lambda body, or ``None`` when the
+    aggregate reads the array itself. ``zipped`` says every use of the lambda parameter is a literal
+    subscript naming one of ``arrays``.
+    """
+
+    def __init__(
+        self, arrays: list[exp.Expr], body: exp.Expr | None, param: str | None, zipped: bool
+    ) -> None:
+        self.arrays = arrays
+        self.body = body
+        self.param = param
+        self.zipped = zipped
+
+    def substitute(self, ref: t.Callable[[int], exp.Expr]) -> exp.Expr:
+        """Copy ``body`` with every read of the lambda parameter replaced by ``ref(position)``."""
+        assert self.body is not None and self.param is not None
+        body = self.body.copy()
+        uses = [
+            i
+            for i in body.find_all(exp.Identifier)
+            if i.name.lower() == self.param and not isinstance(i.parent, exp.Lambda)
+        ]
+        for use in uses:
+            if self.zipped:
+                bracket = use.parent
+                assert isinstance(bracket, exp.Bracket)
+                position = int(bracket.expressions[0].name)
+                if bracket is body:
+                    return ref(position)
+                bracket.replace(ref(position))
+            else:
+                if use is body:
+                    return ref(0)
+                use.replace(ref(0))
+        return body
+
+
+def _zip_arguments(node: exp.Expr) -> list[exp.Expr] | None:
+    if isinstance(node, exp.Anonymous) and node.name.upper() == "LIST_ZIP" and node.expressions:
+        return list(node.expressions)
+    return None
+
+
+def _mapped_array(node: exp.Expr) -> _Mapped:
+    """Describe the array ``node`` as a (possibly zipped and mapped) read; a plain array maps to itself."""
+    if isinstance(node, exp.Transform) and isinstance(node.expression, exp.Lambda):
+        lam = node.expression
+        if len(lam.expressions) == 1:
+            param = lam.expressions[0].name.lower()
+            body = lam.this
+            shadowed = any(
+                nested.expressions and any(p.name.lower() == param for p in nested.expressions)
+                for nested in body.find_all(exp.Lambda)
+            )
+            if not shadowed:
+                uses = [
+                    i
+                    for i in body.find_all(exp.Identifier)
+                    if i.name.lower() == param and not isinstance(i.parent, exp.Lambda)
+                ]
+                zipped = _zip_arguments(node.this)
+                if zipped is None:
+                    return _Mapped([node.this], body, param, False)
+                if all(
+                    isinstance(use.parent, exp.Bracket)
+                    and use.parent.this is use
+                    and len(use.parent.expressions) == 1
+                    and use.parent.expressions[0].is_int
+                    and 0 <= int(use.parent.expressions[0].name) < len(zipped)
+                    for use in uses
+                ):
+                    return _Mapped(zipped, body, param, True)
+    return _Mapped([node], None, None, False)
+
+
+class _ListRewriter:
+    def __init__(self, dialect: DialectType, family: str) -> None:
+        self.dialect = dialect
+        self.family = family
+        self.used: set[str] = set()
+
+    def scope_to(self, node: exp.Expr) -> None:
+        """Pick fresh names against the identifiers ``node`` reads; the helper names live inside it."""
+        self.used = {i.name.lower() for i in node.find_all(exp.Identifier)}
+
+    def fresh(self, base: str) -> str:
+        name = base
+        while name.lower() in self.used:
+            name += "_"
+        self.used.add(name.lower())
+        return name
+
+    def parts(self, mapped: _Mapped) -> dict[str, exp.Expr]:
+        return {f"__a{i}": array for i, array in enumerate(mapped.arrays)}
+
+    def array_value(self, mapped: _Mapped) -> exp.Expr:
+        """The mapped array as an array expression (Presto, Trino, Athena, Spark, Databricks)."""
+        arrays = mapped.arrays
+        if mapped.body is None:
+            return arrays[0]
+        n = len(arrays)
+        parts = self.parts(mapped)
+        names = [self.fresh(f"_v{i}") for i in range(n)]
+        if n == 1:
+            parts["__body"] = mapped.substitute(lambda _: exp.column(names[0]))
+            return _build(f"TRANSFORM(__a0, {names[0]} -> __body)", self.dialect, **parts)
+        if n == 2:
+            parts["__body"] = mapped.substitute(lambda k: exp.column(names[k]))
+            return _build(
+                f"ZIP_WITH(__a0, __a1, ({names[0]}, {names[1]}) -> __body)", self.dialect, **parts
+            )
+        if self.family == "presto":
+            if n > 5:
+                raise NotImplementedError("Presto and Trino ZIP takes at most five arrays")
+            row = self.fresh("_r")
+            parts["__body"] = mapped.substitute(lambda k: _build(f"{row}[{k + 1}]", self.dialect))
+            arguments = ", ".join(f"__a{i}" for i in range(n))
+            return _build(f"TRANSFORM(ZIP({arguments}), {row} -> __body)", self.dialect, **parts)
+        # Spark: ZIP_WITH pairs two arrays, so zip the tail into an array of structs first.
+        row = self.fresh("_r")
+        fields = [self.fresh(f"_f{i}") for i in range(n)]
+        tail = self.zip_tail(n - 1, parts, names, row, fields)
+        parts["__tail"] = tail
+        parts["__body"] = mapped.substitute(
+            lambda k: exp.column(names[0]) if k == 0 else _build(f"{row}.{fields[k]}", self.dialect)
+        )
+        return _build(
+            f"ZIP_WITH(__a0, __tail, ({names[0]}, {row}) -> __body)", self.dialect, **parts
+        )
+
+    def zip_tail(
+        self, start: int, parts: dict[str, exp.Expr], names: list[str], row: str, fields: list[str]
+    ) -> exp.Expr:
+        """Zip arrays ``start`` .. last into one array of structs with the fields ``fields[start:]``."""
+        n = len(fields)
+        tail = _build(
+            f"ZIP_WITH(__a{n - 2}, __a{n - 1}, ({names[n - 2]}, {names[n - 1]}) -> "
+            f"NAMED_STRUCT('{fields[n - 2]}', {names[n - 2]}, '{fields[n - 1]}', {names[n - 1]}))",
+            self.dialect,
+            **parts,
+        )
+        for i in range(n - 3, start - 1, -1):
+            carried = ", ".join(f"'{fields[j]}', {row}.{fields[j]}" for j in range(i + 1, n))
+            tail = _build(
+                f"ZIP_WITH(__a{i}, __tail, ({names[i]}, {row}) -> "
+                f"NAMED_STRUCT('{fields[i]}', {names[i]}, {carried}))",
+                self.dialect,
+                __tail=tail,
+                **parts,
+            )
+        return tail
+
+    def fold(self, kind: str, mapped: _Mapped) -> exp.Expr:
+        if self.family == "bigquery":
+            return self.bigquery_select(mapped, "SUM" if kind == "sum" else "AVG")
+        array = self.array_value(mapped)
+        acc, v, state = self.fresh("_acc"), self.fresh("_v"), self.fresh("_state")
+        if kind == "sum":
+            sql = (
+                f"{'REDUCE' if self.family == 'presto' else 'AGGREGATE'}(__m, CAST(NULL AS DOUBLE), "
+                f"({acc}, {v}) -> CASE WHEN {v} IS NULL THEN {acc} "
+                f"WHEN {acc} IS NULL THEN CAST({v} AS DOUBLE) ELSE {acc} + CAST({v} AS DOUBLE) END"
+                f"{f', {acc} -> {acc}' if self.family == 'presto' else ''})"
+            )
+        elif self.family == "presto":
+            sql = (
+                f"REDUCE(__m, ROW(CAST(0 AS DOUBLE), CAST(0 AS BIGINT)), ({state}, {v}) -> "
+                f"IF({v} IS NULL, {state}, ROW({state}[1] + CAST({v} AS DOUBLE), {state}[2] + 1)), "
+                f"{state} -> CASE WHEN {state}[2] = 0 THEN NULL ELSE {state}[1] / {state}[2] END)"
+            )
+        else:
+            sql = (
+                "AGGREGATE(__m, NAMED_STRUCT('s', CAST(0 AS DOUBLE), 'c', CAST(0 AS BIGINT)), "
+                f"({state}, {v}) -> CASE WHEN {v} IS NULL THEN {state} "
+                f"ELSE NAMED_STRUCT('s', {state}.s + CAST({v} AS DOUBLE), 'c', {state}.c + 1) END, "
+                f"{state} -> CASE WHEN {state}.c = 0 THEN NULL ELSE {state}.s / {state}.c END)"
+            )
+        return _build(sql, self.dialect, __m=array)
+
+    def bigquery_select(
+        self, mapped: _Mapped, aggregate: str | None, ordered: bool = False
+    ) -> exp.Expr:
+        """``(SELECT agg(body) FROM UNNEST(...))``, or ``ARRAY(SELECT body ...)`` when ``aggregate`` is None."""
+        arrays = mapped.arrays
+        n = len(arrays)
+        parts = self.parts(mapped)
+        item, pos = self.fresh("_item"), self.fresh("_pos")
+        if mapped.body is None or n == 1:
+            parts["__body"] = (
+                exp.column(item)
+                if mapped.body is None
+                else mapped.substitute(lambda _: exp.column(item))
+            )
+            offset = self.fresh("_offset")
+            source = f"UNNEST(__a0) AS {item}" + (
+                f" WITH OFFSET AS {offset}" if aggregate is None else ""
+            )
+            order = offset
+        else:
+            parts["__body"] = mapped.substitute(
+                lambda k: _build(f"__a{k}[SAFE_OFFSET({pos})]", self.dialect, **parts)
+            )
+            lengths = ", ".join(f"ARRAY_LENGTH(__a{i})" for i in range(n))
+            source = f"UNNEST(GENERATE_ARRAY(0, GREATEST({lengths}) - 1)) AS {pos}"
+            order = pos
+        if aggregate is None:
+            sql = f"ARRAY(SELECT __body FROM {source} ORDER BY {order})"
+        else:
+            sql = f"(SELECT {aggregate}(__body) FROM {source})"
+        return _build(sql, self.dialect, **parts)
+
+
+def _is_list_value(node: exp.Expr, scope: t.Any, depth: int = 0) -> bool:
+    while isinstance(node, (exp.Alias, exp.Paren)):
+        node = node.this
+    if isinstance(node, _LIST_ARRAY_TYPES):
+        return True
+    if not isinstance(node, exp.Column) or depth > 16:
+        return False
+    sources = scope.sources
+    if node.table:
+        source = sources.get(node.table)
+    else:
+        candidates = [
+            s
+            for s in sources.values()
+            if isinstance(s, Scope)
+            and isinstance(s.expression, exp.Select)
+            and node.name in s.expression.named_selects
+        ]
+        source = candidates[0] if len(candidates) == 1 else None
+    if not isinstance(source, Scope) or not isinstance(source.expression, exp.Select):
+        return False
+    selects = source.expression.selects
+    names = source.expression.named_selects
+    if node.name not in names:
+        return False
+    return _is_list_value(selects[names.index(node.name)], source, depth + 1)
+
+
+def _list_lengths(expression: exp.Expr) -> list[exp.Length]:
+    """The ``LENGTH``/``LEN`` calls whose argument is provably a list (a ``LIST``/``ARRAY_AGG`` column)."""
+    if not isinstance(expression, exp.Query):
+        return []
+    try:
+        scopes = traverse_scope(expression)
+    except OptimizeError:
+        return []
+    found: list[exp.Length] = []
+    for scope in scopes:
+        for length in scope.find_all(exp.Length):
+            if length.this is not None and _is_list_value(length.this, scope):
+                found.append(length)
+    return found
+
+
+def reduce_list_aggregates(expression: E, dialect: DialectType, copy: bool = True) -> E:
+    """Rewrite DuckDB list aggregates for engines without DuckDB's list functions.
+
+    DuckDB's ``LIST_SUM``, ``LIST_AVG``, ``LIST_TRANSFORM``, ``LIST_ZIP`` and ``LEN`` over a list
+    column have no spelling in Presto, Trino, Athena, BigQuery, Spark or Databricks. A bare
+    ``LIST_SUM(list)`` or ``LIST_AVG(list)``, and the zipped and mapped shape
+    ``LIST_SUM(LIST_TRANSFORM(LIST_ZIP(a, b, ...), x -> f(x[1], x[2], ...)))`` (TPC-Havoc ``1_v7``),
+    become:
+
+    - Presto, Trino, Athena: ``REDUCE`` over ``ZIP_WITH`` (two arrays) or ``TRANSFORM(ZIP(...))``
+      (three to five arrays), written in ``DOUBLE``.
+    - Spark, Databricks: ``AGGREGATE`` over ``ZIP_WITH`` (arrays beyond the second are zipped into
+      structs first), written in ``DOUBLE``.
+    - BigQuery: a scalar ``(SELECT SUM(...) FROM UNNEST(...))`` subquery that reads the zipped arrays
+      by ``SAFE_OFFSET`` over ``GENERATE_ARRAY(0, GREATEST(ARRAY_LENGTH(...)) - 1)``, keeping the
+      column type.
+
+    ``NULL`` elements are skipped and an empty or all-``NULL`` list gives ``NULL``, as DuckDB does;
+    shorter zipped arrays read ``NULL`` past their end, as ``LIST_ZIP`` pads them. A ``LIST_ZIP``
+    inside ``LIST_TRANSFORM`` whose lambda uses its parameter only as ``x[<literal>]`` is rewritten; any
+    other use leaves that call unchanged. A ``LIST_TRANSFORM`` over ``LIST_ZIP`` outside an aggregate
+    becomes ``ZIP_WITH``/``TRANSFORM(ZIP(...))`` (Presto family, Spark family) or an ordered
+    ``ARRAY(SELECT ...)`` (BigQuery); a bare ``LIST_ZIP`` becomes ``ZIP`` or ``ARRAYS_ZIP`` (BigQuery has no
+    equivalent and is left alone). ``LEN``/``LENGTH`` of a column that a ``LIST`` or ``ARRAY_AGG``
+    defines in a ``WITH`` or derived table becomes ``CARDINALITY``, ``SIZE`` or ``ARRAY_LENGTH``.
+
+    Run ``order_list_aggregates`` first so every list a zip reads is built in the same order. Other
+    dialects, and calls the rewrite does not recognise, are left alone. Arrays that are not plain
+    columns are written once per use.
+
+    Args:
+        expression: the expression to rewrite (read in a DuckDB-compatible dialect).
+        dialect: the dialect the expression will be generated for.
+        copy: rewrite a copy instead of mutating ``expression``.
+
+    Returns:
+        The rewritten expression.
+    """
+    family = _list_family(dialect)
+    if family is None:
+        return expression.copy() if copy else expression
+    if copy:
+        expression = expression.copy()
+    rewriter = _ListRewriter(dialect, family)
+    lengths = _list_lengths(expression)
+
+    def swap(node: exp.Expr, replacement: exp.Expr) -> None:
+        nonlocal expression
+        if node is expression:
+            expression = replacement  # type: ignore[assignment]
+        else:
+            node.replace(replacement)
+
+    for length in lengths:
+        swap(length, exp.ArraySize(this=length.this.copy()))
+
+    def attached(node: exp.Expr) -> bool:
+        while node.parent is not None:
+            node = node.parent
+        return node is expression
+
+    changed = True
+    while changed:
+        changed = False
+        for node in list(expression.walk(bfs=False)):
+            if not attached(node):
+                continue
+            replacement: exp.Expr | None = None
+            rewriter.scope_to(node)
+            if (
+                isinstance(node, exp.Anonymous)
+                and node.name.upper() in _LIST_FOLDS
+                and len(node.expressions) == 1
+            ):
+                replacement = rewriter.fold(
+                    _LIST_FOLDS[node.name.upper()], _mapped_array(node.expressions[0])
+                )
+            elif isinstance(node, exp.Transform) and (
+                family == "bigquery" or _zip_arguments(node.this) is not None
+            ):
+                mapped = _mapped_array(node)
+                if mapped.body is not None:
+                    replacement = (
+                        rewriter.bigquery_select(mapped, None)
+                        if family == "bigquery"
+                        else rewriter.array_value(mapped)
+                    )
+            elif family != "bigquery" and _zip_arguments(node) is not None:
+                name = "ZIP" if family == "presto" else "ARRAYS_ZIP"
+                replacement = exp.Anonymous(
+                    this=name, expressions=[a.copy() for a in node.expressions]
+                )
+            if replacement is not None:
+                swap(node, replacement)
+                changed = True
+                break
     return expression
