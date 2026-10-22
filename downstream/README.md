@@ -91,6 +91,11 @@ The adapter rewrites in the same module are:
   not CTE references, so a caller holding a dataset can set `db` on them.
 - `flag_comparisons_to_boolean(expression, columns, use_is=False)` rewrites `flag = 1` and
   `flag = 0` for the named columns into `= TRUE`/`= FALSE` (or `IS TRUE`/`IS FALSE`).
+- `nullif_zero_divisors(expression, columns)` turns `a / CAST(pmc AS DECIMAL(15, 4))` into
+  `a / NULLIF(CAST(pmc AS DECIMAL(15, 4)), 0)` for every division whose divisor is, once parentheses and casts are
+  removed, a column named in `columns` (TPC-DS Q90 passes `["pmc"]`). PostgreSQL, ClickHouse and SQL Server fail on a
+  zero divisor and DuckDB returns `inf`, so the guard gives every engine NULL. It changes results (an error or `inf`
+  becomes NULL), is opt-in, and unlike `safe_division` works for every dialect.
 
 `sqlglot.benchbox.engine_rewrites` holds the rewrites for engines that reject SQL their peers accept. Each
 takes an expression and options (every name or number it matches is an argument) and returns a copy:
@@ -109,6 +114,17 @@ takes an expression and options (every name or number it matches is an argument)
   StarRocks and Doris require.
 - `qualify_order_by_columns(expression, qualifiers)` qualifies an unqualified `ORDER BY` column with the source
   named for it, for queries whose joined sources expose the same column.
+- `alias_qualified_projections(expression, top_level=False)` writes `v1.d_year AS d_year` for every qualified column
+  projected by a `WITH` entry or subquery (a repeated name, `*` and the outermost query are left alone).
+  ClickHouse names the output of `SELECT v1.d_year FROM v1, v1 AS v1_lag, v1 AS v1_lead` `v1.d_year`, so the outer
+  `WHERE d_year = 2001` of TPC-DS Q47 and Q57 fails with an unknown identifier.
+- `qualify_alias_shadowed_columns(expression)` qualifies a column with its source when a projection alias of the same
+  name hides it, outside `ORDER BY`, for a `SELECT` whose every `FROM`/`JOIN` source is a derived table or `WITH`
+  entry with a readable output list and exactly one source outputs the name: `SUM(x.jan_sales / sq_ft) ... FROM (...)
+  AS x`. ClickHouse reads the unqualified `jan_sales` as the alias `SUM(jan_sales) AS jan_sales` and fails with
+  `ILLEGAL_AGGREGATION` (TPC-DS Q66). `ORDER BY` keeps the alias, as SQL does, and the query-wide setting
+  `prefer_column_name_to_alias` is not used because it also moves `ORDER BY total_sales` of Q33, Q56, Q60 and Q71
+  to the column and breaks them.
 
 StarRocks and Doris need no generator change: both already quote the reserved words that fail as aliases
 (checked unquoted on StarRocks 4.0.16 and Doris 4.1.3), write `SUBSTRING(x FROM a FOR b)` as
@@ -121,6 +137,11 @@ every gate (which columns, which alias, which keys) to the caller and returns a 
 - `inline_select_aliases(expression, clauses=("having", "where"))` replaces a reference to a
   projection alias in `HAVING` or `WHERE` with the aliased expression, for engines that resolve
   aliases only in `ORDER BY`.
+- `inline_order_by_aliases(expression, names=None)` replaces a projection alias used inside an `ORDER BY` expression
+  (`CASE WHEN lochierarchy = 0 THEN i_category END`) with the aliased expression, in parentheses where an operator
+  needs them; a sort key that is only the alias, qualified columns, other scopes, `GROUP BY` and `HAVING` stay.
+  PostgreSQL (and the engines built on it) resolve an output alias in `ORDER BY` only as the whole key (TPC-DS Q36,
+  Q70 and Q86). `names` limits the aliases that are inlined.
 - `qualify_columns_by_name(expression, tables, clauses=None, quoted=False)` qualifies unqualified columns by
   a column-to-table map the caller passes, optionally only inside the named clauses (`("having",)`).
 - `add_row_source_to_fromless_selects(expression, source, dialect)` adds a one-row `FROM` source the caller

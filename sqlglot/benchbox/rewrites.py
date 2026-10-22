@@ -222,6 +222,41 @@ def _is_nonzero_number(node: exp.Expr) -> bool:
     return isinstance(node, exp.Literal) and node.is_number and Decimal(node.name) != 0
 
 
+def nullif_zero_divisors(expression: E, columns: t.Iterable[str], copy: bool = True) -> E:
+    """Make a division by one of the named columns return NULL instead of failing on zero.
+
+    ``a / CAST(pmc AS DECIMAL(15, 4))`` becomes ``a / NULLIF(CAST(pmc AS DECIMAL(15, 4)), 0)`` for every
+    division whose divisor is, once parentheses and casts are removed, an unqualified or qualified
+    column named in ``columns`` (compared case-insensitively). PostgreSQL, ClickHouse, SQL Server and
+    other engines raise on a zero divisor; DuckDB and SQLite return NULL, so the rewrite gives every
+    engine the same answer. A divisor that is already ``NULLIF(x, 0)`` or that wraps one is left alone.
+
+    The rewrite changes results (an error becomes NULL), so it is opt-in and takes the columns as an
+    argument: nothing else is guarded. Unlike ``safe_division`` it works for every dialect.
+
+    Args:
+        expression: the expression to rewrite.
+        columns: column names whose use as a divisor is guarded.
+        copy: rewrite a copy instead of mutating ``expression``.
+
+    Returns:
+        The rewritten expression.
+    """
+    names = {column.lower() for column in columns}
+    if copy:
+        expression = expression.copy()
+    for node in expression.find_all(exp.Div):
+        divisor = node.expression
+        if _is_zero_guard(divisor):
+            continue
+        bare = divisor.unnest()
+        while isinstance(bare, exp.Cast):
+            bare = bare.this.unnest()
+        if isinstance(bare, exp.Column) and bare.name.lower() in names:
+            node.set("expression", exp.Nullif(this=divisor, expression=exp.Literal.number(0)))
+    return expression
+
+
 def safe_division(expression: E, dialect: DialectType, copy: bool = True) -> E:
     """Make every ``/`` return NULL instead of failing or producing infinity on a zero divisor.
 
