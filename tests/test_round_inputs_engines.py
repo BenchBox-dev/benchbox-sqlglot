@@ -43,10 +43,6 @@ BELOW_TIE = "SELECT ROUND(AVG(d), 2) FROM (VALUES (CAST(0.285 AS DOUBLE))) AS t(
 HALF_AWAY_ONE_ARGUMENT = [1.0, 2.0, 3.0, -1.0, -3.0, 0.0, 1.0, -0.0, 0.0, 0.0]
 
 
-def duckdb_sql(sql):
-    return sql
-
-
 def postgres_sql(sql, rewrite=True):
     tree = sqlglot.parse_one(sql, read="duckdb")
     if rewrite:
@@ -68,9 +64,7 @@ class TestRoundInputsText(unittest.TestCase):
 
     def test_nested_rounds_and_idempotence(self):
         once = postgres_sql("SELECT ROUND(ROUND(w, 3), 1)")
-        self.assertEqual(
-            once, "SELECT ROUND(CAST(ROUND(CAST(w AS DECIMAL), 3) AS DECIMAL), 1)"
-        )
+        self.assertEqual(once, "SELECT ROUND(CAST(ROUND(CAST(w AS DECIMAL), 3) AS DECIMAL), 1)")
         tree = round_inputs_to_decimal(sqlglot.parse_one(once, read="postgres"))
         self.assertEqual(tree.sql("postgres"), once)
 
