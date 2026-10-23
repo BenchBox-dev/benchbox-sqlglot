@@ -477,3 +477,38 @@ def flag_comparisons_to_boolean(
                 else exp.EQ(this=column, expression=value)
             )
     return expression
+
+
+def round_inputs_to_decimal(expression: E, copy: bool = True) -> E:
+    """Cast the input of every ``ROUND`` to an unconstrained ``DECIMAL``.
+
+    ``ROUND`` on a double rounds half away from zero in DuckDB (``ROUND(2.5)`` is 3) but
+    half to even on PostgreSQL (2), and PostgreSQL has no ``ROUND(double precision, integer)``
+    at all. The PostgreSQL generator casts the input of a two-argument ``ROUND`` only when the
+    type annotator knows it is a double, so ``ROUND(delay, 2)`` over an unknown ``DOUBLE`` column
+    is an error there and no ``ROUND`` with one argument is cast. PostgreSQL rounds ``numeric`` half away from zero and accepts a scale, so ``ROUND(CAST(x AS DECIMAL), n)``
+    gives the DuckDB answer for every value that is a decimal tie.
+
+    Use it for engines where a bare ``DECIMAL`` is arbitrary precision, such as the PostgreSQL
+    family. Do not use it for engines whose bare ``DECIMAL`` has a default scale: DuckDB's is
+    ``DECIMAL(18,3)`` and would truncate the value. A double is converted to ``numeric`` through
+    its shortest decimal form, so a value such as ``0.285`` rounds to ``0.29`` where a DuckDB
+    double, whose binary value is just below the tie, gives ``0.28``.
+
+    An input that is already a cast to a decimal type is left alone, so the rewrite is idempotent.
+
+    Args:
+        expression: the expression to rewrite.
+        copy: rewrite a copy instead of mutating ``expression``.
+
+    Returns:
+        The rewritten expression.
+    """
+    if copy:
+        expression = expression.copy()
+    for node in list(expression.find_all(exp.Round)):
+        operand = node.this
+        if isinstance(operand, exp.Cast) and operand.to.is_type(exp.DType.DECIMAL):
+            continue
+        node.set("this", exp.cast(operand, exp.DType.DECIMAL, copy=False))
+    return expression

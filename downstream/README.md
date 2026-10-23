@@ -96,6 +96,14 @@ The adapter rewrites in the same module are:
   removed, a column named in `columns` (TPC-DS Q90 passes `["pmc"]`). PostgreSQL, ClickHouse and SQL Server fail on a
   zero divisor and DuckDB returns `inf`, so the guard gives every engine NULL. It changes results (an error or `inf`
   becomes NULL), is opt-in, and unlike `safe_division` works for every dialect.
+- `round_inputs_to_decimal(expression)` casts the input of every `ROUND` to an unconstrained `DECIMAL`. DuckDB rounds a
+  double half away from zero (`ROUND(2.5)` is 3); PostgreSQL rounds `double precision` half to even (2) and has no
+  `ROUND(double precision, integer)`. The PostgreSQL generator already casts a two-argument `ROUND` whose input the type
+  annotator knows is a double, so this rewrite adds the one-argument case and columns of unknown type. Use it for engines
+  whose bare `DECIMAL` has no default scale (the PostgreSQL family); on DuckDB, whose bare `DECIMAL` is `DECIMAL(18,3)`,
+  it would truncate. A value whose binary double sits just below a decimal tie (`0.285`) rounds to `0.29` on PostgreSQL
+  and `0.28` on DuckDB, because PostgreSQL converts a double to `numeric` through its shortest decimal form. It changes
+  every FlightData query with a `ROUND` (FlightData is written in DuckDB SQL, the reference).
 
 `sqlglot.benchbox.engine_rewrites` holds the rewrites for engines that reject SQL their peers accept. Each
 takes an expression and options (every name or number it matches is an argument) and returns a copy:
