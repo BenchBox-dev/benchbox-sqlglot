@@ -591,10 +591,10 @@ def decimal_division_to_double(expression: E, copy: bool = True) -> E:
         if isinstance(bare, exp.Cast) and bare.to.this in _REAL_TYPES:
             continue
         node.set("this", exp.Cast(this=dividend, to=exp.DataType.build(exp.DType.DOUBLE)))
-    for node in list(expression.find_all(exp.Case, exp.If)):
-        if not _has_real_quotient_branch(node):
+    for branching in list(expression.find_all(exp.Case, exp.If)):
+        if not _has_real_quotient_branch(branching):
             continue
-        for owner, key in _branch_slots(node):
+        for owner, key in _branch_slots(branching):
             if _is_zero_decimal_cast(owner.args[key]):
                 owner.set(
                     key,
