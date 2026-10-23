@@ -128,8 +128,25 @@ Every downstream change is a `downstream/patches.json` entry:
   one of an original entry's paths, `candidate` stops for manual reconciliation.
 - `upstreamed` and `excluded` are dispositions only and own no paths.
 
-A path belongs to exactly one entry. The contract test checks this and that
-original paths are absent upstream.
+A path belongs to exactly one entry. The contract test checks this, that
+original paths are absent upstream, and that every file that differs from the
+recorded upstream commit is owned by an entry, is a normalized patch under
+`downstream/patches/`, or is listed in the top-level `infrastructure` array.
+
+`infrastructure` entries (`id`, `paths`, optional `removed`, `reason`) cover fork
+maintenance files and fork edits to upstream build and CI files that are not
+replayed patches: they survive a refresh through the merge of upstream ancestry,
+and a conflict in one stops the refresh for manual resolution. A new such file
+or edit needs an entry in the same change.
+
+Every `carried` entry records where it stands with upstream:
+`upstream_state` is `not_offered` (no upstream PR yet), `offered` (an upstream
+PR or issue exists; `upstream` lists its links and the reason says where it
+stands) or `declined` (the fork does not intend to offer it, or upstream
+refused it), with a
+non-empty `upstream_reason`. Upstream links must be `tobymao/sqlglot` pull
+request or issue URLs. A retired patch becomes `upstreamed` and loses these
+fields; `upstreamed` and `excluded` entries keep their `upstream` links.
 
 ## The `sqlglot.benchbox` package
 

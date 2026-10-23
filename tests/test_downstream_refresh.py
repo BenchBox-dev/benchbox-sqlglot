@@ -45,6 +45,8 @@ class TestDownstreamRefresh(unittest.TestCase):
                         "status": "carried",
                         "paths": ["runtime.py"],
                         "patch": "downstream/runtime.patch",
+                        "upstream_state": "not_offered",
+                        "upstream_reason": "Fixture patch",
                     }
                 ],
             }
@@ -87,10 +89,10 @@ class TestDownstreamRefresh(unittest.TestCase):
             self.assertEqual(
                 (final / "runtime.py").read_bytes(), (second / "runtime.py").read_bytes()
             )
-            self.assertEqual(
-                json.loads((final / "downstream/patches.json").read_text())["patches"][0]["status"],
-                "upstreamed",
-            )
+            retired = json.loads((final / "downstream/patches.json").read_text())["patches"][0]
+            self.assertEqual(retired["status"], "upstreamed")
+            self.assertNotIn("upstream_state", retired)
+            self.assertNotIn("upstream_reason", retired)
             self.command(final, "merge-base", "--is-ancestor", base, "HEAD")
 
     def test_original_files_survive_refresh_with_carried_patch(self):

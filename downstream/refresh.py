@@ -157,6 +157,8 @@ def integrate(
             reason = retirements[patch["id"]].strip()
             patch["status"] = "upstreamed"
             patch["reason"] = reason
+            patch.pop("upstream_state", None)
+            patch.pop("upstream_reason", None)
     (destination / "downstream/patches.json").write_text(json.dumps(data, indent=2) + "\n")
     command(destination, "add", "--", "downstream/patches.json")
     command(destination, "commit", "-m", f"chore: refresh SQLGlot from upstream {tag}")
