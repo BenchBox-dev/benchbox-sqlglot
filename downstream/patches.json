@@ -777,6 +777,19 @@
         "tests.test_benchbox_runner_overrides_engines"
       ],
       "reason": "use_nulls_for_rollups in engine_rewrites.py (an original file, so no patch is needed) sets group_by_use_nulls = 1 on ClickHouse queries with ROLLUP, CUBE or GROUPING SETS so rolled-up keys are NULL, not '' or 0. Tests run a Q5-shaped rollup and TPC-H Q6 with fold_between_literal_arithmetic on chDB against DuckDB (downstream/ENGINE-GAPS.md)."
+    },
+    {
+      "id": "postgres-round-inputs",
+      "source": "ec72a02281f9aa5130eb23c65451cfc0032feb63",
+      "status": "original",
+      "depends": [],
+      "paths": [
+        "sqlglot/benchbox/rewrites.py"
+      ],
+      "tests": [
+        "tests.test_round_inputs_engines"
+      ],
+      "reason": "round_inputs_to_decimal in rewrites.py (an original file, so no patch is needed) casts the input of every ROUND to DECIMAL so PostgreSQL rounds one-argument doubles half away from zero as DuckDB does and accepts a scale on columns of unknown type. Tests run the FlightData ROUND shapes on DuckDB and PostgreSQL, and assert the unrewritten PostgreSQL rows differ (downstream/ENGINE-GAPS.md)."
     }
   ]
 }

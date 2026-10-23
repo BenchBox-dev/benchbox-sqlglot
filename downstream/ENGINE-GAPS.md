@@ -201,6 +201,17 @@ with no behavior of their own yet, so their identity and transpilation tests
 A dialect that later overrides generator or parser behavior must add an engine or
 record why one cannot be obtained.
 
+### `ROUND` of doubles from a DuckDB source (`postgres-round-inputs`)
+
+`tests/test_round_inputs_engines.py` runs the FlightData `ROUND` shapes (`ROUND(AVG(d), 2)`, one-argument `ROUND`
+over exact binary ties such as `0.5`, `2.5`, `-2.5`, `0.125`) on DuckDB (the reference) and PostgreSQL (`in-process`
+and `postgres` jobs). It asserts that the rewritten PostgreSQL rows equal DuckDB's, that unrewritten PostgreSQL rounds
+one-argument ties half to even and rejects `ROUND(double precision, integer)` on an untyped column, and that
+the generator's own cast already covers `ROUND(AVG(d), 2)`. Documented gap: a double just below a decimal tie
+(`0.285`) rounds to `0.28` on DuckDB and `0.29` on PostgreSQL after the cast; PostgreSQL has no exact
+double-to-`numeric` conversion, so no rewrite closes it. Other engines (Trino, ClickHouse, MySQL family) round
+doubles by their own rules; none is covered, and no BenchBox query set names them for `ROUND` casting.
+
 ### Exact integer division from a Netezza source (`netezza-exact-division`, `postgres-exact-division`)
 
 `tests/test_netezza_exact_division_engines.py` runs the TPC-DS Q21, Q78 and Q83 ratio shapes and
