@@ -411,8 +411,8 @@ def _target_types(create: exp.Create, target: Dialect) -> None:
                 values = [
                     p.this.name for p in data_type.expressions if isinstance(p, exp.DataTypeParam)
                 ]
-                if len(values) == 2 and values[0].isdigit() and values[1].isdigit():
-                    precision, scale = int(values[0]), int(values[1])
+                if len(values) in (1, 2) and all(value.isdigit() for value in values):
+                    precision, scale = int(values[0]), int(values[1]) if len(values) == 2 else 0
                     if scale > 9 or precision - scale > 29:
                         data_type.set("this", exp.DType.BIGDECIMAL)
         elif (

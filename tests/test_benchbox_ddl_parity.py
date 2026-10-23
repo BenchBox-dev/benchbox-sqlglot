@@ -86,7 +86,7 @@ class TestQuestDBLayout(unittest.TestCase):
 class TestTypeIntent(unittest.TestCase):
     SQL = (
         "CREATE TABLE t (a VARCHAR, b VARCHAR(5), c FLOAT, d REAL, e DOUBLE PRECISION, "
-        "v FLOAT[4], g DECIMAL(18,14), h NUMERIC(10,2), i DECIMAL(38,2), j DECIMAL(29,9))"
+        "v FLOAT[4], g DECIMAL(18,14), h NUMERIC(10,2), i DECIMAL(38,2), j DECIMAL(29,9), k DECIMAL(38), m DECIMAL(29), n DECIMAL(30))"
     )
 
     def test_olap_bare_varchar_is_full_length_for_either_read_dialect(self):
@@ -123,6 +123,9 @@ class TestTypeIntent(unittest.TestCase):
             "h NUMERIC(10, 2)",
             "i BIGNUMERIC(38, 2)",
             "j NUMERIC(29, 9)",
+            "k BIGNUMERIC(38)",
+            "m NUMERIC(29)",
+            "n BIGNUMERIC(30)",
         ):
             self.assertIn(expected, sql)
 
