@@ -47,12 +47,48 @@ def lowercase_identifiers(
     return expression
 
 
+_REAL_TYPES = (exp.DType.DOUBLE, exp.DType.FLOAT)
+
+
+def _branch_slots(node: exp.Expr) -> list[tuple[exp.Expr, str]]:
+    if isinstance(node, exp.Case):
+        slots = [(branch, "true") for branch in node.args.get("ifs") or []]
+        slots.append((node, "default"))
+    elif isinstance(node, exp.If) and not isinstance(node.parent, exp.Case):
+        slots = [(node, "true"), (node, "false")]
+    else:
+        return []
+    return [(owner, key) for owner, key in slots if owner.args.get(key) is not None]
+
+
+def _is_real_quotient(node: exp.Expr) -> bool:
+    bare = node.unnest()
+    if not isinstance(bare, exp.Div):
+        return False
+    dividend = bare.this.unnest()
+    return isinstance(dividend, exp.Cast) and dividend.to.this in _REAL_TYPES
+
+
+def _has_real_quotient_branch(node: exp.Expr) -> bool:
+    return any(_is_real_quotient(owner.args[key]) for owner, key in _branch_slots(node))
+
+
 def _is_zero_decimal_literal(node: exp.Expr | None) -> bool:
     return (
         isinstance(node, exp.Literal)
         and node.is_number
         and "." in node.name
         and Decimal(node.name) == 0
+    )
+
+
+def _is_zero_decimal_cast(node: exp.Expr | None) -> bool:
+    return (
+        isinstance(node, exp.Cast)
+        and node.to.this == exp.DType.DECIMAL
+        and isinstance(node.this, exp.Literal)
+        and node.this.is_number
+        and Decimal(node.this.name) == 0
     )
 
 
@@ -69,6 +105,10 @@ def decimal_zero_literals(
     fail or lose exactness. The literal is replaced where it is an argument of
     ``COALESCE``, an operand of ``+``, ``-``, ``*`` or ``/`` whose other operand is a
     column, or a ``THEN``/``ELSE`` result.
+
+    A zero that shares its ``CASE``/``IF`` with a quotient whose dividend is already cast to
+    ``DOUBLE`` (``decimal_division_to_double``) stays ``0.0``, a ``Float64``, because ClickHouse
+    has no common type for ``Float64`` and ``Decimal`` without the Variant type.
 
     Args:
         expression: the expression to rewrite.
@@ -109,11 +149,17 @@ def decimal_zero_literals(
         elif _is_zero_decimal_literal(left) and isinstance(right, exp.Column):
             binary.set("this", zero())
     for branch in list(expression.find_all(exp.If)):
+        if _has_real_quotient_branch(
+            branch.parent if isinstance(branch.parent, exp.Case) else branch
+        ):
+            continue
         if _is_zero_decimal_literal(branch.args.get("true")):
             branch.set("true", zero())
         if _is_zero_decimal_literal(branch.args.get("false")):
             branch.set("false", zero())
     for case in list(expression.find_all(exp.Case)):
+        if _has_real_quotient_branch(case):
+            continue
         if _is_zero_decimal_literal(case.args.get("default")):
             case.set("default", zero())
     return expression
@@ -521,6 +567,11 @@ def decimal_division_to_double(expression: E, copy: bool = True) -> E:
     A zero divisor then yields ``inf`` (as in DuckDB) instead of ClickHouse's decimal division error;
     combine with ``safe_division`` or ``nullif_zero_divisors`` for NULL.
 
+    ClickHouse has no common type for ``Float64`` and ``Decimal`` unless the experimental Variant
+    type is enabled, so a ``CASE``/``IF`` that returns a quotient in one branch and a
+    ``CAST(0 AS DECIMAL(p, s))`` zero (what ``decimal_zero_literals`` writes) in another gets
+    ``CAST(0 AS DOUBLE)`` for that zero (TPC-DS Q11). Other branch types are left alone.
+
     Args:
         expression: the expression to rewrite.
         copy: rewrite a copy instead of mutating ``expression``.
@@ -530,7 +581,6 @@ def decimal_division_to_double(expression: E, copy: bool = True) -> E:
     """
     if copy:
         expression = expression.copy()
-    real = (exp.DType.DOUBLE, exp.DType.FLOAT)
     for node in expression.find_all(exp.Div):
         dividend = node.this
         bare = dividend.unnest()
@@ -538,9 +588,18 @@ def decimal_division_to_double(expression: E, copy: bool = True) -> E:
             continue
         if isinstance(bare, exp.Literal) and bare.is_number and any(c in bare.name for c in ".eE"):
             continue
-        if isinstance(bare, exp.Cast) and bare.to.this in real:
+        if isinstance(bare, exp.Cast) and bare.to.this in _REAL_TYPES:
             continue
         node.set("this", exp.Cast(this=dividend, to=exp.DataType.build(exp.DType.DOUBLE)))
+    for branching in list(expression.find_all(exp.Case, exp.If)):
+        if not _has_real_quotient_branch(branching):
+            continue
+        for owner, key in _branch_slots(branching):
+            if _is_zero_decimal_cast(owner.args[key]):
+                owner.set(
+                    key,
+                    exp.Cast(this=exp.Literal.number(0), to=exp.DataType.build(exp.DType.DOUBLE)),
+                )
     return expression
 
 

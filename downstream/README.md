@@ -139,6 +139,9 @@ takes an expression and options (every name or number it matches is an argument)
   already `Float64` there; float dividends, float literals and chained divisions are left alone. A zero divisor then gives
   `inf` as in DuckDB; pair it with `safe_division` or `nullif_zero_divisors` for NULL. It changes TPC-DS Q2, Q12, Q20,
   Q36, Q59, Q66, Q98 and TPC-H Q8 at scale factor 0.01 and no query for the worse.
+  A `CASE`/`IF` that returns such a quotient beside a `CAST(0 AS DECIMAL(p, s))` zero (written by `decimal_zero_literals`)
+  gets `CAST(0 AS DOUBLE)` for the zero, because ClickHouse has no common type for `Float64` and `Decimal` without the
+  Variant type (`use_variant_as_common_type = 1`); `decimal_zero_literals` leaves such a zero as `0.0`. TPC-DS Q11.
 - `use_nulls_for_rollups(expression)` adds `SETTINGS group_by_use_nulls = 1` to a ClickHouse query with `ROLLUP`, `CUBE` or
   `GROUPING SETS`. Without it ClickHouse writes `''` or `0` in a rolled-up key whose column is not `Nullable` (a literal from a
   `UNION ALL` branch, TPC-DS Q5, Q14, Q77 and Q80), where SQL has NULL. Other queries are unchanged.
