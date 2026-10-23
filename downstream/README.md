@@ -277,7 +277,9 @@ written the way the target quotes them, and anything that is not a plain identif
 with the target's parser, so SQLGlot's own generator spells and places it; a group the parser cannot read
 (Redshift `SORTKEY AUTO`, Doris `AGGREGATE KEY`, Redshift Spectrum clauses) is appended to the statement
 text. A statement that already has a clause of the same kind (`ENGINE`, `ORDER BY`, `DISTSTYLE`...) keeps its
-own. A layout is applied to permanent `CREATE TABLE` statements only, after the other options, and reads the
+own, except the file format of Spark, Databricks, Hive and Athena: a layout's `format` or `stored_as` replaces the
+statement's own `USING` or `STORED AS` (`TestSparkFamily`), and a layout with neither keeps it. A layout is
+applied to permanent `CREATE TABLE` statements only, after the other options, and reads the
 statement's own primary key before anything is stripped.
 
 | Dialect | Clauses written |

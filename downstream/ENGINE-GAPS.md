@@ -25,6 +25,12 @@ so a missing package or an unreachable container fails the job.
 | StarRocks | `starrocks` | `starrocks/allin1-ubuntu:4.0.16` started with `docker run` | `starrocks` |
 | Doris | `doris` | `apache/doris:all-in-one-4.1.3` started with `docker run` | `doris` |
 
+Every service container and `docker run` image is pinned by digest as well as tag
+(`name:tag@sha256:...`), so a moved tag cannot change what the jobs test; a tag bump updates
+its digest in the same change. The QuestDB image's default `admin` / `quest` credentials in
+`tests/engines.py` belong to an ephemeral container bound to the runner's loopback port; the
+workflow holds no secret and no credential reaches an external service.
+
 `tests/test_platform_dialects_engines.py` runs in the `in-process` and `postgres` jobs
 next to the seed tests: it executes DataFusion dialect output and the date
 arithmetic rewrite.
@@ -187,14 +193,15 @@ Until added, treat them as gaps with the substitute of their closest executed en
 
 ### Platform dialects without their own engine
 
-The `netezza`, `greenplum` and `vertica` dialects are thin subclasses of `postgres`
-with no behavior of their own yet, so their identity and transpilation tests
-(`tests/dialects/test_<dialect>.py`) are the evidence for what they add, and the
-`postgres` job executes the shared output they inherit. No engine for them is in CI:
+The `netezza`, `greenplum` and `vertica` dialects are `postgres` subclasses. `greenplum` and `vertica`
+add almost no behavior of their own yet (Greenplum's exact-division cast type, Vertica declining that cast), so their identity and
+transpilation tests (`tests/dialects/test_<dialect>.py`) are the evidence for what they add, and the
+`postgres` job executes the shared output they inherit. `netezza` adds parser behavior, described in its row.
+No engine for them is in CI:
 
 | Platform | Why no engine | Substitute evidence |
 |---|---|---|
-| Netezza | Proprietary appliance; IBM distributes no local engine | Identity and transpile tests; the date arithmetic rewrite executes on the `postgres` job |
+| Netezza | Proprietary appliance; IBM distributes no local engine. The dialect is a `postgres` subclass whose parser reads `DATE('now' ...)`, `JULIANDAY` and `+ N days` (the SQLite idioms the benchmark queries carry) into portable nodes and marks `/` for exact division | The nodes are executed on the engines that run the target SQL: `tests/test_sqlite_idioms_execution.py` and `tests/test_netezza_exact_division_engines.py` (see above and the next section); identity and transpile tests in `tests/dialects/test_netezza.py`. Netezza's own SQL is never executed |
 | Greenplum | No official single-container image; a cluster is too heavy for a hosted job | Identity and transpile tests; shared syntax executes on the `postgres` job |
 | Vertica | Not added to CI in this slice | Identity and transpile tests; shared syntax executes on the `postgres` job |
 
@@ -216,3 +223,28 @@ RisingWave. No BenchBox platform targets Materialize, RisingWave or Druid; Druid
 division but its dialect does not declare `TYPED_DIVISION`, so it is not changed. Vertica divides integers
 to a `NUMERIC` since version 6 and keeps its `/`, as do Oracle, Exasol, Snowflake (Databend), BigQuery and
 ClickHouse.
+
+### Accepted limitations
+
+- **BigQuery aggregate windows and `NULLS FIRST`/`LAST`.** The BigQuery generator writes a non-default
+  `NULLS` clause as a `key IS NULL` sort key only for `FIRST_VALUE`, `LAST_VALUE` and `NTH_VALUE` without a
+  `ROWS` frame (`bigquery-window-nulls-ordering`). For an aggregate window (`SUM(x) OVER (ORDER BY d)`) upstream
+  removes the clause and reports an unsupported warning; `test_null_ordering` in `tests/dialects/test_bigquery.py`
+  pins that. Rendering the key for aggregate windows too was tried and fails those upstream tests, and
+  BigQuery's window grammar lists no `NULLS` modifier at all, with no engine to settle which forms it rejects,
+  so the fork keeps upstream behavior there. A query that sorts a nullable key in an aggregate window can differ from
+  its source in where the NULLs fall.
+- **QuestDB comma joins with unqualified columns.** `FROM a, b, c WHERE x = y` cannot say which table owns an
+  unqualified column, so the first equality that can be a join condition becomes the `ON` of the first comma
+  join it fits. The rows are the same (an inner join's `ON` and `WHERE` are interchangeable; `TestCommaJoins.
+  test_columns_without_a_qualifier` executes it on QuestDB), but the join order QuestDB plans, and its timing,
+  can differ from a query written with qualified columns, as TPC-H Q5's unqualified columns do.
+- **`JULIANDAY` read from a Netezza source.** `JULIANDAY(a) - JULIANDAY(b)` is a whole-day difference on every
+  target. A lone `JULIANDAY(x)` is the integer day number `DATEDIFF(DAY, 1970-01-01, x) + 2440588`, which is
+  0.5 above SQLite's own midnight value, and a timestamp input keeps no time of day. The benchmark queries
+  (TPC-DI AQ7, AQ8, AQ10) use `JULIANDAY` only in differences of `DATE` columns, where the result is the same
+  integer as SQLite's.
+- **SQLite exact division is generator behavior.** `sqlite-exact-integer-division` changes every SQLite output,
+  including SQLite to SQLite, so `a / b` over integers is a real quotient, not SQLite's truncation. The owner
+  accepted this for benchmark correctness over an opt-in rewrite like `safe_division`; integer-literal-only
+  quotients keep their truncating meaning.
