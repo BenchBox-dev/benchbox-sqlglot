@@ -8,11 +8,60 @@
     "tag": "v30.24.0",
     "sha": "5d588c0f32d17a08191898638f67ff27bb0a13ff"
   },
+  "infrastructure": [
+    {
+      "id": "fork-maintenance-tooling",
+      "paths": [
+        "downstream/__init__.py",
+        "downstream/build.py",
+        "downstream/ci-constraints.txt",
+        "downstream/MAINTAINING.md",
+        "downstream/patches.json",
+        "downstream/README.md",
+        "downstream/refresh.py",
+        "downstream/relocate.py",
+        "downstream/smoke.py",
+        "downstream/verify.py",
+        "tests/test_downstream_contract.py",
+        "tests/test_downstream_distribution.py",
+        "tests/test_downstream_refresh.py",
+        ".github/workflows/benchbox-candidate.yml",
+        ".github/workflows/benchbox-upstream-check.yml"
+      ],
+      "reason": "New files that build, verify and refresh the fork; none exists upstream and none is part of the runtime wheel."
+    },
+    {
+      "id": "fork-edits-to-upstream-files",
+      "paths": [
+        "Makefile",
+        "README.md",
+        "setup.py",
+        ".github/workflows/package-test.yml"
+      ],
+      "reason": "Fork-side edits to upstream-owned build and CI files (distribution packaging, fork README, test workflow scope). They stay on refresh through the merge of upstream ancestry; a conflict in one stops the refresh for manual resolution."
+    },
+    {
+      "id": "disabled-upstream-workflows",
+      "paths": [
+        ".github/disabled-workflows/benchmark-sqlglot.yml",
+        ".github/disabled-workflows/package-publish.yml",
+        ".github/disabled-workflows/run-integration-tests.yml"
+      ],
+      "removed": [
+        ".github/workflows/benchmark-sqlglot.yml",
+        ".github/workflows/package-publish.yml",
+        ".github/workflows/run-integration-tests.yml"
+      ],
+      "reason": "Upstream's publishing, benchmark and private-integration workflows moved out of the active directory so the fork never publishes to upstream's package or runs its secrets."
+    }
+  ],
   "patches": [
     {
       "id": "postgres-extract-return-types",
       "source": "eb360e1e2962b467ca093b9f6ab1000f9ced1a02",
       "status": "carried",
+      "upstream_state": "not_offered",
+      "upstream_reason": "PostgreSQL dialect typing fix with no BenchBox-specific behavior; a candidate once reduced to the PostgreSQL EXTRACT and DATE_PART cases.",
       "depends": [],
       "paths": [
         "sqlglot/expressions/temporal.py",
@@ -37,6 +86,8 @@
       "id": "sqlite-date-extraction",
       "source": "34cd3e9fdb29a4376023f9c6cd32932de07acd3d",
       "status": "carried",
+      "upstream_state": "not_offered",
+      "upstream_reason": "SQLite date extraction lowering with typed inputs; depends on postgres-extract-return-types, so it follows that patch upstream.",
       "depends": [
         "postgres-extract-return-types"
       ],
@@ -55,6 +106,8 @@
       "id": "sqlite-date-interval-arithmetic",
       "source": "b60935672d3fc52c4982077131d4cb5140a69b72",
       "status": "carried",
+      "upstream_state": "not_offered",
+      "upstream_reason": "SQLite dialect interval lowering with no BenchBox-specific behavior; a candidate.",
       "depends": [],
       "paths": [
         "sqlglot/generators/sqlite.py",
@@ -140,6 +193,8 @@
       "id": "sqlite-temporal-lowering",
       "source": "5b2282616d5490b0a548771074385b0df3a849c9",
       "status": "carried",
+      "upstream_state": "not_offered",
+      "upstream_reason": "SQLite dialect temporal lowering with no BenchBox-specific behavior; a candidate after the other SQLite date patches.",
       "depends": [
         "postgres-extract-return-types",
         "sqlite-date-extraction",
@@ -160,6 +215,8 @@
       "id": "duckdb-order-by-all-keyword",
       "source": "0e0e27da679d7c807a2ffafbdf87a95b01820e65",
       "status": "carried",
+      "upstream_state": "not_offered",
+      "upstream_reason": "Self-contained DuckDB generator fix; an upstream-submission candidate.",
       "depends": [],
       "paths": [
         "sqlglot/generators/duckdb.py",
@@ -224,6 +281,8 @@
       "id": "platform-dialects",
       "source": "88f7bc5d28118bc1f3dfa7b01c3975c515c1697e",
       "status": "carried",
+      "upstream_state": "declined",
+      "upstream_reason": "Registers dialects that exist only in the fork; there is nothing upstream could accept.",
       "depends": [
         "platform-dialect-modules"
       ],
@@ -262,6 +321,8 @@
       "id": "databricks-primary-key-ordering",
       "source": "83c20137a0e717eb64cffeb9fd78a4def2dc4954",
       "status": "carried",
+      "upstream_state": "not_offered",
+      "upstream_reason": "Self-contained Databricks generator and parser fix; an upstream-submission candidate.",
       "depends": [],
       "paths": [
         "sqlglot/generators/databricks.py",
@@ -295,6 +356,8 @@
       "id": "sqlite-date-day-arithmetic",
       "source": "a83f3dd0d29fbeda10ea1606e0903461ba1c4abc",
       "status": "carried",
+      "upstream_state": "not_offered",
+      "upstream_reason": "SQLite DATEDIFF and DATE_SUB round trip with no BenchBox-specific behavior; a candidate.",
       "depends": [
         "sqlite-temporal-lowering"
       ],
@@ -312,6 +375,8 @@
       "id": "sqlite-day-offset-date",
       "source": "7b929efa68cdd9a924c11f67b2f9dcac6712aa9a",
       "status": "carried",
+      "upstream_state": "not_offered",
+      "upstream_reason": "SQLite DATE offset generator fix with no BenchBox-specific behavior; a candidate.",
       "depends": [
         "sqlite-date-day-arithmetic"
       ],
@@ -329,6 +394,8 @@
       "id": "sqlite-exact-integer-division",
       "source": "6ce8c3b113bebe6124ad168c4691a8ac08d2838c",
       "status": "carried",
+      "upstream_state": "declined",
+      "upstream_reason": "Exact division is a BenchBox benchmark-correctness policy applied to every SQLite output (owner decision); upstream keeps source semantics.",
       "depends": [
         "sqlite-day-offset-date"
       ],
@@ -346,6 +413,8 @@
       "id": "sqlite-date-integer-semantics",
       "source": "d6fe8cfb012aa9c41c36b4b317cd2fd731aab039",
       "status": "carried",
+      "upstream_state": "not_offered",
+      "upstream_reason": "SQLite DATE arithmetic and comparison semantics; reads mark_date_columns from the fork's benchbox package, so it needs a typed-only reduction before an upstream offer.",
       "depends": [
         "benchbox-rewrites",
         "sqlite-exact-integer-division"
@@ -364,6 +433,8 @@
       "id": "snowflake-regexp-replace-groups",
       "source": "78c5cfc3060ef68131bfb7f1bde978e506447dad",
       "status": "carried",
+      "upstream_state": "not_offered",
+      "upstream_reason": "Snowflake REGEXP_REPLACE non-capturing group rewrite with no BenchBox-specific behavior; a candidate.",
       "depends": [],
       "paths": [
         "sqlglot/generators/snowflake.py",
@@ -451,6 +522,8 @@
       "id": "empty-group-by-generator",
       "source": "355725b7ee694ee067b92f0f8eaf058d9be0f558",
       "status": "carried",
+      "upstream_state": "not_offered",
+      "upstream_reason": "Generator flag for engines that reject GROUP BY (); a candidate.",
       "depends": [],
       "paths": [
         "sqlglot/generator.py",
@@ -513,6 +586,8 @@
       "id": "postgres-exact-division",
       "source": "068a68147766df1c104d585148d7874d00e0b849",
       "status": "carried",
+      "upstream_state": "declined",
+      "upstream_reason": "Calls the fork's sqlglot.benchbox.division for divisions its Netezza parser marks; a BenchBox benchmark policy that upstream has no use for.",
       "depends": [
         "postgres-extract-return-types",
         "empty-group-by-generator",
@@ -604,6 +679,8 @@
       "id": "bigquery-window-nulls-ordering",
       "source": "0d895d597de14053cf10ef386767b7ad04309605",
       "status": "carried",
+      "upstream_state": "not_offered",
+      "upstream_reason": "Self-contained BigQuery generator fix; an upstream-submission candidate.",
       "depends": [],
       "paths": [
         "sqlglot/generators/bigquery.py",
@@ -637,6 +714,8 @@
       "id": "sqlite-set-operation-operands",
       "source": "11bbf0319c08bba01fd19af2135a0a3f669ae9e3",
       "status": "carried",
+      "upstream_state": "not_offered",
+      "upstream_reason": "SQLite set-operation operand parenthesization fix with no BenchBox-specific behavior; a candidate.",
       "depends": [
         "empty-group-by-generator",
         "sqlite-date-integer-semantics"
@@ -674,6 +753,8 @@
       "id": "sqlite-grouping-sets",
       "source": "f476781c4885dddf0b419b80bd46ac2e5a641b68",
       "status": "carried",
+      "upstream_state": "declined",
+      "upstream_reason": "Wires the fork's sqlglot.benchbox.grouping_sets modules into the SQLite generator; upstream would first need those modules.",
       "depends": [
         "sqlite-grouping-sets-modules",
         "sqlite-set-operation-operands",

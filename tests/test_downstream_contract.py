@@ -34,6 +34,18 @@ class TestDownstreamContract(unittest.TestCase):
                     available.add(patch["id"])
                 if patch["status"] == "carried":
                     self.assertTrue((root / patch["patch"]).is_file())
+                    self.assertIn(patch["upstream_state"], {"offered", "not_offered", "declined"})
+                    self.assertTrue(patch.get("upstream_reason", "").strip())
+                    links = patch.get("upstream", [])
+                    if patch["upstream_state"] == "offered":
+                        self.assertTrue(links)
+                    for link in links:
+                        self.assertRegex(
+                            link, r"^https://github\.com/tobymao/sqlglot/(pull|issues)/\d+$"
+                        )
+                else:
+                    self.assertNotIn("upstream_state", patch)
+                    self.assertNotIn("upstream_reason", patch)
                 if patch["status"] == "original":
                     self.assertNotIn("patch", patch)
                     for path in patch["paths"]:
@@ -53,6 +65,50 @@ class TestDownstreamContract(unittest.TestCase):
                             f"{path} exists upstream; original entries are limited to new files",
                         )
         self.assertTrue(all(len(kinds) == 1 for kinds in owners.values()))
+
+    def test_every_changed_path_has_an_owner(self):
+        root = Path(__file__).resolve().parents[1]
+        manifest = json.loads((root / "downstream" / "patches.json").read_text())
+        owned = {
+            path
+            for entry in manifest["patches"]
+            if entry["status"] in {"carried", "original"}
+            for path in entry["paths"]
+        }
+        infrastructure = set()
+        for entry in manifest["infrastructure"]:
+            with self.subTest(infrastructure=entry["id"]):
+                self.assertTrue(entry["reason"])
+                self.assertTrue(entry["paths"])
+                self.assertTrue(all((root / path).is_file() for path in entry["paths"]))
+                self.assertFalse(any((root / path).exists() for path in entry.get("removed", [])))
+                infrastructure |= set(entry["paths"]) | set(entry.get("removed", []))
+        self.assertFalse(owned & infrastructure)
+        changed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "diff",
+                "--name-only",
+                "--no-renames",
+                manifest["upstream"]["sha"],
+                "HEAD",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.splitlines()
+        unowned = [
+            path
+            for path in changed
+            if path not in owned
+            and path not in infrastructure
+            and not path.startswith("downstream/patches/")
+        ]
+        self.assertEqual(
+            unowned, [], "Changed files need a carried or original entry, or an infrastructure entry"
+        )
 
     def test_upstream_automation_is_inactive(self):
         root = Path(__file__).resolve().parents[1]
