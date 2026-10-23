@@ -12,6 +12,7 @@ from sqlglot.benchbox.compat import inline_order_by_aliases
 from sqlglot.benchbox.engine_rewrites import (
     alias_qualified_projections,
     decimal_division_to_double,
+    decimal_zero_literals,
     qualify_alias_shadowed_columns,
     use_nulls_for_rollups,
 )
@@ -288,6 +289,47 @@ class TestDecimalDivisionToDouble(unittest.TestCase):
         tree = parse("SELECT a / b FROM t", "clickhouse")
         decimal_division_to_double(tree)
         self.assertEqual(tree.sql("clickhouse"), "SELECT a / b FROM t")
+
+
+class TestZeroBranchBesideQuotient(unittest.TestCase):
+    CASE = "SELECT CASE WHEN b > 0 THEN a / b ELSE 0.0 END AS r FROM t"
+    EXPECTED = "SELECT CASE WHEN b > 0 THEN CAST(a AS Nullable(Float64)) / b ELSE CAST(0 AS Nullable(Float64)) END AS r FROM t"
+
+    def test_decimal_zero_then_division_writes_a_double_zero(self):
+        tree = decimal_zero_literals(parse(self.CASE, "clickhouse"))
+        self.assertIn("CAST(0 AS Decimal(15, 2))", tree.sql("clickhouse"))
+        self.assertEqual(decimal_division_to_double(tree).sql("clickhouse"), self.EXPECTED)
+
+    def test_division_then_decimal_zero_keeps_the_float_zero(self):
+        tree = decimal_division_to_double(parse(self.CASE, "clickhouse"))
+        self.assertEqual(
+            decimal_zero_literals(tree).sql("clickhouse"),
+            "SELECT CASE WHEN b > 0 THEN CAST(a AS Nullable(Float64)) / b ELSE 0.0 END AS r FROM t",
+        )
+
+    def test_if_and_then_branches_are_covered(self):
+        for sql, expected in (
+            (
+                "SELECT IF(b > 0, a / b, 0.0) FROM t",
+                "SELECT CASE WHEN b > 0 THEN CAST(a AS Nullable(Float64)) / b ELSE CAST(0 AS Nullable(Float64)) END FROM t",
+            ),
+            (
+                "SELECT CASE WHEN b > 0 THEN 0.0 ELSE a / b END FROM t",
+                "SELECT CASE WHEN b > 0 THEN CAST(0 AS Nullable(Float64)) ELSE CAST(a AS Nullable(Float64)) / b END FROM t",
+            ),
+        ):
+            with self.subTest(sql=sql):
+                tree = decimal_zero_literals(parse(sql, "clickhouse"))
+                self.assertEqual(decimal_division_to_double(tree).sql("clickhouse"), expected)
+
+    def test_zero_beside_a_decimal_column_stays_decimal(self):
+        sql = "SELECT CASE WHEN b > 0 THEN c ELSE 0.0 END, a / b FROM t"
+        tree = decimal_division_to_double(decimal_zero_literals(parse(sql, "clickhouse")))
+        self.assertIn("ELSE CAST(0 AS Decimal(15, 2))", tree.sql("clickhouse"))
+
+    def test_applying_twice_changes_nothing(self):
+        once = decimal_division_to_double(decimal_zero_literals(parse(self.CASE, "clickhouse")))
+        self.assertEqual(decimal_division_to_double(once).sql("clickhouse"), once.sql("clickhouse"))
 
 
 class TestUseNullsForRollups(unittest.TestCase):

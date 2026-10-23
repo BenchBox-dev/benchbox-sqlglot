@@ -841,7 +841,7 @@
         "tests.test_benchbox_runner_overrides",
         "tests.test_benchbox_runner_overrides_engines"
       ],
-      "reason": "decimal_division_to_double in engine_rewrites.py (an original file, so no patch is needed) casts the dividend of every division to DOUBLE for ClickHouse, which truncates decimal quotients to the dividend's scale. Tests run TPC-DS Q36 and Q66 on chDB against DuckDB with quotients that do not fit two decimals, and assert the truncated rows differ without the rewrite (downstream/ENGINE-GAPS.md)."
+      "reason": "decimal_division_to_double in engine_rewrites.py (an original file, so no patch is needed) casts the dividend of every division to DOUBLE for ClickHouse, which truncates decimal quotients to the dividend's scale, and writes CAST(0 AS DOUBLE) for a decimal zero that shares a CASE or IF with such a quotient (TPC-DS Q11; ClickHouse has no common type for Float64 and Decimal unless the Variant type is on). Tests run TPC-DS Q36 and Q66 on chDB against DuckDB with quotients that do not fit two decimals, assert the truncated rows differ without the rewrite, and run a Q11-shaped CASE with use_variant_as_common_type = 0 (downstream/ENGINE-GAPS.md)."
     },
     {
       "id": "clickhouse-rollup-nulls",

@@ -18,6 +18,7 @@ from sqlglot.benchbox.compat import inline_order_by_aliases
 from sqlglot.benchbox.engine_rewrites import (
     alias_qualified_projections,
     decimal_division_to_double,
+    decimal_zero_literals,
     qualify_alias_shadowed_columns,
     use_nulls_for_rollups,
 )
@@ -457,6 +458,28 @@ class TestDecimalDivisionOnClickHouse(unittest.TestCase):
         self.assertEqual(
             [round(float(v), 6) for i, v in enumerate(row) if i != 1],
             [round(75 / 7, 6), 3.5, round(5 / 3, 6), round(76 / 14, 6)],
+        )
+
+    def test_zero_branch_beside_a_quotient_needs_no_variant_type(self):
+        # TPC-DS Q11: CASE WHEN year_total > 0 THEN second / first ELSE 0.0 END.
+        prefix = data(
+            t=union_all(
+                ("id", "a", "b"),
+                [(1, d("75.00"), d("7.00")), (2, d("10.00"), d("0.00")), (3, d("5.00"), d("3.00"))],
+            )
+        )
+        query = "SELECT id, CASE WHEN b > 0 THEN a / b ELSE 0.0 END AS r FROM t ORDER BY id"
+        reference = run_reference(prefix, query)
+        self.assertEqual(reference, [(1, round(75 / 7, 6)), (2, 0.0), (3, round(5 / 3, 6))])
+        no_variant = " SETTINGS use_variant_as_common_type = 0"
+        tree = decimal_zero_literals(sqlglot.parse_one(query, read="netezza"))
+        mixed = write(tree, "clickhouse").replace("a / b", "CAST(a AS Nullable(Float64)) / b")
+        with self.assertRaises(Exception) as caught:
+            engines.execute("chdb", with_data(prefix, mixed + no_variant))
+        self.assertIn("supertype", str(caught.exception).lower())
+        fixed = write(decimal_division_to_double(tree), "clickhouse")
+        self.assertEqual(
+            comparable(engines.execute("chdb", with_data(prefix, fixed + no_variant))), reference
         )
 
 
