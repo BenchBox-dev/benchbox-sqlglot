@@ -865,7 +865,8 @@
       "status": "original",
       "depends": [],
       "paths": [
-        "sqlglot/benchbox/rewrites.py"
+        "sqlglot/benchbox/rewrites.py",
+        "tests/test_round_inputs_engines.py"
       ],
       "tests": [
         "tests.test_round_inputs_engines"
