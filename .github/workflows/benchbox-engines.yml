@@ -51,7 +51,7 @@ jobs:
       BENCHBOX_ENGINE_POSTGRES: 127.0.0.1:5432
     services:
       postgres:
-        image: postgres:16
+        image: postgres:16@sha256:9e2cf6287f25c3151f4c9421ccce2b17f3e60061c111a29165e0d2cdd9ff0a97
         env:
           POSTGRES_PASSWORD: postgres
         ports:
@@ -84,7 +84,7 @@ jobs:
       BENCHBOX_ENGINE_TRINO: 127.0.0.1:8080
     services:
       trino:
-        image: trinodb/trino:484
+        image: trinodb/trino:484@sha256:2704eb53935af5e582d63d6033e9bf99d20c325e9b0e30b1016ef59a4773979f
         ports:
           - 8080:8080
     steps:
@@ -110,7 +110,7 @@ jobs:
       BENCHBOX_ENGINE_QUESTDB: 127.0.0.1:8812
     services:
       questdb:
-        image: questdb/questdb:10.0.1
+        image: questdb/questdb:10.0.1@sha256:67eaed863ebb2383227919ea9a5499a4a39ceca3862c20b974c84a10e11cdf89
         ports:
           - 8812:8812
     steps:
@@ -142,7 +142,7 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Start StarRocks all-in-one
-        run: docker run -d --name starrocks -p 9030:9030 -p 8030:8030 starrocks/allin1-ubuntu:4.0.16
+        run: docker run -d --name starrocks -p 9030:9030 -p 8030:8030 starrocks/allin1-ubuntu:4.0.16@sha256:25381274321bc8da1314a36cf041e170f6bf2a14284c86a05ccaa03bd2b5851f
       - run: |
           uv venv
           uv pip install -e . -r downstream/engines-requirements.txt
@@ -170,7 +170,7 @@ jobs:
       - name: Start Doris all-in-one
         run: |
           sudo sysctl -w vm.max_map_count=2000000
-          docker run -d --name doris -p 9030:9030 -p 8030:8030 apache/doris:all-in-one-4.1.3
+          docker run -d --name doris -p 9030:9030 -p 8030:8030 apache/doris:all-in-one-4.1.3@sha256:82a5cabc7900ebcd3d080412d636c0cebd6602799fffe2605c652b2ea7d42609
       - run: |
           uv venv
           uv pip install -e . -r downstream/engines-requirements.txt
