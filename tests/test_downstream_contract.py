@@ -107,7 +107,9 @@ class TestDownstreamContract(unittest.TestCase):
             and not path.startswith("downstream/patches/")
         ]
         self.assertEqual(
-            unowned, [], "Changed files need a carried or original entry, or an infrastructure entry"
+            unowned,
+            [],
+            "Changed files need a carried or original entry, or an infrastructure entry",
         )
 
     def test_upstream_automation_is_inactive(self):
