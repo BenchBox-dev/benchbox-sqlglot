@@ -16,55 +16,45 @@ from sqlglot.dialects.dialect import Dialect, DialectType
 
 E = t.TypeVar("E", bound=exp.Expr)
 
-# Fold only short sums: at most this many literals per bound.
+# Fold only short sums: at most this many literals per folded expression.
 _MAX_LEAVES = 4
 # Fold only when the exact result and the double-precision result agree to this
 # distance. A larger gap means the double result is the meaningful one.
 _NOISE = 1e-12
-_NUMBER = re.compile(r"\d{1,2}\.\d{1,6}")
+_NUMBER = re.compile(r"\d{1,6}(?:\.\d{1,6})?|\.\d{1,6}")
+_COMPARISONS = (exp.GT, exp.GTE, exp.LT, exp.LTE, exp.EQ, exp.NEQ, exp.NullSafeEQ, exp.NullSafeNEQ)
 
 
-def fold_between_literal_arithmetic(
-    expression: E,
-    columns: t.Iterable[str],
-    tables: t.Iterable[str] | None = None,
-    copy: bool = True,
-) -> E:
-    """Replace literal ``+``/``-`` bounds of ``BETWEEN`` with their exact decimal value.
+def fold_between_literal_arithmetic(expression: E, copy: bool = True) -> E:
+    """Replace literal-only ``+``/``-`` bounds and comparison operands with their exact decimal value.
 
-    Engines that evaluate decimal literals as binary floating point turn
+    Engines that evaluate decimal literals as binary floating point (SQLite
+    ``REAL``, ClickHouse ``Float64``) turn
     ``col BETWEEN 0.06 - 0.01 AND 0.06 + 0.01`` into
     ``col BETWEEN 0.049999999999999996 AND 0.06999999999999999``, which drops
     rows equal to a bound. Folding the bounds to ``0.05`` and ``0.07`` restores
-    the exact decimal result.
+    the exact decimal result. The rewrite applies to every table and column:
+    it folds each ``BETWEEN`` bound and each operand of ``=``, ``<>``, ``<``,
+    ``<=``, ``>``, ``>=`` and ``IS NOT DISTINCT FROM`` that is a literal-only sum or
+    difference. Each bound or operand is folded on its own.
 
-    A bound is folded only when it is a sum or difference of at most four
-    non-negative decimal literals (one or two integer digits, one to six
-    fractional digits), the exact result is non-negative, and the double
-    precision result is within ``1e-12`` of it. Both bounds of a ``BETWEEN``
-    must qualify, otherwise neither changes. Anything else is left untouched.
+    An expression is folded only when it is a sum or difference of at most four
+    decimal literals (up to six integer and six fractional digits, optionally
+    negated), the exact decimal result differs from the double-precision
+    result, and the two agree to within ``1e-12``. Where the double result
+    already equals the exact value, and for anything else (division,
+    multiplication, non-literal terms, longer sums, values outside the noise
+    band), the expression is left untouched.
 
     Args:
         expression: the expression to rewrite.
-        columns: names (case-insensitive, qualifier ignored) of the columns whose
-            ``BETWEEN`` predicates are folded.
-        tables: when given, the rewrite applies only if the expression reads at
-            least one table with one of these names (case-insensitive). When
-            omitted there is no table gate.
         copy: rewrite a copy instead of mutating ``expression``.
 
     Returns:
         The rewritten expression.
     """
-    column_names = {name.lower() for name in columns}
     if copy:
         expression = expression.copy()
-    if not column_names:
-        return expression
-    if tables is not None:
-        table_names = {name.lower() for name in tables}
-        if not any(table.name.lower() in table_names for table in expression.find_all(exp.Table)):
-            return expression
 
     context = Context(prec=60, traps=[Inexact])
     leaves = 0
@@ -72,6 +62,9 @@ def fold_between_literal_arithmetic(
     def evaluate(node: exp.Expr) -> tuple[Decimal, float] | None:
         nonlocal leaves
         node = node.unnest()
+        if isinstance(node, exp.Neg):
+            value = evaluate(node.this)
+            return None if value is None else (-value[0], -value[1])
         if isinstance(node, exp.Literal):
             leaves += 1
             if leaves > _MAX_LEAVES or not node.is_number or not _NUMBER.fullmatch(node.name):
@@ -89,23 +82,27 @@ def fold_between_literal_arithmetic(
                 return None
         return None
 
-    for between in list(expression.find_all(exp.Between)):
-        column = between.this
-        if not isinstance(column, exp.Column) or column.name.lower() not in column_names:
-            continue
-        folded: list[Decimal] = []
-        for bound in (between.args["low"], between.args["high"]):
-            leaves = 0
-            value = evaluate(bound) if isinstance(bound.unnest(), (exp.Add, exp.Sub)) else None
-            if value is None:
-                break
-            exact, real = value
-            if exact < 0 or not math.isfinite(real) or abs(real - float(exact)) > _NOISE:
-                break
-            folded.append(exact)
+    def fold(node: exp.Expr) -> None:
+        nonlocal leaves
+        if not isinstance(node.unnest(), (exp.Add, exp.Sub)):
+            return
+        leaves = 0
+        value = evaluate(node)
+        if value is None:
+            return
+        exact, real = value
+        if not math.isfinite(real) or real == float(exact) or abs(real - float(exact)) > _NOISE:
+            return
+        literal = exp.Literal.number(format(abs(exact), "f"))
+        node.replace(exp.Neg(this=literal) if exact < 0 else literal)
+
+    for node in list(expression.find_all(exp.Between, *_COMPARISONS)):
+        if isinstance(node, exp.Between):
+            for key in ("low", "high"):
+                fold(node.args[key])
         else:
-            between.set("low", exp.Literal.number(format(folded[0], "f")))
-            between.set("high", exp.Literal.number(format(folded[1], "f")))
+            fold(node.this)
+            fold(node.expression)
     return expression
 
 
