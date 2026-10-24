@@ -29,13 +29,13 @@ class TestFoldBetweenLiteralArithmetic(unittest.TestCase):
         self.assertEqual(
             fold(
                 "SELECT 0.06 + 0.01 FROM items AS l "
-                "WHERE l.discount BETWEEN (0.06 - 0.02 + 0.01) AND (0.04 + 0.02 + 0.01)"
+                "WHERE l.discount BETWEEN (0.06 - 0.02 + 0.01) AND (0.06 + 0.02 - 0.01)"
             ),
             "SELECT 0.06 + 0.01 FROM items AS l WHERE l.discount BETWEEN 0.05 AND 0.07",
         )
 
     def test_every_table_and_column_is_folded(self):
-        for center, low, high in (("0.06", "0.05", "0.07"), ("0.07", "0.06", "0.07 + 0.01")):
+        for center, low, high in (("0.06", "0.05", "0.07"), ("0.07", "0.06", "0.08")):
             for table, column in (
                 ("items", "discount"),
                 ("sat_lineitem", "sl_discount"),
@@ -65,13 +65,16 @@ class TestFoldBetweenLiteralArithmetic(unittest.TestCase):
             ("0.06 + 0.01 <= discount", "0.07 <= discount"),
             ("discount >= 0.06 - 0.01", "discount >= 0.05"),
             ("discount < (0.06 + 0.01)", "discount < 0.07"),
+            ("discount > 0.07 + 0.01", "discount > 0.07 + 0.01"),
             ("discount = 0.1 + 0.2", "discount = 0.3"),
+            ("discount BETWEEN 0.07 - 0.01 AND 0.07 + 0.01", "discount BETWEEN 0.06 AND 0.08"),
+            ("discount BETWEEN 0.07 - 0.01 AND y", "discount BETWEEN 0.06 AND y"),
             ("discount <> 0.1 + 0.2", "discount <> 0.3"),
             ("discount BETWEEN 0.01 - 0.06 AND 0.06 + 0.01", "discount BETWEEN -0.05 AND 0.07"),
-            ("discount BETWEEN 0.07 - 1 AND 0.07 + 1", "discount BETWEEN -0.93 AND 0.07 + 1"),
+            ("discount BETWEEN 0.07 - 1 AND 0.07 + 1", "discount BETWEEN -0.93 AND 1.07"),
             (
                 "discount BETWEEN 100.0 - 99.0 AND 0.06 + 0.01",
-                "discount BETWEEN 100.0 - 99.0 AND 0.07",
+                "discount BETWEEN 1.0 AND 0.07",
             ),
         ):
             with self.subTest(predicate=sql):

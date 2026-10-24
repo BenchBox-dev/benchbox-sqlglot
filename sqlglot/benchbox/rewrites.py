@@ -36,15 +36,17 @@ def fold_between_literal_arithmetic(expression: E, copy: bool = True) -> E:
     the exact decimal result. The rewrite applies to every table and column:
     it folds each ``BETWEEN`` bound and each operand of ``=``, ``<>``, ``<``,
     ``<=``, ``>``, ``>=`` and ``IS NOT DISTINCT FROM`` that is a literal-only sum or
-    difference. Each bound or operand is folded on its own.
+    difference.
 
-    An expression is folded only when it is a sum or difference of at most four
+    An expression qualifies when it is a sum or difference of at most four
     decimal literals (up to six integer and six fractional digits, optionally
-    negated), the exact decimal result differs from the double-precision
-    result, and the two agree to within ``1e-12``. Where the double result
-    already equals the exact value, and for anything else (division,
-    multiplication, non-literal terms, longer sums, values outside the noise
-    band), the expression is left untouched.
+    negated) whose exact decimal result and double-precision result agree to
+    within ``1e-12``. A comparison operand is folded when the two differ. The
+    qualifying bounds of a ``BETWEEN`` are folded together when at least one of
+    them differs, so ``0.07 - 0.01 AND 0.07 + 0.01`` becomes ``0.06 AND 0.08``.
+    A ``BETWEEN`` or comparison whose double results already equal the exact
+    values, and anything else (division, multiplication, non-literal terms,
+    longer sums, values outside the noise band), is left untouched.
 
     Args:
         expression: the expression to rewrite.
@@ -82,27 +84,36 @@ def fold_between_literal_arithmetic(expression: E, copy: bool = True) -> E:
                 return None
         return None
 
-    def fold(node: exp.Expr) -> None:
+    def plan(node: exp.Expr) -> tuple[Decimal, bool] | None:
         nonlocal leaves
         if not isinstance(node.unnest(), (exp.Add, exp.Sub)):
-            return
+            return None
         leaves = 0
         value = evaluate(node)
         if value is None:
-            return
+            return None
         exact, real = value
-        if not math.isfinite(real) or real == float(exact) or abs(real - float(exact)) > _NOISE:
-            return
+        if not math.isfinite(real) or abs(real - float(exact)) > _NOISE:
+            return None
+        return exact, real != float(exact)
+
+    def replace(node: exp.Expr, exact: Decimal) -> None:
         literal = exp.Literal.number(format(abs(exact), "f"))
         node.replace(exp.Neg(this=literal) if exact < 0 else literal)
 
     for node in list(expression.find_all(exp.Between, *_COMPARISONS)):
         if isinstance(node, exp.Between):
-            for key in ("low", "high"):
-                fold(node.args[key])
+            operands = [node.args["low"], node.args["high"]]
         else:
-            fold(node.this)
-            fold(node.expression)
+            operands = [node.this, node.expression]
+        plans = [(operand, plan(operand)) for operand in operands]
+        if isinstance(node, exp.Between):
+            fold_all = any(p is not None and p[1] for _, p in plans)
+            chosen = [(operand, p) for operand, p in plans if p is not None and fold_all]
+        else:
+            chosen = [(operand, p) for operand, p in plans if p is not None and p[1]]
+        for operand, p in chosen:
+            replace(operand, p[0])
     return expression
 
 
