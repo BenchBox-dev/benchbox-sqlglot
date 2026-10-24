@@ -145,9 +145,11 @@ takes an expression and options (every name or number it matches is an argument)
 - `use_nulls_for_rollups(expression)` adds `SETTINGS group_by_use_nulls = 1` to a ClickHouse query with `ROLLUP`, `CUBE` or
   `GROUPING SETS`. Without it ClickHouse writes `''` or `0` in a rolled-up key whose column is not `Nullable` (a literal from a
   `UNION ALL` branch, TPC-DS Q5, Q14, Q77 and Q80), where SQL has NULL. Other queries are unchanged.
-- `fold_between_literal_arithmetic(expression, columns, tables)` also fixes ClickHouse, which reads `0.07 - 0.01` as a double:
-  TPC-H Q6 (`l_discount BETWEEN 0.07 - 0.01 AND 0.07 + 0.01`) drops the rows at the bounds without it
-  (`columns=["l_discount"], tables=["lineitem"]`).
+- `fold_between_literal_arithmetic(expression)` folds literal-only sums and differences in `BETWEEN` bounds and in the operands of
+  `=`, `<>`, `<`, `<=`, `>`, `>=` to exact decimals, for every table and column. SQLite (`REAL`) and ClickHouse (`Float64`)
+  read `0.07 - 0.01` as a double, so TPC-H Q6 (`l_discount BETWEEN 0.07 - 0.01 AND 0.07 + 0.01`) and its Data Vault form
+  (`sat_lineitem`) drop the rows at the bounds without it. An expression whose double result already equals the exact value is
+  left alone.
 
 StarRocks and Doris need no generator change: both already quote the reserved words that fail as aliases
 (checked unquoted on StarRocks 4.0.16 and Doris 4.1.3), write `SUBSTRING(x FROM a FOR b)` as

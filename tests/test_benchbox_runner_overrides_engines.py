@@ -545,11 +545,94 @@ class TestDiscountBoundsOnClickHouse(unittest.TestCase):
         tree = sqlglot.parse_one(H_Q6, read="duckdb")
         plain = comparable(engines.execute("chdb", with_data(H_Q6_DATA, write(tree, "clickhouse"))))
         self.assertNotEqual(plain, reference)
-        folded = fold_between_literal_arithmetic(tree, ["l_discount"], ["lineitem"])
+        folded = fold_between_literal_arithmetic(tree)
         self.assertEqual(
             comparable(engines.execute("chdb", with_data(H_Q6_DATA, write(folded, "clickhouse")))),
             reference,
         )
+
+    def test_other_tables_columns_and_comparisons_keep_the_rows_on_the_bounds(self):
+        for table, column, predicate in (
+            ("sat_lineitem", "sl.l_discount", "{c} BETWEEN 0.06 - 0.01 AND 0.06 + 0.01"),
+            ("orders", "o.o_totalprice", "{c} BETWEEN 0.06 - 0.01 AND 0.06 + 0.01"),
+            ("orders", "o.o_totalprice", "{c} >= 0.06 - 0.01 AND {c} <= 0.06 + 0.01"),
+            ("orders", "o.o_totalprice", "{c} > 0.07 - 0.02 AND {c} < 0.07 + 0.02"),
+            ("orders", "o.o_totalprice", "{c} = 0.1 + 0.2 OR {c} = 0.06 - 0.01"),
+        ):
+            alias = column.split(".")[0]
+            query = (
+                f'SELECT SUM(CAST({column} * 100 AS INT)) AS "s" FROM "{table}" AS {alias} '
+                f"WHERE {predicate.format(c=column)}"
+            )
+            data_prefix = data(
+                **{
+                    table: union_all(
+                        (column.split(".")[1],),
+                        [(d(f"{cents / 100:.2f}"),) for cents in range(41)],
+                    )
+                }
+            )
+            with self.subTest(table=table, predicate=predicate):
+                reference = run_reference(data_prefix, query)
+                tree = sqlglot.parse_one(query, read="duckdb")
+                plain = comparable(
+                    engines.execute("chdb", with_data(data_prefix, write(tree, "clickhouse")))
+                )
+                folded = comparable(
+                    engines.execute(
+                        "chdb",
+                        with_data(
+                            data_prefix,
+                            write(fold_between_literal_arithmetic(tree), "clickhouse"),
+                        ),
+                    )
+                )
+                self.assertEqual(folded, reference)
+                self.assertNotEqual(plain, reference)
+
+
+@requires_engine("duckdb")
+@requires_engine("sqlite")
+class TestBoundsOnSQLite(unittest.TestCase):
+    def test_rows_on_the_bounds_match_duckdb_for_any_table_and_column(self):
+        for table, column in (
+            ("sat_lineitem", "l_discount"),
+            ("orders", "o_totalprice"),
+            ("t", "x"),
+        ):
+            for predicate in (
+                "{c} BETWEEN 0.06 - 0.01 AND 0.06 + 0.01",
+                "{c} BETWEEN 0.07 - 0.01 AND 0.07 + 0.01",
+                "{c} > 0.07 - 0.02 AND {c} < 0.07 + 0.02",
+                "{c} >= 0.06 - 0.01 AND {c} <= 0.06 + 0.01",
+                "{c} = 0.1 + 0.2 OR {c} = 0.06 - 0.01",
+            ):
+                query = (
+                    f"SELECT {column} FROM {table} WHERE {predicate.format(c=column)} ORDER BY 1"
+                )
+                with self.subTest(table=table, predicate=predicate):
+                    self.assertEqual(
+                        self.run_sqlite(table, column, fold(query)),
+                        self.run_duckdb(table, column, query),
+                    )
+
+    def run_duckdb(self, table, column, query):
+        with engines.connect("duckdb") as duck:
+            duck.execute(f"CREATE TABLE {table} ({column} DECIMAL(15,2))")
+            for cent in range(41):
+                duck.execute(f"INSERT INTO {table} VALUES ({cent / 100:.2f})")
+            return comparable(duck.execute(query))
+
+    def run_sqlite(self, table, column, query):
+        with engines.connect("sqlite") as lite:
+            lite.execute(f"CREATE TABLE {table} ({column} DECIMAL(15,2))")
+            for cent in range(41):
+                lite.execute(f"INSERT INTO {table} VALUES ('{cent / 100:.2f}')")
+            return comparable(lite.execute(query))
+
+
+def fold(sql):
+    return fold_between_literal_arithmetic(sqlglot.parse_one(sql, read="sqlite")).sql("sqlite")
 
 
 if __name__ == "__main__":

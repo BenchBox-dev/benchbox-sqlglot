@@ -16,10 +16,8 @@ from tests import engines
 from tests.engines import requires_engine
 
 
-def fold(sql, columns=("discount",), tables=("items",)):
-    return fold_between_literal_arithmetic(parse_one(sql, read="sqlite"), columns, tables).sql(
-        "sqlite"
-    )
+def fold(sql, read="sqlite"):
+    return fold_between_literal_arithmetic(parse_one(sql, read=read)).sql(read)
 
 
 def canonical(sql):
@@ -36,74 +34,79 @@ class TestFoldBetweenLiteralArithmetic(unittest.TestCase):
             "SELECT 0.06 + 0.01 FROM items AS l WHERE l.discount BETWEEN 0.05 AND 0.07",
         )
 
-    def test_only_gated_column_bounds_are_folded(self):
+    def test_every_table_and_column_is_folded(self):
         for center, low, high in (("0.06", "0.05", "0.07"), ("0.07", "0.06", "0.08")):
-            with self.subTest(center=center):
+            for table, column in (
+                ("items", "discount"),
+                ("sat_lineitem", "sl_discount"),
+                ("t", "x"),
+            ):
+                with self.subTest(center=center, table=table):
+                    self.assertEqual(
+                        fold(
+                            f"SELECT 0.06 + 0.01 AS untouched FROM {table} "
+                            f"WHERE {column} BETWEEN {center} - 0.01 AND {center} + 0.01 AND quantity < 25"
+                        ),
+                        f"SELECT 0.06 + 0.01 AS untouched FROM {table} "
+                        f"WHERE {column} BETWEEN {low} AND {high} AND quantity < 25",
+                    )
+
+    def test_each_bound_and_operand_is_folded_on_its_own(self):
+        for sql, expected in (
+            (
+                "discount BETWEEN 0.06 - 0.01 AND center + 0.01",
+                "discount BETWEEN 0.05 AND center + 0.01",
+            ),
+            (
+                "discount BETWEEN center - 0.01 AND 0.06 + 0.01",
+                "discount BETWEEN center - 0.01 AND 0.07",
+            ),
+            ("discount > 0.06 + 0.01", "discount > 0.07"),
+            ("0.06 + 0.01 <= discount", "0.07 <= discount"),
+            ("discount >= 0.06 - 0.01", "discount >= 0.05"),
+            ("discount < (0.06 + 0.01)", "discount < 0.07"),
+            ("discount > 0.07 + 0.01", "discount > 0.07 + 0.01"),
+            ("discount = 0.1 + 0.2", "discount = 0.3"),
+            ("discount BETWEEN 0.07 - 0.01 AND 0.07 + 0.01", "discount BETWEEN 0.06 AND 0.08"),
+            ("discount BETWEEN 0.07 - 0.01 AND y", "discount BETWEEN 0.06 AND y"),
+            ("discount <> 0.1 + 0.2", "discount <> 0.3"),
+            ("discount BETWEEN 0.01 - 0.06 AND 0.06 + 0.01", "discount BETWEEN -0.05 AND 0.07"),
+            ("discount BETWEEN 0.07 - 1 AND 0.07 + 1", "discount BETWEEN -0.93 AND 1.07"),
+            (
+                "discount BETWEEN 100.0 - 99.0 AND 0.06 + 0.01",
+                "discount BETWEEN 1.0 AND 0.07",
+            ),
+        ):
+            with self.subTest(predicate=sql):
                 self.assertEqual(
-                    fold(
-                        f"SELECT 0.06 + 0.01 AS untouched FROM items "
-                        f"WHERE discount BETWEEN {center} - 0.01 AND {center} + 0.01 AND quantity < 25"
-                    ),
-                    f"SELECT 0.06 + 0.01 AS untouched FROM items "
-                    f"WHERE discount BETWEEN {low} AND {high} AND quantity < 25",
+                    fold(f"SELECT 1 FROM items WHERE {sql}"),
+                    canonical(f"SELECT 1 FROM items WHERE {expected}"),
                 )
 
     def test_unrelated_or_nonliteral_expressions_are_unchanged(self):
         for predicate in (
-            "discount BETWEEN center - 0.01 AND 0.06 + 0.01",
-            "discount BETWEEN 0.06 - 0.01 AND center + 0.01",
-            "other_col BETWEEN 0.06 - 0.01 AND 0.06 + 0.01",
-            "discount > 0.06 + 0.01",
+            "discount BETWEEN center - 0.01 AND center + 0.01",
             "discount BETWEEN '0.06' - 0.01 AND '0.06' + 0.01",
-            "discount BETWEEN 0.06 * 0.01 AND 0.06 + 0.01",
-            "discount BETWEEN 0.05 AND 0.06 + 0.01",
-            "discount BETWEEN 0.06 - 0.01 AND 0.07",
+            "discount BETWEEN 0.06 * 0.01 AND 0.06 / 0.01",
+            "discount BETWEEN 0.05 AND 0.07",
             "discount BETWEEN 1 - 1 AND 1 + 1",
-            "discount BETWEEN 0.06 - 1 AND 0.06 + 1",
+            "discount BETWEEN 0.5 + 0.25 AND 0.5 - 0.25",
             "discount BETWEEN (9223372036854775807 + 1 - 9223372036854775807) AND (1 + 1)",
-            "discount BETWEEN 0.01 - 0.06 AND 0.06 + 0.01",
             "discount BETWEEN 6e-2 - 1e-2 AND 6e-2 + 1e-2",
-            "discount BETWEEN (10000000000000000000000000000.0 + 9.0 - 10000000000000000000000000000.0) "
-            "AND (20.0 + 0.0)",
-            "discount BETWEEN (100000000.0 + 0.0000000001 - 100000000.0) AND (0.06 + 0.01)",
-            f"discount BETWEEN (1{'0' * 400}.0 - 1{'0' * 400}.0) AND (0.06 + 0.01)",
-            "discount BETWEEN 0.01 + 0.01 + 0.01 + 0.01 + 0.01 AND 0.06 + 0.01",
-            "discount BETWEEN 0.0000001 + 0.0000001 AND 0.06 + 0.01",
-            "discount BETWEEN 100.0 - 99.0 AND 0.06 + 0.01",
+            (
+                "discount BETWEEN (10000000000000000000000000000.0 + 9.0 - 10000000000000000000000000000.0) "
+                "AND (20.0 + 0.0)"
+            ),
+            "discount BETWEEN (100000000.0 + 0.0000000001 - 100000000.0) AND (20.0 + 0.0)",
+            f"discount BETWEEN (1{'0' * 400}.0 - 1{'0' * 400}.0) AND (20.0 + 0.0)",
+            "discount BETWEEN 0.01 + 0.01 + 0.01 + 0.01 + 0.01 AND 20.0 + 0.0",
+            "discount BETWEEN 0.0000001 + 0.0000001 AND 20.0 + 0.0",
+            "discount + 0.06 > 0.07 AND price * (0.06 + 0.01) > 1",
+            "discount IN (0.06 + 0.01, 0.1 + 0.2)",
         ):
             with self.subTest(predicate=predicate):
                 sql = f"SELECT 0.06 + 0.01 FROM items WHERE {predicate}"
                 self.assertEqual(fold(sql), canonical(sql))
-
-    def test_table_gate(self):
-        for sql in (
-            "SELECT * FROM orders WHERE discount BETWEEN 0.06 - 0.01 AND 0.06 + 0.01",
-            "SELECT 'items' AS note FROM t WHERE discount BETWEEN 0.06 - 0.01 AND 0.06 + 0.01",
-            "SELECT * FROM t /* items */ WHERE discount BETWEEN 0.06 - 0.01 AND 0.06 + 0.01",
-        ):
-            with self.subTest(sql=sql):
-                self.assertEqual(fold(sql), canonical(sql))
-        folded = "BETWEEN 0.05 AND 0.07"
-        self.assertIn(
-            folded,
-            fold(
-                "SELECT 1 FROM orders o JOIN items i ON i.id = o.id "
-                "WHERE i.discount BETWEEN 0.06 - 0.01 AND 0.06 + 0.01"
-            ),
-        )
-        self.assertIn(
-            folded,
-            fold(
-                "SELECT * FROM (SELECT discount FROM items) "
-                "WHERE discount BETWEEN 0.06 - 0.01 AND 0.06 + 0.01"
-            ),
-        )
-        # The table gate is case-insensitive and optional.
-        sql = "SELECT * FROM Items WHERE Discount BETWEEN 0.06 - 0.01 AND 0.06 + 0.01"
-        self.assertIn(folded, fold(sql))
-        self.assertIn(folded, fold(sql.replace("Items", "orders"), tables=None))
-        self.assertNotIn(folded, fold(sql, tables=()))
-        self.assertNotIn(folded, fold(sql, columns=()))
 
     def test_bare_dot_decimal_bounds(self):
         self.assertIn(
@@ -116,10 +119,10 @@ class TestFoldBetweenLiteralArithmetic(unittest.TestCase):
             "SELECT * FROM items WHERE discount BETWEEN 0.06 - 0.01 AND 0.06 + 0.01", read="sqlite"
         )
         before = tree.sql("sqlite")
-        folded = fold_between_literal_arithmetic(tree, ["discount"])
+        folded = fold_between_literal_arithmetic(tree)
         self.assertEqual(tree.sql("sqlite"), before)
         self.assertIsNot(folded, tree)
-        in_place = fold_between_literal_arithmetic(tree, ["discount"], copy=False)
+        in_place = fold_between_literal_arithmetic(tree, copy=False)
         self.assertIs(in_place, tree)
         between = tree.find(exp.Between)
         assert between is not None
@@ -127,15 +130,14 @@ class TestFoldBetweenLiteralArithmetic(unittest.TestCase):
         self.assertIsInstance(between.args["high"], exp.Literal)
 
     def test_other_dialect_trees_are_rewritten_the_same(self):
-        for dialect in ("duckdb", "postgres", "mysql"):
+        for dialect in ("duckdb", "postgres", "mysql", "clickhouse"):
             with self.subTest(dialect=dialect):
-                tree = parse_one(
-                    "SELECT * FROM items WHERE discount BETWEEN 0.06 - 0.01 AND 0.06 + 0.01",
-                    read=dialect,
-                )
                 self.assertIn(
                     "BETWEEN 0.05 AND 0.07",
-                    fold_between_literal_arithmetic(tree, ["discount"], ["items"]).sql(dialect),
+                    fold(
+                        "SELECT * FROM items WHERE discount BETWEEN 0.06 - 0.01 AND 0.06 + 0.01",
+                        read=dialect,
+                    ),
                 )
 
 
@@ -228,10 +230,10 @@ class TestFoldBetweenExecution(unittest.TestCase):
             (
                 (0.0, 0.05),
                 "(100000000.0 + 0.0000000001 - 100000000.0)",
-                "(0.06 + 0.01)",
+                "(20.0 + 0.0)",
                 [0.0, 0.05],
             ),
-            ((0.05,), f"(1{'0' * 400}.0 - 1{'0' * 400}.0)", "(0.06 + 0.01)", []),
+            ((0.05,), f"(1{'0' * 400}.0 - 1{'0' * 400}.0)", "(20.0 + 0.0)", []),
         ):
             values = " UNION ALL ".join(f"SELECT {value} AS discount" for value in rows)
             sql = (
