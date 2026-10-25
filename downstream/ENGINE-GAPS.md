@@ -143,6 +143,47 @@ rewrite quoted, ANSI `SUBSTRING ... FROM ... FOR` and double-quoted identifiers 
 four engines and DuckDB also run the Netezza `+ N days` durations. ClickHouse server-only behavior is not
 covered (see below); the chDB engine runs the same planner and analyzer.
 
+## Unpadded date literals
+
+dsqgen writes `[YEAR]-[MONTH]-01` with an unpadded month (`1999-5-01`), and TPC-DS Q16, Q94 and Q95 bound a date range by
+`CAST('1999-5-01' AS DATE)` and a bare `'1999-5-01'`. `tests/test_unpadded_date_literals_engines.py` runs in every engine
+job and executes, per engine, `SELECT CAST('1999-5-01' AS DATE)`, `SELECT CAST('2000-3-01' AS DATE) + INTERVAL '60' DAY`
+(the engine's own spelling of the interval), `DATE '1999-5-1'`, a `TIMESTAMP` cast, and BETWEEN, comparison and `IN` predicates on a
+table of rows that sit exactly on the bounds (the rows must come back, not just a non-error). Each case prints a
+`DATE-LITERAL-MATRIX` line with the engine version and the value, so the job log is the record. Values below are from CI
+(the container images in the engine table above) and the local QuestDB, all with the fork generator at the time the fix was written:
+
+| Engine (version executed) | `CAST('1999-5-01' AS DATE)` | `CAST('2000-3-01' AS DATE) + 60 days` | Bound rows `[2, 3]` | Result |
+|---|---|---|---|---|
+| QuestDB (`questdb/questdb:10.0.1`; `version()` answers `PostgreSQL 12.3 ... QuestDB`) | `NULL` before the fix, `1999-05-01` after | `NULL` before, `2000-04-30` after | `[]` before, `[2, 3]` after; a bare `'1999-2-01'` beside a date was `Invalid date` | failed; the generator pads the literal |
+| SQLite 3.45.1 (CI), 3.53.1 (local) | `1999-05-01` | `2000-04-30` | `[2, 3]` | fixed earlier by `sqlite-date-literals` |
+| DuckDB v1.5.6 | `1999-05-01` | `2000-04-30` | `[2, 3]` | reads unpadded text |
+| DataFusion 54.1.0 | `1999-05-01` | `2000-04-30` | `[2, 3]` | reads unpadded dates; `CAST('1999-5-1 3:04:05' AS TIMESTAMP)` is an error, so the generator pads timestamp casts only |
+| chDB 26.9.2.1 (ClickHouse core) | `1999-05-01` | `2000-04-30` | `[2, 3]` | reads unpadded text, timestamps included |
+| PySpark 4.2.0 (Spark and Databricks dialects) | `1999-05-01` | `2000-04-30` | `[2, 3]` | reads unpadded text |
+| PostgreSQL 16.15 | `1999-05-01` | `2000-04-30` | `[2, 3]` | reads unpadded text |
+| Trino 484 (Athena and Presto forms) | `1999-05-01` | `2000-04-30` | casts `[2, 3]` | reads unpadded casts; a bare string against a `DATE` is `TYPE_MISMATCH` padded or not (below) |
+| StarRocks 4.0.16 (`version()` answers `8.0.33`) | `1999-05-01` | `2000-04-30` | `[2, 3]` | reads unpadded text |
+| Doris 4.1.3 (`version()` answers `5.7.99`) | `1999-05-01` | `2000-04-30` | `[2, 3]` | reads unpadded text |
+
+Trino does not coerce a string to a `DATE` in a comparison, `BETWEEN` or `IN` (`Cannot check if date is BETWEEN varchar(9) and date`),
+whether the literal is padded or not, so that failure is not about padding and the padding generator does not change it; the test
+asserts the rejection for both spellings. A Trino run of a query that compares a `DATE` column with a bare string literal (TPC-DS Q16, Q94
+and Q95 write `d_date BETWEEN '2000-3-01' AND ...`) needs a cast that this fix does not add.
+
+Engines with no engine in CI are gaps. Vendor documentation is the only evidence, and it is weaker than execution; none of these rows is
+confirmed:
+
+| Platform | Documentation | Status |
+|---|---|---|
+| BigQuery | [Date literals](https://cloud.google.com/bigquery/docs/reference/standard-sql/lexical#date_literals) and [`CAST AS DATE`](https://cloud.google.com/bigquery/docs/reference/standard-sql/conversion_functions#cast_as_date) | documented gap; both name a canonical date format and a string beside a `DATE` coerces to it, and neither says whether a one-digit month or day is accepted |
+| Snowflake | [Date and time input formats](https://docs.snowflake.com/en/sql-reference/date-time-input-output) | documented gap; the page lists `YYYY-MM-DD` and does not say whether one-digit fields are accepted |
+| Amazon Redshift | [Date, time and timestamp literals](https://docs.aws.amazon.com/redshift/latest/dg/r_Date_and_time_literals.html) | documented gap; no unpadded `YYYY-M-DD` example |
+| Azure Synapse, SQL Server, Fabric | [date (Transact-SQL)](https://learn.microsoft.com/en-us/sql/t-sql/data-types/date-transact-sql) | documented gap; the page says the month and day of the six- and eight-digit forms are always two digits and does not cover `YYYY-M-DD` |
+| SingleStore | [Time and Date](https://docs.singlestore.com/cloud/reference/sql-reference/data-types/time-and-date) | documented gap; it follows MySQL, whose [date literal rules](https://dev.mysql.com/doc/refman/8.4/en/date-and-time-literals.html) say two digits are unnecessary for a month or day below 10 |
+| Databricks (managed) | open-source Spark in the `in-process` job reads the literal, Databricks is Spark based | documented gap, same substitute as the Spark row |
+| Amazon Athena | Trino 484 in the `trino` job | documented gap, same substitute as the Trino row |
+
 ## Writing an engine test
 
 ```python

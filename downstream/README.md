@@ -81,6 +81,9 @@ The SQLite generator also writes a string literal that is cast to `DATE` or `TIM
 `DATE '1999-5-1'`), or compared with, `IN`-listed against or `BETWEEN`-bounded by a known date (a marked column or a
 cast), in zero-padded `YYYY-MM-DD[ HH:MM:SS]` form, because SQLite reads only padded date text (`DATE('1999-5-01')`
 is `NULL` and `'1999-5-1'` sorts after `'1999-12-01'`). A string that is not a valid date is left unchanged.
+The QuestDB generator does the same through `DateLiteralPadding` (`sqlglot/benchbox/date_literals.py`), because QuestDB reads
+`CAST('1999-5-01' AS DATE)` as `NULL` and rejects `d = '1999-2-1'` as an invalid date; the DataFusion generator uses it for `TIMESTAMP`
+casts only, where an unpadded string is an error. Every other engine in CI reads unpadded text (`downstream/ENGINE-GAPS.md`).
 
 The adapter rewrites in the same module are:
 

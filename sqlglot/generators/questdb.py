@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from sqlglot import exp, transforms
+from sqlglot.benchbox.date_literals import DateLiteralPadding
 from sqlglot.generators.postgres import PostgresGenerator
 
 # QuestDB's DATEADD period codes for the interval units that are generated as DATEADD.
@@ -119,7 +120,7 @@ def _substring_sql(self: QuestDBGenerator, expression: exp.Substring) -> str:
     return self.func("SUBSTRING", this, expression.args.get("start"), length)
 
 
-class QuestDBGenerator(PostgresGenerator):
+class QuestDBGenerator(DateLiteralPadding, PostgresGenerator):
     EXACT_DIVISION_TYPE = exp.DType.DOUBLE
     NULL_ORDERING_SUPPORTED: bool | None = None
     SUPPORTS_NULL_SORT_KEY_IN_WINDOW = False
