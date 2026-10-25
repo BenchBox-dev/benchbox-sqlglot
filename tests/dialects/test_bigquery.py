@@ -2997,28 +2997,55 @@ OPTIONS (
         )
 
     def test_null_ordering(self):
-        # Aggregate functions allow "NULLS FIRST" only with ascending order and
-        # "NULLS LAST" only with descending
-        for sort_order, null_order in (("ASC", "NULLS LAST"), ("DESC", "NULLS FIRST")):
+        # A source NULL placement that BigQuery cannot write in an aggregate or window
+        # ORDER BY is kept by sorting on a CASE key first
+        for sort_order, null_order, key_order in (
+            ("ASC", "NULLS LAST", ""),
+            ("DESC", "NULLS FIRST", " DESC"),
+        ):
             self.validate_all(
-                f"SELECT color, ARRAY_AGG(id ORDER BY id {sort_order}) AS ids FROM colors GROUP BY 1",
+                f"SELECT color, ARRAY_AGG(id ORDER BY CASE WHEN id IS NULL THEN 1 ELSE 0 END{key_order}, id {sort_order}) AS ids FROM colors GROUP BY 1",
                 read={
                     "": f"SELECT color, ARRAY_AGG(id ORDER BY id {sort_order} {null_order}) AS ids FROM colors GROUP BY 1"
-                },
-                write={
-                    "bigquery": f"SELECT color, ARRAY_AGG(id ORDER BY id {sort_order}) AS ids FROM colors GROUP BY 1",
                 },
             )
 
             self.validate_all(
-                f"SELECT SUM(f1) OVER (ORDER BY f2 {sort_order}) FROM t",
+                f"SELECT SUM(f1) OVER (ORDER BY CASE WHEN f2 IS NULL THEN 1 ELSE 0 END{key_order}, f2 {sort_order}) FROM t",
                 read={
                     "": f"SELECT SUM(f1) OVER (ORDER BY f2 {sort_order} {null_order}) FROM t",
                 },
-                write={
-                    "bigquery": f"SELECT SUM(f1) OVER (ORDER BY f2 {sort_order}) FROM t",
+            )
+
+            self.validate_all(
+                f"SELECT SUM(f1) OVER (ORDER BY CASE WHEN f2 IS NULL THEN 1 ELSE 0 END{key_order}, f2 {sort_order} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t",
+                read={
+                    "": f"SELECT SUM(f1) OVER (ORDER BY f2 {sort_order} {null_order} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t",
                 },
             )
+
+            self.validate_all(
+                f"SELECT SUM(f1) OVER (ORDER BY CASE WHEN f2 IS NULL THEN 1 ELSE 0 END{key_order}, f2 {sort_order} RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t",
+                read={
+                    "": f"SELECT SUM(f1) OVER (ORDER BY f2 {sort_order} {null_order} RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t",
+                },
+            )
+
+            with self.subTest(f"RANGE offset {sort_order}"):
+                self.validate_all(
+                    f"SELECT SUM(f1) OVER (ORDER BY f2 {sort_order} RANGE BETWEEN 3 PRECEDING AND CURRENT ROW) FROM t",
+                    read={
+                        "": f"SELECT SUM(f1) OVER (ORDER BY f2 {sort_order} {null_order} RANGE BETWEEN 3 PRECEDING AND CURRENT ROW) FROM t",
+                    },
+                )
+
+            with self.subTest(f"DISTINCT aggregate {sort_order}"):
+                self.validate_all(
+                    f"SELECT color, ARRAY_AGG(DISTINCT id ORDER BY id {sort_order}) AS ids FROM colors GROUP BY 1",
+                    read={
+                        "": f"SELECT color, ARRAY_AGG(DISTINCT id ORDER BY id {sort_order} {null_order}) AS ids FROM colors GROUP BY 1"
+                    },
+                )
 
     def test_null_ordering_in_analytic_functions(self):
         for func_call in (

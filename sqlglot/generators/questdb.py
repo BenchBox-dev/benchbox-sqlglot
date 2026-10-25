@@ -121,6 +121,8 @@ def _substring_sql(self: QuestDBGenerator, expression: exp.Substring) -> str:
 
 class QuestDBGenerator(PostgresGenerator):
     EXACT_DIVISION_TYPE = exp.DType.DOUBLE
+    NULL_ORDERING_SUPPORTED = None
+    SUPPORTS_NULL_SORT_KEY_IN_WINDOW = False
 
     TRANSFORMS = {
         **PostgresGenerator.TRANSFORMS,

@@ -29,8 +29,8 @@ class TestQuestDB(Validator):
             "SELECT a FROM t ORDER BY a LIMIT 5 OFFSET 2",
             write={
                 "questdb": "SELECT a FROM t ORDER BY a LIMIT 5 OFFSET 2",
-                "postgres": "SELECT a FROM t ORDER BY a LIMIT 5 OFFSET 2",
-                "sqlite": "SELECT a FROM t ORDER BY a NULLS LAST LIMIT 5 OFFSET 2",
+                "postgres": "SELECT a FROM t ORDER BY a NULLS FIRST LIMIT 5 OFFSET 2",
+                "sqlite": "SELECT a FROM t ORDER BY a LIMIT 5 OFFSET 2",
             },
         )
 

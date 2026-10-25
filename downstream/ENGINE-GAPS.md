@@ -101,6 +101,24 @@ distribution clauses, Redshift Spectrum tables and the `pg_mooncake` statements 
 below).
 `tests/test_questdb_execution.py` runs in the `questdb` job: it executes the QuestDB
 generator's comma-join expansion, `DATEADD`, `SUBSTRING` and CTE column list output.
+`tests/test_benchbox_null_ordering_engines.py` runs in every engine job: eight queries over six rows with two NULL
+sort keys (ASC and DESC with `LIMIT`, positional `ORDER BY`, a `GROUP BY` key, a window `ORDER BY` under `ROWS` and
+`RANGE` frames) are read as Netezza (NULL is the largest value: TPC-H, TPC-DS, SSB and the catalog benchmarks),
+DuckDB (NULLs last in both directions: TSBS DevOps, Data Vault) and ClickHouse (NULLs last: ClickBench) and executed
+on DuckDB, SQLite, DataFusion, PySpark, chDB, PostgreSQL, Trino, QuestDB, StarRocks and Doris, which default
+differently; each must return the hand-written rows of the source's placement, `LIMIT` membership included.
+QuestDB has no `NULLS FIRST`/`NULLS LAST` clause (a syntax error on QuestDB 9.3.5) and sorts NULL smallest, so its
+dialect writes a `CASE WHEN key IS NULL` sort key; it rejects an expression in a window `ORDER BY`, so the three
+window cases are skipped there and `tests/test_benchbox_null_ordering.py` asserts the unsupported warning. The
+BigQuery, Snowflake, Databricks and T-SQL text is golden output in `tests/test_benchbox_null_ordering.py`, with
+PySpark standing in for Databricks and DuckDB for the reference; the rules come from the vendor pages:
+[Snowflake ORDER BY](https://docs.snowflake.com/en/sql-reference/constructs/order-by) (ASC puts NULLs last and DESC
+first by default), [Databricks ORDER BY](https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-qry-select-orderby)
+and [Spark ORDER BY](https://spark.apache.org/docs/latest/sql-ref-syntax-qry-select-orderby.html) (ASC first, DESC
+last), [BigQuery window function calls](https://cloud.google.com/bigquery/docs/reference/standard-sql/window-function-calls)
+(a window `ORDER BY` takes an expression and `ASC`/`DESC` only, so BigQuery gets the `CASE` key there and in
+`ARRAY_AGG`) and [T-SQL ORDER BY](https://learn.microsoft.com/en-us/sql/t-sql/queries/select-order-by-clause-transact-sql)
+(no `NULLS` clause, NULL is the lowest value).
 `tests/test_benchbox_ddl_parity.py` runs in the `in-process`, `postgres` and `questdb` jobs. In the
 `questdb` job it creates tables from `transpile_ddl` output on QuestDB and reads back the `SYMBOL` and
 `TIMESTAMP` column types, the designated timestamp and the partitioning; QuestDB rejects `VARCHAR(n)`,
