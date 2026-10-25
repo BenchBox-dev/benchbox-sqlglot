@@ -1175,7 +1175,7 @@ class TestDialect(Validator):
                 "postgres": "DATE_TRUNC('DAY', x)",
                 "snowflake": "DATE_TRUNC('DAY', x)",
                 "starrocks": "DATE_TRUNC('DAY', x)",
-                "spark": "TRUNC(x, 'DAY')",
+                "spark": "DATE_TRUNC('DAY', x)",
                 "doris": "DATE_TRUNC(x, 'DAY')",
             },
         )

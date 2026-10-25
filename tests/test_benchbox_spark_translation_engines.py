@@ -165,6 +165,23 @@ class TestDatabricksText(unittest.TestCase):
                     f"SELECT TRUNC(d, '{unit}')",
                 )
 
+    def test_day_and_other_units_write_date_trunc(self):
+        for unit in ("DAY", "HOUR", "MINUTE", "SECOND", "MILLISECOND", "MICROSECOND"):
+            with self.subTest(unit=unit):
+                for dialect in ("spark", "databricks"):
+                    self.assertEqual(
+                        sqlglot.transpile(
+                            f"SELECT DATE_TRUNC('{unit}', d)", read="duckdb", write=dialect
+                        )[0],
+                        f"SELECT DATE_TRUNC('{unit}', d)",
+                    )
+
+    def test_day_truncation_from_clickhouse(self):
+        self.assertEqual(
+            translate("SELECT DATE_TRUNC('day', EventTime) AS d FROM hits", "databricks"),
+            "SELECT DATE_TRUNC('DAY', EventTime) AS d FROM hits",
+        )
+
 
 @requires_engine("pyspark")
 @requires_engine("duckdb")
@@ -181,6 +198,23 @@ class TestClickBenchOnSpark(unittest.TestCase):
         spark = normalized_q43(run("pyspark", "databricks", clicks_view("pyspark"), Q43))
         duck = normalized_q43(run("duckdb", "duckdb", clicks_view("duckdb"), Q43))
         expected = expected_q43()
+        self.assertGreaterEqual(len(expected), 3)
+        self.assertEqual(spark, expected)
+        self.assertEqual(duck, expected)
+
+    def test_day_truncation_groups_by_day(self):
+        sql = (
+            "SELECT DATE_TRUNC('day', EventTime) AS d, COUNT(*) AS c FROM hits "
+            "GROUP BY DATE_TRUNC('day', EventTime) ORDER BY d"
+        )
+        spark = normalized_q43(run("pyspark", "databricks", clicks_view("pyspark"), sql))
+        duck = normalized_q43(run("duckdb", "duckdb", clicks_view("duckdb"), sql))
+        expected = sorted(
+            Counter(
+                datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").replace(hour=0, minute=0, second=0)
+                for c, ts, d, r, n in HITS
+            ).items()
+        )
         self.assertGreaterEqual(len(expected), 3)
         self.assertEqual(spark, expected)
         self.assertEqual(duck, expected)

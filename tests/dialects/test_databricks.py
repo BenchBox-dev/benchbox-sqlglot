@@ -647,7 +647,7 @@ class TestDatabricks(Validator):
             "REGEXP_REPLACE(a, 'b', '\\\\\\\\1')",
             read={"databricks": "REGEXP_REPLACE(a, 'b', '\\\\\\\\1')"},
         )
-        for unit in ("HOUR", "MINUTE", "SECOND"):
+        for unit in ("DAY", "HOUR", "MINUTE", "SECOND"):
             with self.subTest(unit=unit):
                 self.validate_all(
                     f"DATE_TRUNC('{unit}', x)",
