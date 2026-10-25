@@ -66,7 +66,9 @@ class TestSingleStoreNativeDialect(unittest.TestCase):
 
     def test_json_array_indexes_are_integers(self):
         self.assertEqual(
-            transpile("SELECT JSON_EXTRACT(c, '$.a.preferences[0]') FROM t", "singlestore", read="mysql"),
+            transpile(
+                "SELECT JSON_EXTRACT(c, '$.a.preferences[0]') FROM t", "singlestore", read="mysql"
+            ),
             "SELECT JSON_EXTRACT_JSON(`c`, 'a', 'preferences', 0) FROM `t`",
         )
         self.assertEqual(
@@ -133,7 +135,9 @@ DATE_DIM = """
 
 
 def with_tables(sql):
-    return f'WITH "lineitem" AS {LINEITEM}, "supplier" AS {SUPPLIER}, "date_dim" AS {DATE_DIM} {sql}'
+    return (
+        f'WITH "lineitem" AS {LINEITEM}, "supplier" AS {SUPPLIER}, "date_dim" AS {DATE_DIM} {sql}'
+    )
 
 
 def normalize(rows):
