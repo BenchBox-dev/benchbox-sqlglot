@@ -924,6 +924,41 @@
         "tests.test_unpadded_date_literals_engines"
       ],
       "reason": "DateLiteralPadding, a generator base that writes a string literal cast to DATE or TIMESTAMP, or compared with, IN-listed against or BETWEEN-bounded by a known DATE, in zero-padded YYYY-MM-DD form for the targets that read only padded text. dsqgen writes [YEAR]-[MONTH]-01 (1999-5-01), which QuestDB reads as NULL (TPC-DS Q16, Q94 and Q95 filtered on NULL bounds). The QuestDB generator and, for TIMESTAMP casts only, the DataFusion generator (a CAST of an unpadded string to TIMESTAMP is an error there) use it; both are original files, so no carried patch is needed. unpadded_date_literals_engines executes the same literals on every engine in CI and prints the value each engine returns."
+    },
+    {
+      "id": "benchbox-native-dialects",
+      "source": "d8ac5c95090e9b399e70de77c510c8f25cbdbb29",
+      "status": "original",
+      "depends": [
+        "real-engine-ci"
+      ],
+      "paths": [
+        "tests/test_benchbox_native_dialects.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_native_dialects"
+      ],
+      "reason": "Pins the SQL BenchBox gets from the athena and singlestore dialects, which its Athena and SingleStore adapters now generate workload queries in instead of trino and mysql. Athena query text equals the trino dialect's and runs on Trino; SingleStore writes `:>` casts and NULLS FIRST/LAST where the mysql dialect emulates them, as golden text only (downstream/ENGINE-GAPS.md)."
+    },
+    {
+      "id": "singlestore-json-integer-index",
+      "source": "c0df323d7df95768e834bf169e1262c6f5379f55",
+      "status": "carried",
+      "upstream_state": "not_offered",
+      "upstream_reason": "Not yet offered upstream; SingleStore has no engine in CI to verify the keypath form, so the evidence is the SingleStore keypath documentation and golden text.",
+      "depends": [
+        "benchbox-native-dialects"
+      ],
+      "paths": [
+        "sqlglot/generators/singlestore.py",
+        "tests/dialects/test_singlestore.py"
+      ],
+      "tests": [
+        "tests.dialects.test_singlestore",
+        "tests.test_benchbox_native_dialects"
+      ],
+      "reason": "SingleStore keypaths take integer array indexes and string object keys (JSON_EXTRACT_JSON(c, 'a', 0)). The generator wrote every segment as a quoted string, so a path such as $.a.preferences[0] became JSON_EXTRACT_JSON(c, 'a', 'preferences', '0'), which addresses an object key named 0. Array indexes are now written as integer literals in JSON_EXTRACT_<type> and BSON_EXTRACT_<type>. No SingleStore engine runs in CI (downstream/ENGINE-GAPS.md); tests assert the text.",
+      "patch": "downstream/patches/singlestore-json-integer-index.patch"
     }
   ]
 }
