@@ -1,0 +1,269 @@
+diff --git a/sqlglot/generator.py b/sqlglot/generator.py
+index e00b53f2..bd3b2223 100644
+--- a/sqlglot/generator.py
++++ b/sqlglot/generator.py
+@@ -305,6 +305,10 @@ class Generator:
+     # such as window specifications, aggregate functions etc
+     NULL_ORDERING_SUPPORTED: bool | None = True
+ 
++    # Whether a window ORDER BY accepts an expression, so that an unsupported NULLS FIRST/LAST
++    # can be simulated with a leading sort key
++    SUPPORTS_NULL_SORT_KEY_IN_WINDOW = True
++
+     # Window functions that support NULLS FIRST/LAST
+     WINDOW_FUNCS_WITH_NULL_ORDERING: t.ClassVar[tuple[type[exp.Expression], ...]] = ()
+ 
+@@ -3295,6 +3299,42 @@ class Generator:
+ 
+         return match
+ 
++    def _null_sort_target(self, expression: exp.Ordered, this: str) -> str:
++        resolved = self._resolve_ordered_for_null_ordering_simulation(expression)
++        return self.sql(resolved) if resolved is not None else this
++
++    def _null_sort_key(self, target: str, this: str, nulls_sort_change: str) -> str:
++        null_sort_order = " DESC" if nulls_sort_change == " NULLS FIRST" else ""
++        return f"CASE WHEN {target} IS NULL THEN 1 ELSE 0 END{null_sort_order}, {this}"
++
++    def _null_sort_key_fits_frame(self, spec: exp.WindowSpec) -> bool:
++        if spec.text("kind").upper() != "RANGE":
++            return True
++        return all(
++            isinstance(spec.args.get(bound), str) or spec.args.get(bound) is None
++            for bound in ("start", "end")
++        )
++
++    def _resolve_ordinal_for_null_ordering_simulation(
++        self, expression: exp.Ordered
++    ) -> exp.Expr | None:
++        order = expression.parent
++        select = order.parent if isinstance(order, exp.Order) else None
++        if not isinstance(select, exp.Select) or select.args.get("distinct"):
++            return None
++
++        position = expression.this.to_py() if expression.this.is_int else 0
++        projections = select.selects
++        if not 1 <= position <= len(projections) or any(
++            projection.find(exp.Star) for projection in projections
++        ):
++            return None
++
++        projection = projections[position - 1]
++        if projection.find(exp.Window):
++            return None
++        return projection.this if isinstance(projection, exp.Alias) else projection
++
+     def ordered_sql(self, expression: exp.Ordered) -> str:
+         desc = expression.args.get("desc")
+         asc = not desc
+@@ -3339,36 +3379,59 @@ class Generator:
+                 isinstance(window_this, self.WINDOW_FUNCS_WITH_NULL_ORDERING)
+                 and (not spec or spec.text("kind").upper() == "ROWS")
+             ):
+-                if window_this and spec:
++                if window_this and (
++                    not self.SUPPORTS_NULL_SORT_KEY_IN_WINDOW
++                    or (spec and not self._null_sort_key_fits_frame(spec))
++                ):
+                     self.unsupported(
+                         f"'{nulls_sort_change.strip()}' translation not supported in window function {window_this.sql_name()}"
+                     )
+                     nulls_sort_change = ""
++                elif window_this and (
++                    spec
++                    or self.NULL_ORDERING_SUPPORTED is None
++                    or isinstance(window_this, exp.AggFunc)
++                ):
++                    if expression.this.is_int:
++                        self.unsupported(
++                            f"'{nulls_sort_change.strip()}' translation not supported with positional ordering"
++                        )
++                    elif not isinstance(expression.this, exp.Rand):
++                        target = self._null_sort_target(expression, this)
++                        this = self._null_sort_key(target, this, nulls_sort_change)
++                    nulls_sort_change = ""
+                 elif self.NULL_ORDERING_SUPPORTED is False and (
+                     (asc and nulls_sort_change == " NULLS LAST")
+                     or (desc and nulls_sort_change == " NULLS FIRST")
+                 ):
+-                    # BigQuery does not allow these ordering/nulls combinations when used under
+-                    # an aggregation func or under a window containing one
+                     ancestor = expression.find_ancestor(exp.AggFunc, exp.Window, exp.Select)
+ 
+-                    if isinstance(ancestor, exp.Window):
+-                        ancestor = ancestor.this
+                     if isinstance(ancestor, exp.AggFunc):
+-                        self.unsupported(
+-                            f"'{nulls_sort_change.strip()}' translation not supported for aggregate function {ancestor.sql_name()} with {sort_order} sort order"
+-                        )
++                        order = expression.parent
++                        if isinstance(order, exp.Order) and not isinstance(
++                            order.this, exp.Distinct
++                        ):
++                            target = self._null_sort_target(expression, this)
++                            this = self._null_sort_key(target, this, nulls_sort_change)
++                        else:
++                            self.unsupported(
++                                f"'{nulls_sort_change.strip()}' translation not supported for aggregate function {ancestor.sql_name()} with {sort_order} sort order"
++                            )
+                         nulls_sort_change = ""
+                 elif self.NULL_ORDERING_SUPPORTED is None:
+                     if expression.this.is_int:
+-                        self.unsupported(
+-                            f"'{nulls_sort_change.strip()}' translation not supported with positional ordering"
+-                        )
++                        projection = self._resolve_ordinal_for_null_ordering_simulation(expression)
++                        if projection is None:
++                            self.unsupported(
++                                f"'{nulls_sort_change.strip()}' translation not supported with positional ordering"
++                            )
++                        else:
++                            this = self._null_sort_key(
++                                self.sql(projection), this, nulls_sort_change
++                            )
+                     elif not isinstance(expression.this, exp.Rand):
+-                        resolved = self._resolve_ordered_for_null_ordering_simulation(expression)
+-                        target = self.sql(resolved) if resolved is not None else this
+-                        null_sort_order = " DESC" if nulls_sort_change == " NULLS FIRST" else ""
+-                        this = f"CASE WHEN {target} IS NULL THEN 1 ELSE 0 END{null_sort_order}, {target}"
++                        target = self._null_sort_target(expression, this)
++                        this = self._null_sort_key(target, target, nulls_sort_change)
+                     nulls_sort_change = ""
+ 
+         with_fill = self.sql(expression, "with_fill")
+diff --git a/tests/dialects/test_bigquery.py b/tests/dialects/test_bigquery.py
+index c4376c02..ee4f6e86 100644
+--- a/tests/dialects/test_bigquery.py
++++ b/tests/dialects/test_bigquery.py
+@@ -2997,29 +2997,56 @@ OPTIONS (
+         )
+ 
+     def test_null_ordering(self):
+-        # Aggregate functions allow "NULLS FIRST" only with ascending order and
+-        # "NULLS LAST" only with descending
+-        for sort_order, null_order in (("ASC", "NULLS LAST"), ("DESC", "NULLS FIRST")):
++        # A source NULL placement that BigQuery cannot write in an aggregate or window
++        # ORDER BY is kept by sorting on a CASE key first
++        for sort_order, null_order, key_order in (
++            ("ASC", "NULLS LAST", ""),
++            ("DESC", "NULLS FIRST", " DESC"),
++        ):
+             self.validate_all(
+-                f"SELECT color, ARRAY_AGG(id ORDER BY id {sort_order}) AS ids FROM colors GROUP BY 1",
++                f"SELECT color, ARRAY_AGG(id ORDER BY CASE WHEN id IS NULL THEN 1 ELSE 0 END{key_order}, id {sort_order}) AS ids FROM colors GROUP BY 1",
+                 read={
+                     "": f"SELECT color, ARRAY_AGG(id ORDER BY id {sort_order} {null_order}) AS ids FROM colors GROUP BY 1"
+                 },
+-                write={
+-                    "bigquery": f"SELECT color, ARRAY_AGG(id ORDER BY id {sort_order}) AS ids FROM colors GROUP BY 1",
+-                },
+             )
+ 
+             self.validate_all(
+-                f"SELECT SUM(f1) OVER (ORDER BY f2 {sort_order}) FROM t",
++                f"SELECT SUM(f1) OVER (ORDER BY CASE WHEN f2 IS NULL THEN 1 ELSE 0 END{key_order}, f2 {sort_order}) FROM t",
+                 read={
+                     "": f"SELECT SUM(f1) OVER (ORDER BY f2 {sort_order} {null_order}) FROM t",
+                 },
+-                write={
+-                    "bigquery": f"SELECT SUM(f1) OVER (ORDER BY f2 {sort_order}) FROM t",
++            )
++
++            self.validate_all(
++                f"SELECT SUM(f1) OVER (ORDER BY CASE WHEN f2 IS NULL THEN 1 ELSE 0 END{key_order}, f2 {sort_order} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t",
++                read={
++                    "": f"SELECT SUM(f1) OVER (ORDER BY f2 {sort_order} {null_order} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t",
+                 },
+             )
+ 
++            self.validate_all(
++                f"SELECT SUM(f1) OVER (ORDER BY CASE WHEN f2 IS NULL THEN 1 ELSE 0 END{key_order}, f2 {sort_order} RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t",
++                read={
++                    "": f"SELECT SUM(f1) OVER (ORDER BY f2 {sort_order} {null_order} RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t",
++                },
++            )
++
++            with self.subTest(f"RANGE offset {sort_order}"):
++                self.validate_all(
++                    f"SELECT SUM(f1) OVER (ORDER BY f2 {sort_order} RANGE BETWEEN 3 PRECEDING AND CURRENT ROW) FROM t",
++                    read={
++                        "": f"SELECT SUM(f1) OVER (ORDER BY f2 {sort_order} {null_order} RANGE BETWEEN 3 PRECEDING AND CURRENT ROW) FROM t",
++                    },
++                )
++
++            with self.subTest(f"DISTINCT aggregate {sort_order}"):
++                self.validate_all(
++                    f"SELECT color, ARRAY_AGG(DISTINCT id ORDER BY id {sort_order}) AS ids FROM colors GROUP BY 1",
++                    read={
++                        "": f"SELECT color, ARRAY_AGG(DISTINCT id ORDER BY id {sort_order} {null_order}) AS ids FROM colors GROUP BY 1"
++                    },
++                )
++
+     def test_null_ordering_in_analytic_functions(self):
+         for func_call in (
+             "FIRST_VALUE(col1)",
+diff --git a/tests/dialects/test_dialect.py b/tests/dialects/test_dialect.py
+index 75a5dcde..43b2d3a2 100644
+--- a/tests/dialects/test_dialect.py
++++ b/tests/dialects/test_dialect.py
+@@ -1718,7 +1718,10 @@ class TestDialect(Validator):
+             (
+                 "trino",
+                 "ARRAY_SORT(ARRAY_AGG(x ORDER BY y))",
+-                ("ARRAY_SORT(ARRAY_AGG(x ORDER BY y))", f"ARRAY_SORT {unfoldable}"),
++                (
++                    "ARRAY_SORT(ARRAY_AGG(x ORDER BY CASE WHEN y IS NULL THEN 1 ELSE 0 END, y))",
++                    f"ARRAY_SORT {unfoldable}",
++                ),
+             ),
+             (
+                 "",
+diff --git a/tests/dialects/test_duckdb.py b/tests/dialects/test_duckdb.py
+index d8c20b6c..52b29aee 100644
+--- a/tests/dialects/test_duckdb.py
++++ b/tests/dialects/test_duckdb.py
+@@ -240,7 +240,7 @@ class TestDuckDB(Validator):
+         self.validate_all(
+             "SELECT SUM(X) OVER (ORDER BY x)",
+             write={
+-                "bigquery": "SELECT SUM(X) OVER (ORDER BY x)",
++                "bigquery": "SELECT SUM(X) OVER (ORDER BY CASE WHEN x IS NULL THEN 1 ELSE 0 END, x)",
+                 "duckdb": "SELECT SUM(X) OVER (ORDER BY x)",
+                 "mysql": "SELECT SUM(X) OVER (ORDER BY CASE WHEN x IS NULL THEN 1 ELSE 0 END, x)",
+             },
+diff --git a/tests/dialects/test_mysql.py b/tests/dialects/test_mysql.py
+index 78b10c5f..f4df395d 100644
+--- a/tests/dialects/test_mysql.py
++++ b/tests/dialects/test_mysql.py
+@@ -2269,10 +2269,14 @@ COMMENT='客户账户表'"""
+ 
+     def test_ignore_respect_nulls(self):
+         self.validate_all(
+-            "SELECT FIRST_VALUE(col1) OVER (ORDER BY col2 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM table1",
++            "SELECT FIRST_VALUE(col1) OVER (ORDER BY CASE WHEN col2 IS NULL THEN 1 ELSE 0 END, col2 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM table1",
+             read={
+                 "snowflake": "SELECT FIRST_VALUE(col1) IGNORE NULLS OVER (ORDER BY col2) FROM table1",
+             },
++        )
++
++        self.validate_all(
++            "SELECT FIRST_VALUE(col1) OVER (ORDER BY col2 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM table1",
+             write={
+                 "mysql": "SELECT FIRST_VALUE(col1) OVER (ORDER BY col2 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM table1",
+                 "oracle": "SELECT FIRST_VALUE(col1) OVER (ORDER BY col2 NULLS FIRST ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM table1",
+@@ -2291,10 +2295,14 @@ COMMENT='客户账户表'"""
+         )
+ 
+         self.validate_all(
+-            "SELECT LAST_VALUE(col1) OVER (PARTITION BY col3 ORDER BY col2 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM table1",
++            "SELECT LAST_VALUE(col1) OVER (PARTITION BY col3 ORDER BY CASE WHEN col2 IS NULL THEN 1 ELSE 0 END, col2 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM table1",
+             read={
+                 "snowflake": "SELECT LAST_VALUE(col1) IGNORE NULLS OVER (PARTITION BY col3 ORDER BY col2) FROM table1",
+             },
++        )
++
++        self.validate_all(
++            "SELECT LAST_VALUE(col1) OVER (PARTITION BY col3 ORDER BY col2 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM table1",
+             write={
+                 "mysql": "SELECT LAST_VALUE(col1) OVER (PARTITION BY col3 ORDER BY col2 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM table1",
+                 "oracle": "SELECT LAST_VALUE(col1) OVER (PARTITION BY col3 ORDER BY col2 NULLS FIRST ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM table1",

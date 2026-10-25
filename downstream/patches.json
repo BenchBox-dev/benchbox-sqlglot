@@ -904,6 +904,55 @@
       ],
       "reason": "Write a string literal that is cast to DATE or TIMESTAMP (CAST('1999-5-01' AS DATE), DATE '1999-5-1', TimeStrToTime, DateStrToDate), or compared with, IN-listed against or BETWEEN-bounded by a known DATE (a CAST, a DATE literal, a schema or sqlglot.benchbox.rewrites.mark_date_columns), in zero-padded YYYY-MM-DD[ HH:MM:SS] form. SQLite reads only padded date text, so DATE('1999-5-01') was NULL (TPC-DS Q16, Q94 and Q95, base and OBT, filtered on NULL bounds) and '1999-5-1' sorted after '1999-12-01'. A string that is not a valid calendar date is left unchanged. Tests assert the text, the unchanged invalid strings and row counts equal to DuckDB on sqlite3.",
       "patch": "downstream/patches/sqlite-date-literals.patch"
+    },
+    {
+      "id": "null-ordering-source-semantics",
+      "source": "7289d835a9d212d83fb9c23854e6a18ce8f88006",
+      "status": "carried",
+      "upstream_state": "not_offered",
+      "upstream_reason": "Writes the source dialect's NULL placement where upstream drops the clause with an unsupported warning; BenchBox's cross-engine row-order requirement, so not offered as is.",
+      "depends": [
+        "empty-group-by-generator",
+        "postgres-exact-division",
+        "sqlite-set-operation-operands",
+        "bigquery-window-nulls-ordering",
+        "duckdb-order-by-all-keyword"
+      ],
+      "paths": [
+        "sqlglot/generator.py",
+        "tests/dialects/test_bigquery.py",
+        "tests/dialects/test_dialect.py",
+        "tests/dialects/test_duckdb.py",
+        "tests/dialects/test_mysql.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_null_ordering",
+        "tests.dialects.test_bigquery",
+        "tests.dialects.test_dialect",
+        "tests.dialects.test_duckdb",
+        "tests.dialects.test_mysql",
+        "tests.dialects.test_questdb"
+      ],
+      "reason": "Dialects whose NULL_ORDERING_SUPPORTED is False or None (BigQuery, T-SQL, MySQL, Doris, StarRocks, QuestDB) dropped a NULLS FIRST/LAST that the source dialect defined whenever the key was a positional ORDER BY item, a window ORDER BY under a frame or a BigQuery aggregate ORDER BY, so TPC-DS Q49, Q51 and Q74 sorted NULLs differently from the reference. Positional keys now resolve to their SELECT projection (not under DISTINCT, a set operation, a star or a window projection), windows under ROWS or an unbounded or CURRENT ROW RANGE frame and non-DISTINCT BigQuery aggregates sort on a CASE WHEN key IS NULL key first, and a RANGE frame with an offset, a DISTINCT aggregate and the remaining positional shapes keep the unsupported warning. SUPPORTS_NULL_SORT_KEY_IN_WINDOW turns the window key off for QuestDB, which rejects an expression in a window ORDER BY. The QuestDB dialect sorts NULL smallest and has no NULLS clause, as QuestDB 9.3.5 does. The tests assert the text and, in the engine jobs, the rows on DuckDB, SQLite, DataFusion, PySpark, chDB, PostgreSQL, Trino, QuestDB, StarRocks and Doris.",
+      "patch": "downstream/patches/null-ordering-source-semantics.patch"
+    },
+    {
+      "id": "null-ordering-engines",
+      "source": "7289d835a9d212d83fb9c23854e6a18ce8f88006",
+      "status": "original",
+      "depends": [
+        "real-engine-ci",
+        "null-ordering-source-semantics"
+      ],
+      "paths": [
+        "tests/test_benchbox_null_ordering.py",
+        "tests/test_benchbox_null_ordering_engines.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_null_ordering",
+        "tests.test_benchbox_null_ordering_engines"
+      ],
+      "reason": "The NULL placement each target writes for Netezza, DuckDB and ClickHouse sources, as golden text and as rows on every engine in CI (eight queries over six rows with two NULL keys: ASC and DESC with LIMIT, positional, GROUP BY, ROWS and RANGE window frames), written out by hand so the reference engine is not the only check."
     }
   ]
 }

@@ -3408,7 +3408,9 @@ class Generator:
 
                     if isinstance(ancestor, exp.AggFunc):
                         order = expression.parent
-                        if isinstance(order, exp.Order) and not isinstance(order.this, exp.Distinct):
+                        if isinstance(order, exp.Order) and not isinstance(
+                            order.this, exp.Distinct
+                        ):
                             target = self._null_sort_target(expression, this)
                             this = self._null_sort_key(target, this, nulls_sort_change)
                         else:
@@ -3424,7 +3426,9 @@ class Generator:
                                 f"'{nulls_sort_change.strip()}' translation not supported with positional ordering"
                             )
                         else:
-                            this = self._null_sort_key(self.sql(projection), this, nulls_sort_change)
+                            this = self._null_sort_key(
+                                self.sql(projection), this, nulls_sort_change
+                            )
                     elif not isinstance(expression.this, exp.Rand):
                         target = self._null_sort_target(expression, this)
                         this = self._null_sort_key(target, target, nulls_sort_change)

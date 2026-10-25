@@ -94,7 +94,9 @@ def case(source, name):
     @requires_engine(name)
     class Case(unittest.TestCase):
         def run_query(self, key):
-            sql = sqlglot.transpile(QUERIES[key], read=source, write=engines.ENGINES[name].dialect)[0]
+            sql = sqlglot.transpile(QUERIES[key], read=source, write=engines.ENGINES[name].dialect)[
+                0
+            ]
             with engines.connect(name) as connection:
                 return normalise(connection.execute(sql))
 

@@ -124,7 +124,9 @@ class TestSimulatedPlacement(unittest.TestCase):
                     )
                     self.assertEqual(
                         sql(
-                            f"SELECT SUM(x) OVER (ORDER BY d DESC{frame}) FROM t", "netezza", dialect
+                            f"SELECT SUM(x) OVER (ORDER BY d DESC{frame}) FROM t",
+                            "netezza",
+                            dialect,
                         ),
                         f"SELECT SUM(x) OVER (ORDER BY {KEY.format('d')} DESC, d DESC{frame}) FROM t",
                     )
@@ -149,7 +151,8 @@ class TestSimulatedPlacement(unittest.TestCase):
                 "questdb",
             )
         self.assertEqual(
-            text, "SELECT SUM(x) OVER (ORDER BY d ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t"
+            text,
+            "SELECT SUM(x) OVER (ORDER BY d ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t",
         )
         self.assertIn("not supported in window function SUM", logs.output[0])
 
