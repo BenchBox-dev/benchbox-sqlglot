@@ -924,6 +924,21 @@
         "tests.test_unpadded_date_literals_engines"
       ],
       "reason": "DateLiteralPadding, a generator base that writes a string literal cast to DATE or TIMESTAMP, or compared with, IN-listed against or BETWEEN-bounded by a known DATE, in zero-padded YYYY-MM-DD form for the targets that read only padded text. dsqgen writes [YEAR]-[MONTH]-01 (1999-5-01), which QuestDB reads as NULL (TPC-DS Q16, Q94 and Q95 filtered on NULL bounds). The QuestDB generator and, for TIMESTAMP casts only, the DataFusion generator (a CAST of an unpadded string to TIMESTAMP is an error there) use it; both are original files, so no carried patch is needed. unpadded_date_literals_engines executes the same literals on every engine in CI and prints the value each engine returns."
+    },
+    {
+      "id": "benchbox-native-dialects",
+      "source": "6b213588b788c4f224650f66f1a90c9c5dd21a21",
+      "status": "original",
+      "depends": [
+        "real-engine-ci"
+      ],
+      "paths": [
+        "tests/test_benchbox_native_dialects.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_native_dialects"
+      ],
+      "reason": "Pins the SQL BenchBox gets from the athena and singlestore dialects, which its Athena and SingleStore adapters now generate workload queries in instead of trino and mysql. Athena query text equals the trino dialect's and runs on Trino; SingleStore writes `:>` casts and NULLS FIRST/LAST where the mysql dialect emulates them, as golden text only (downstream/ENGINE-GAPS.md)."
     }
   ]
 }
