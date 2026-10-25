@@ -49,7 +49,12 @@ DataFusion, chDB, PySpark and Postgres in those two jobs, and on StarRocks and D
 on chDB, DuckDB, DataFusion and Postgres; the Snowflake form (capturing groups, renumbered references)
 has no Snowflake engine, so it is run on DuckDB's RE2, chDB and Python's `re` instead, which agree with
 the original, and its output text is asserted (see the Snowflake row above). Spark and Databricks read
-`\1` in a replacement as the digit 1 (they expect `$1`); that is not changed by this slice.
+`\1` in a replacement as the digit 1 (they expect `$1`), so their writer turns `\N` into `$N`, and they accept only
+year, quarter, month and week in `TRUNC`, so sub-day `DATE_TRUNC` units are written as `DATE_TRUNC(unit, x)`.
+`tests/test_benchbox_spark_translation_engines.py` runs ClickBench Q29 and Q43 as written for Databricks on PySpark
+in the `in-process` job and compares the grouped key values with DuckDB and a hand computation; Databricks itself
+has no engine in CI, so its own parsing of the same text is covered by the exact-text assertions. Spark `TRUNC`
+also returns NULL for `DAY`; that unit is unchanged here.
 `tests/test_benchbox_ddl.py` runs in the same two jobs: it creates the stripped and unstripped schema
 from `transpile_ddl` on SQLite, DuckDB and Postgres and compares columns and constraints, replaces a
 table on DuckDB, and checks the types a `type_map` produces on DuckDB and Postgres. SingleStore
