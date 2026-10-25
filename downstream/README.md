@@ -204,13 +204,17 @@ every gate (which columns, which alias, which keys) to the caller and returns a 
   the lists align; an ordered aggregate needs SQLite 3.44, so `order_by` is not applied); `dialect` picks the NULL
   ordering that needs no clause.
 - `reduce_list_aggregates(expression, dialect)` rewrites DuckDB's list functions for `presto`, `trino`, `athena`,
-  `bigquery`, `spark`, `databricks` and `sqlite` (other dialects are returned unchanged). `LIST_SUM(list)` and `LIST_AVG(list)`,
+  `bigquery`, `spark`, `databricks`, `sqlite`, `postgres` and `datafusion` (other dialects, including the PostgreSQL derivatives, are returned unchanged). `LIST_SUM(list)` and `LIST_AVG(list)`,
   alone or over `LIST_TRANSFORM(LIST_ZIP(a, b, ...), x -> f(x[1], x[2], ...))` (TPC-Havoc `1_v7`), become `REDUCE`
   over `ZIP_WITH` (two arrays) or `TRANSFORM(ZIP(...))` (three to five) on Presto, Trino and Athena; `AGGREGATE`
   over `ZIP_WITH` (arrays beyond the second are zipped into structs first) on Spark and Databricks; and a scalar
   `(SELECT SUM(...) FROM UNNEST(...))` that reads the zipped arrays by `SAFE_OFFSET` over
   `GENERATE_ARRAY(0, GREATEST(ARRAY_LENGTH(...)) - 1)` on BigQuery, and a scalar
-  `(SELECT SUM(...) FROM JSON_EACH(...))` that aligns the zipped JSON arrays by their `key` position in one grouped pass on SQLite. The `REDUCE`/`AGGREGATE` forms compute in `DOUBLE`
+  `(SELECT SUM(...) FROM JSON_EACH(...))` that aligns the zipped JSON arrays by their `key` position in one grouped pass on SQLite, a scalar
+  `(SELECT SUM(...) FROM UNNEST(a, b, ...) AS t(v0, v1, ...))` on PostgreSQL (its multi-argument `UNNEST` zips and pads with `NULL`, and a transform outside an
+  aggregate becomes `ARRAY(SELECT ... WITH ORDINALITY ... ORDER BY ordinality)`), and, on DataFusion (which has neither array folds nor a correlated `UNNEST`),
+  a `SUM`, `AVG(CAST(... AS DOUBLE))` or `SUM(f(...))` column added to the `WITH` or derived table that builds the lists, read in place of the fold; lists with different
+  `FILTER`s, a lambda that reads another column, and lists that no `GROUP BY` select builds are left unchanged on DataFusion. The `REDUCE`/`AGGREGATE` forms compute in `DOUBLE`
   (BigQuery keeps the column type); `NULL` elements are skipped and an empty or all-`NULL` list gives `NULL`, as in
   DuckDB, and a shorter zipped array reads `NULL` past its end, as `LIST_ZIP` pads. A `LIST_TRANSFORM` over
   `LIST_ZIP` outside an aggregate becomes the same `ZIP_WITH` forms (an ordered `ARRAY(SELECT ...)` on BigQuery),
