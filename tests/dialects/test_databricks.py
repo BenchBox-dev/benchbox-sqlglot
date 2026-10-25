@@ -630,3 +630,26 @@ class TestDatabricks(Validator):
         self.validate_identity("DECLARE x, y, z INT DEFAULT 1", "DECLARE x, y, z INT = 1")
         self.validate_identity("DECLARE x INT = 1")
         self.validate_identity("DECLARE OR REPLACE x INT = 1")
+
+    def test_regexp_replace_group_reference_and_time_truncation(self):
+        self.validate_all(
+            "REGEXP_REPLACE(a, '(b)', '$1')",
+            read={
+                "clickhouse": "REGEXP_REPLACE(a, '(b)', '\\\\1')",
+                "databricks": "REGEXP_REPLACE(a, '(b)', '$1')",
+            },
+        )
+        self.validate_all(
+            "REGEXP_REPLACE(a, '(b)(c)', '$2-$1')",
+            read={"postgres": "REGEXP_REPLACE(a, '(b)(c)', '\\2-\\1')"},
+        )
+        self.validate_all(
+            "REGEXP_REPLACE(a, 'b', '\\\\\\\\1')",
+            read={"databricks": "REGEXP_REPLACE(a, 'b', '\\\\\\\\1')"},
+        )
+        for unit in ("HOUR", "MINUTE", "SECOND"):
+            with self.subTest(unit=unit):
+                self.validate_all(
+                    f"DATE_TRUNC('{unit}', x)",
+                    read={"clickhouse": f"DATE_TRUNC('{unit.lower()}', x)"},
+                )

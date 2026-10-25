@@ -553,7 +553,11 @@ class TestExasol(Validator):
                     write={
                         "exasol": f"SELECT DATE_TRUNC('{unit}', DATE '2006-12-31') AS TRUNC",
                         "presto": f"SELECT DATE_TRUNC('{unit}', CAST('2006-12-31' AS DATE)) AS TRUNC",
-                        "databricks": f"SELECT TRUNC(CAST('2006-12-31' AS DATE), '{unit}') AS TRUNC",
+                        "databricks": (
+                            f"SELECT DATE_TRUNC('{unit}', CAST('2006-12-31' AS DATE)) AS TRUNC"
+                            if unit == "MINUTE"
+                            else f"SELECT TRUNC(CAST('2006-12-31' AS DATE), '{unit}') AS TRUNC"
+                        ),
                     },
                 )
 

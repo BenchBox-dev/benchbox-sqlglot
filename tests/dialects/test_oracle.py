@@ -1169,7 +1169,11 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""
                         "postgres": f"DATE_TRUNC('{unit}', CAST(x AS TIMESTAMP))",
                         "duckdb": f"DATE_TRUNC('{unit}', CAST(x AS TIMESTAMP))",
                         "tsql": f"DATE_TRUNC('{unit}', CAST(x AS DATETIME2))",
-                        "spark": f"TRUNC(CAST(x AS TIMESTAMP), '{unit}')",
+                        "spark": (
+                            f"DATE_TRUNC('{unit}', CAST(x AS TIMESTAMP))"
+                            if unit in ("HOUR", "MINUTE", "SECOND")
+                            else f"TRUNC(CAST(x AS TIMESTAMP), '{unit}')"
+                        ),
                     },
                 )
 
