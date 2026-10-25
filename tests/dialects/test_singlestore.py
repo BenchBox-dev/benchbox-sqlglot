@@ -164,9 +164,9 @@ class TestSingleStore(Validator):
         self.validate_identity("SELECT a::%b FROM t", "SELECT JSON_EXTRACT_DOUBLE(a, 'b') FROM t")
         self.validate_identity(
             "SELECT a::`b`::`2` FROM t",
-            "SELECT JSON_EXTRACT_JSON(JSON_EXTRACT_JSON(a, 'b'), '2') FROM t",
+            "SELECT JSON_EXTRACT_JSON(JSON_EXTRACT_JSON(a, 'b'), 2) FROM t",
         )
-        self.validate_identity("SELECT a::2 FROM t", "SELECT JSON_EXTRACT_JSON(a, '2') FROM t")
+        self.validate_identity("SELECT a::2 FROM t", "SELECT JSON_EXTRACT_JSON(a, 2) FROM t")
 
         self.validate_all(
             "SELECT JSON_EXTRACT_JSON(a, 'b') FROM t",
@@ -193,10 +193,10 @@ class TestSingleStore(Validator):
             write={"": "SELECT JSON_EXTRACT_SCALAR(a, '$.b', BIGINT) FROM t"},
         )
         self.validate_all(
-            "SELECT JSON_EXTRACT_JSON(a, 'b', '2') FROM t",
+            "SELECT JSON_EXTRACT_JSON(a, 'b', 2) FROM t",
             read={
                 "mysql": "SELECT JSON_EXTRACT(a, '$.b[2]') FROM t",
-                "singlestore": "SELECT JSON_EXTRACT_JSON(a, 'b', '2') FROM t",
+                "singlestore": "SELECT JSON_EXTRACT_JSON(a, 'b', 2) FROM t",
             },
             write={"mysql": "SELECT JSON_EXTRACT(a, '$.b[2]') FROM t"},
         )

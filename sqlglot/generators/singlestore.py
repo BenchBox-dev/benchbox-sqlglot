@@ -155,8 +155,8 @@ class SingleStoreGenerator(MySQLGenerator):
             "quote",
             "on_condition",
             "requires_json",
-        )(json_extract_segments("JSON_EXTRACT_JSON")),
-        exp.JSONBExtract: json_extract_segments("BSON_EXTRACT_BSON"),
+        )(json_extract_segments("JSON_EXTRACT_JSON", quoted_index=False)),
+        exp.JSONBExtract: json_extract_segments("BSON_EXTRACT_BSON", quoted_index=False),
         exp.JSONPathKey: json_path_key_only_name,
         exp.JSONPathSubscript: lambda self, e: self.json_path_part(e.this),
         exp.JSONPathRoot: lambda *_: "",
@@ -1432,12 +1432,12 @@ class SingleStoreGenerator(MySQLGenerator):
     def jsonextractscalar_sql(self, expression: exp.JSONExtractScalar) -> str:
         json_type = expression.args.get("json_type")
         func_name = "JSON_EXTRACT_JSON" if json_type is None else f"JSON_EXTRACT_{json_type}"
-        return json_extract_segments(func_name)(self, expression)
+        return json_extract_segments(func_name, quoted_index=False)(self, expression)
 
     def jsonbextractscalar_sql(self, expression: exp.JSONBExtractScalar) -> str:
         json_type = expression.args.get("json_type")
         func_name = "BSON_EXTRACT_BSON" if json_type is None else f"BSON_EXTRACT_{json_type}"
-        return json_extract_segments(func_name)(self, expression)
+        return json_extract_segments(func_name, quoted_index=False)(self, expression)
 
     def jsonextractarray_sql(self, expression: exp.JSONExtractArray) -> str:
         self.unsupported("Arrays are not supported in SingleStore")
