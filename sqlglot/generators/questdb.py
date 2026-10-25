@@ -99,16 +99,6 @@ def _column_of(node: exp.Expr, qualifiers: set[str]) -> exp.Column | None:
 
 
 def _decorrelate_subqueries(expression: exp.Expr) -> exp.Expr:
-    """Lower ``[NOT] EXISTS`` and ``IN (subquery)`` conjuncts of a WHERE into joins QuestDB can run.
-
-    ``EXISTS`` with equality correlations becomes an inner join to the distinct inner keys,
-    ``NOT EXISTS`` a left join to them with an ``IS NULL`` test, and ``EXISTS`` with one extra
-    ``outer <> inner`` correlation a join to the per-key ``MIN``/``MAX`` of the inner column, where a
-    differing row exists exactly when the outer value differs from either extreme. Any other shape
-    is left as written. An ``IN`` over an uncorrelated one-column subquery becomes an inner join to its
-    distinct non-NULL values. QuestDB joins NULL to NULL and compares NULL as a value, so the inner keys are
-    filtered to non-NULL and the outer ``<>`` value and the inner extremes are tested for NULL.
-    """
     if not isinstance(expression, exp.Select):
         return expression
     where = expression.args.get("where")

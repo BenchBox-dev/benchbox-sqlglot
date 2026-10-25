@@ -1,13 +1,3 @@
-"""Execute the QuestDB lowering of correlated EXISTS and IN (subquery) and compare with DuckDB.
-
-Run by the ``questdb`` job of ``benchbox-engines.yml``; skipped locally unless
-``BENCHBOX_ENGINE_QUESTDB=host:port`` points at a running QuestDB and DuckDB is installed. The
-TPC-DS Q16, Q94 and Q95 texts BenchBox emits run on both engines over a small warehouse built so
-that every branch of those queries selects and rejects rows: orders in one or several
-warehouses, with and without returns, NULL warehouses and order numbers, and rows outside the
-date, state, call center and web site filters.
-"""
-
 import unittest
 
 import sqlglot
