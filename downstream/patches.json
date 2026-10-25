@@ -106,8 +106,11 @@
       "id": "sqlite-date-interval-arithmetic",
       "source": "b60935672d3fc52c4982077131d4cb5140a69b72",
       "status": "carried",
-      "upstream_state": "not_offered",
-      "upstream_reason": "SQLite dialect interval lowering with no BenchBox-specific behavior; a candidate.",
+      "upstream_state": "declined",
+      "upstream": [
+        "https://github.com/tobymao/sqlglot/issues/8347"
+      ],
+      "upstream_reason": "SQLite dialect interval lowering with no BenchBox-specific behavior. Upstream closed tobymao/sqlglot#8347 (binary DATE + INTERVAL on SQLite) as not planned on 2026-09-13 without comment, so the fork keeps it.",
       "depends": [],
       "paths": [
         "sqlglot/generators/sqlite.py",
@@ -193,8 +196,11 @@
       "id": "sqlite-temporal-lowering",
       "source": "5b2282616d5490b0a548771074385b0df3a849c9",
       "status": "carried",
-      "upstream_state": "not_offered",
-      "upstream_reason": "SQLite dialect temporal lowering with no BenchBox-specific behavior; a candidate after the other SQLite date patches.",
+      "upstream_state": "declined",
+      "upstream": [
+        "https://github.com/tobymao/sqlglot/issues/8347"
+      ],
+      "upstream_reason": "SQLite dialect temporal lowering with no BenchBox-specific behavior; it covers the month and year offsets of binary DATE + INTERVAL. Upstream closed tobymao/sqlglot#8347 (binary DATE + INTERVAL on SQLite) as not planned on 2026-09-13 without comment, so the fork keeps it.",
       "depends": [
         "postgres-extract-return-types",
         "sqlite-date-extraction",
@@ -282,7 +288,10 @@
       "source": "88f7bc5d28118bc1f3dfa7b01c3975c515c1697e",
       "status": "carried",
       "upstream_state": "declined",
-      "upstream_reason": "Registers dialects that exist only in the fork; there is nothing upstream could accept.",
+      "upstream": [
+        "https://github.com/tobymao/sqlglot/issues/8348"
+      ],
+      "upstream_reason": "Registers dialects that exist only in the fork; there is nothing upstream could accept. Upstream closed tobymao/sqlglot#8348 (QuestDB dialect support) on 2026-09-13 with the maintainer stating it is not looking to add QuestDB.",
       "depends": [
         "platform-dialect-modules"
       ],
@@ -375,8 +384,11 @@
       "id": "sqlite-day-offset-date",
       "source": "7b929efa68cdd9a924c11f67b2f9dcac6712aa9a",
       "status": "carried",
-      "upstream_state": "not_offered",
-      "upstream_reason": "SQLite DATE offset generator fix with no BenchBox-specific behavior; a candidate.",
+      "upstream_state": "declined",
+      "upstream": [
+        "https://github.com/tobymao/sqlglot/issues/8347"
+      ],
+      "upstream_reason": "SQLite DATE offset generator fix with no BenchBox-specific behavior; it changes how binary DATE + INTERVAL n DAY is written. Upstream closed tobymao/sqlglot#8347 (binary DATE + INTERVAL on SQLite) as not planned on 2026-09-13 without comment, so the fork keeps it.",
       "depends": [
         "sqlite-date-day-arithmetic"
       ],
