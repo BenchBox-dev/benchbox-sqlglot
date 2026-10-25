@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/spark2.py b/sqlglot/generators/spark2.py
-index ddfef971..bfc6de9e 100644
+index ddfef971..da1c9ff9 100644
 --- a/sqlglot/generators/spark2.py
 +++ b/sqlglot/generators/spark2.py
 @@ -1,5 +1,6 @@
@@ -13,7 +13,7 @@ index ddfef971..bfc6de9e 100644
      return self.func("TO_JSON", this, expression.args.get("options"))
  
  
-+SPARK_TIME_TRUNC_UNITS = frozenset({"HOUR", "MINUTE", "SECOND", "MILLISECOND", "MICROSECOND"})
++SPARK_TRUNC_UNITS = frozenset({"YEAR", "YYYY", "YY", "QUARTER", "MONTH", "MON", "MM", "WEEK"})
 +
 +
 +def _date_trunc_sql(self: Spark2Generator, expression: exp.DateTrunc) -> str:
@@ -21,7 +21,7 @@ index ddfef971..bfc6de9e 100644
 +    if (
 +        isinstance(unit, exp.Literal)
 +        and unit.is_string
-+        and unit.name.upper() in SPARK_TIME_TRUNC_UNITS
++        and unit.name.upper() not in SPARK_TRUNC_UNITS
 +    ):
 +        return self.func("DATE_TRUNC", unit, expression.this)
 +    return self.func("TRUNC", expression.this, unit)
@@ -77,7 +77,7 @@ index ddfef971..bfc6de9e 100644
                  [
                      transforms.eliminate_qualify,
 diff --git a/tests/dialects/test_databricks.py b/tests/dialects/test_databricks.py
-index ac0b8fd8..641e41bc 100644
+index ac0b8fd8..cd5fea46 100644
 --- a/tests/dialects/test_databricks.py
 +++ b/tests/dialects/test_databricks.py
 @@ -630,3 +630,26 @@ class TestDatabricks(Validator):
@@ -101,7 +101,7 @@ index ac0b8fd8..641e41bc 100644
 +            "REGEXP_REPLACE(a, 'b', '\\\\\\\\1')",
 +            read={"databricks": "REGEXP_REPLACE(a, 'b', '\\\\\\\\1')"},
 +        )
-+        for unit in ("HOUR", "MINUTE", "SECOND"):
++        for unit in ("DAY", "HOUR", "MINUTE", "SECOND"):
 +            with self.subTest(unit=unit):
 +                self.validate_all(
 +                    f"DATE_TRUNC('{unit}', x)",
@@ -125,17 +125,30 @@ index 23799e31..5b8314f6 100644
                  )
  
 diff --git a/tests/dialects/test_oracle.py b/tests/dialects/test_oracle.py
-index 6e7d55a7..cd48bd19 100644
+index 6e7d55a7..2df4a62c 100644
 --- a/tests/dialects/test_oracle.py
 +++ b/tests/dialects/test_oracle.py
-@@ -1169,7 +1169,11 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""
+@@ -1154,7 +1154,11 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""
+                         "bigquery": f"DATE_TRUNC(CAST(x AS DATE), {unit})",
+                         "duckdb": f"DATE_TRUNC('{unit}', CAST(x AS DATE))",
+                         "tsql": f"DATE_TRUNC('{unit}', CAST(x AS DATE))",
+-                        "spark": f"TRUNC(CAST(x AS DATE), '{unit}')",
++                        "spark": (
++                            f"DATE_TRUNC('{unit}', CAST(x AS DATE))"
++                            if unit == "DAY"
++                            else f"TRUNC(CAST(x AS DATE), '{unit}')"
++                        ),
+                     },
+                 )
+ 
+@@ -1169,7 +1173,11 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""
                          "postgres": f"DATE_TRUNC('{unit}', CAST(x AS TIMESTAMP))",
                          "duckdb": f"DATE_TRUNC('{unit}', CAST(x AS TIMESTAMP))",
                          "tsql": f"DATE_TRUNC('{unit}', CAST(x AS DATETIME2))",
 -                        "spark": f"TRUNC(CAST(x AS TIMESTAMP), '{unit}')",
 +                        "spark": (
 +                            f"DATE_TRUNC('{unit}', CAST(x AS TIMESTAMP))"
-+                            if unit in ("HOUR", "MINUTE", "SECOND")
++                            if unit in ("HOUR", "MINUTE", "SECOND", "DAY")
 +                            else f"TRUNC(CAST(x AS TIMESTAMP), '{unit}')"
 +                        ),
                      },

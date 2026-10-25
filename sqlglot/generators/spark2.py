@@ -63,7 +63,7 @@ def _json_format_sql(self: Spark2Generator, expression: exp.JSONFormat) -> str:
     return self.func("TO_JSON", this, expression.args.get("options"))
 
 
-SPARK_TIME_TRUNC_UNITS = frozenset({"HOUR", "MINUTE", "SECOND", "MILLISECOND", "MICROSECOND"})
+SPARK_TRUNC_UNITS = frozenset({"YEAR", "YYYY", "YY", "QUARTER", "MONTH", "MON", "MM", "WEEK"})
 
 
 def _date_trunc_sql(self: Spark2Generator, expression: exp.DateTrunc) -> str:
@@ -71,7 +71,7 @@ def _date_trunc_sql(self: Spark2Generator, expression: exp.DateTrunc) -> str:
     if (
         isinstance(unit, exp.Literal)
         and unit.is_string
-        and unit.name.upper() in SPARK_TIME_TRUNC_UNITS
+        and unit.name.upper() not in SPARK_TRUNC_UNITS
     ):
         return self.func("DATE_TRUNC", unit, expression.this)
     return self.func("TRUNC", expression.this, unit)

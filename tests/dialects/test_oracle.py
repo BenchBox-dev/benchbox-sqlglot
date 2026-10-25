@@ -1154,7 +1154,11 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""
                         "bigquery": f"DATE_TRUNC(CAST(x AS DATE), {unit})",
                         "duckdb": f"DATE_TRUNC('{unit}', CAST(x AS DATE))",
                         "tsql": f"DATE_TRUNC('{unit}', CAST(x AS DATE))",
-                        "spark": f"TRUNC(CAST(x AS DATE), '{unit}')",
+                        "spark": (
+                            f"DATE_TRUNC('{unit}', CAST(x AS DATE))"
+                            if unit == "DAY"
+                            else f"TRUNC(CAST(x AS DATE), '{unit}')"
+                        ),
                     },
                 )
 
@@ -1171,7 +1175,7 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""
                         "tsql": f"DATE_TRUNC('{unit}', CAST(x AS DATETIME2))",
                         "spark": (
                             f"DATE_TRUNC('{unit}', CAST(x AS TIMESTAMP))"
-                            if unit in ("HOUR", "MINUTE", "SECOND")
+                            if unit in ("HOUR", "MINUTE", "SECOND", "DAY")
                             else f"TRUNC(CAST(x AS TIMESTAMP), '{unit}')"
                         ),
                     },

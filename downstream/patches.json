@@ -1031,7 +1031,7 @@
         "tests.dialects.test_oracle",
         "tests.test_benchbox_spark_translation_engines"
       ],
-      "reason": "Spark and Databricks read a backslash group reference in a REGEXP_REPLACE replacement as the digit and accept only year, quarter, month and week in TRUNC. A literal replacement now writes \\N as $N (an escaped backslash stays), so ClickBench Q29 groups referrers by host instead of collapsing them into one group, and DATE_TRUNC to HOUR, MINUTE, SECOND, MILLISECOND or MICROSECOND writes DATE_TRUNC(unit, x) instead of TRUNC(x, unit), which returned NULL for every row, so ClickBench Q43 grouped by minute instead of returning one NULL group. Other units keep TRUNC.",
+      "reason": "Spark and Databricks read a backslash group reference in a REGEXP_REPLACE replacement as the digit and accept only year, quarter, month and week in TRUNC. A literal replacement now writes \\N as $N (an escaped backslash stays), so ClickBench Q29 groups referrers by host instead of collapsing them into one group, and DATE_TRUNC to any unit TRUNC does not accept (DAY, HOUR, MINUTE, SECOND, MILLISECOND, MICROSECOND) writes DATE_TRUNC(unit, x) instead of TRUNC(x, unit), which returned NULL for every row, so ClickBench Q43 grouped by minute instead of returning one NULL group and a daily GROUP BY no longer returns one NULL group. YEAR, QUARTER, MONTH and WEEK keep TRUNC.",
       "patch": "downstream/patches/spark-databricks-regexp-trunc.patch"
     },
     {
@@ -1048,7 +1048,7 @@
       "tests": [
         "tests.test_benchbox_spark_translation_engines"
       ],
-      "reason": "ClickBench Q29 and Q43 written for Databricks, as exact text and as rows on PySpark against DuckDB and a hand computation: a referrer dataset with four distinct hosts compares the grouped key values, and a timestamp dataset with five distinct minutes and four excluded rows compares the grouped minutes and counts."
+      "reason": "ClickBench Q29 and Q43 written for Databricks, as exact text and as rows on PySpark against DuckDB and a hand computation: a referrer dataset with four distinct hosts compares the grouped key values, and a timestamp dataset with five distinct minutes and four excluded rows compares the grouped minutes and counts, and the same dataset grouped by DATE_TRUNC('day', x) compares the grouped days and counts."
     },
     {
       "id": "sqlite-empty-group-by",
