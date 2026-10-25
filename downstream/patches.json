@@ -904,6 +904,26 @@
       ],
       "reason": "Write a string literal that is cast to DATE or TIMESTAMP (CAST('1999-5-01' AS DATE), DATE '1999-5-1', TimeStrToTime, DateStrToDate), or compared with, IN-listed against or BETWEEN-bounded by a known DATE (a CAST, a DATE literal, a schema or sqlglot.benchbox.rewrites.mark_date_columns), in zero-padded YYYY-MM-DD[ HH:MM:SS] form. SQLite reads only padded date text, so DATE('1999-5-01') was NULL (TPC-DS Q16, Q94 and Q95, base and OBT, filtered on NULL bounds) and '1999-5-1' sorted after '1999-12-01'. A string that is not a valid calendar date is left unchanged. Tests assert the text, the unchanged invalid strings and row counts equal to DuckDB on sqlite3.",
       "patch": "downstream/patches/sqlite-date-literals.patch"
+    },
+    {
+      "id": "date-literal-padding",
+      "source": "ea44bcc94a0e141a18e4663a7cbe059c8429d3e0",
+      "status": "original",
+      "depends": [
+        "real-engine-ci",
+        "platform-dialect-modules",
+        "benchbox-rewrites"
+      ],
+      "paths": [
+        "sqlglot/benchbox/date_literals.py",
+        "tests/test_benchbox_date_literals.py",
+        "tests/test_unpadded_date_literals_engines.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_date_literals",
+        "tests.test_unpadded_date_literals_engines"
+      ],
+      "reason": "DateLiteralPadding, a generator base that writes a string literal cast to DATE or TIMESTAMP, or compared with, IN-listed against or BETWEEN-bounded by a known DATE, in zero-padded YYYY-MM-DD form for the targets that read only padded text. dsqgen writes [YEAR]-[MONTH]-01 (1999-5-01), which QuestDB reads as NULL (TPC-DS Q16, Q94 and Q95 filtered on NULL bounds). The QuestDB generator and, for TIMESTAMP casts only, the DataFusion generator (a CAST of an unpadded string to TIMESTAMP is an error there) use it; both are original files, so no carried patch is needed. unpadded_date_literals_engines executes the same literals on every engine in CI and prints the value each engine returns."
     }
   ]
 }
