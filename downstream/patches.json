@@ -1008,6 +1008,47 @@
         "tests.test_benchbox_null_ordering_engines"
       ],
       "reason": "The NULL placement each target writes for Netezza, DuckDB and ClickHouse sources, as golden text and as rows on every engine in CI (eight queries over six rows with two NULL keys: ASC and DESC with LIMIT, positional, GROUP BY, ROWS and RANGE window frames), written out by hand so the reference engine is not the only check."
+    },
+    {
+      "id": "spark-databricks-regexp-trunc",
+      "source": "65029fc26e7eb8b7430ded277ae4ac53b1bdb789",
+      "status": "carried",
+      "upstream_state": "not_offered",
+      "upstream_reason": "Spark and Databricks writer corrections with no BenchBox-specific behavior (replacement group references, sub-day truncation); a candidate.",
+      "depends": [
+        "empty-group-by-generator",
+        "databricks-primary-key-ordering"
+      ],
+      "paths": [
+        "sqlglot/generators/spark2.py",
+        "tests/dialects/test_databricks.py",
+        "tests/dialects/test_exasol.py",
+        "tests/dialects/test_oracle.py"
+      ],
+      "tests": [
+        "tests.dialects.test_databricks",
+        "tests.dialects.test_exasol",
+        "tests.dialects.test_oracle",
+        "tests.test_benchbox_spark_translation_engines"
+      ],
+      "reason": "Spark and Databricks read a backslash group reference in a REGEXP_REPLACE replacement as the digit and accept only year, quarter, month and week in TRUNC. A literal replacement now writes \\N as $N (an escaped backslash stays), so ClickBench Q29 groups referrers by host instead of collapsing them into one group, and DATE_TRUNC to HOUR, MINUTE, SECOND, MILLISECOND or MICROSECOND writes DATE_TRUNC(unit, x) instead of TRUNC(x, unit), which returned NULL for every row, so ClickBench Q43 grouped by minute instead of returning one NULL group. Other units keep TRUNC.",
+      "patch": "downstream/patches/spark-databricks-regexp-trunc.patch"
+    },
+    {
+      "id": "spark-databricks-translation-engines",
+      "source": "65029fc26e7eb8b7430ded277ae4ac53b1bdb789",
+      "status": "original",
+      "depends": [
+        "real-engine-ci",
+        "spark-databricks-regexp-trunc"
+      ],
+      "paths": [
+        "tests/test_benchbox_spark_translation_engines.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_spark_translation_engines"
+      ],
+      "reason": "ClickBench Q29 and Q43 written for Databricks, as exact text and as rows on PySpark against DuckDB and a hand computation: a referrer dataset with four distinct hosts compares the grouped key values, and a timestamp dataset with five distinct minutes and four excluded rows compares the grouped minutes and counts."
     }
   ]
 }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import typing as t
 
 from sqlglot import exp, transforms
@@ -60,6 +61,40 @@ def _json_format_sql(self: Spark2Generator, expression: exp.JSONFormat) -> str:
         return self.sql(this)
 
     return self.func("TO_JSON", this, expression.args.get("options"))
+
+
+SPARK_TIME_TRUNC_UNITS = frozenset({"HOUR", "MINUTE", "SECOND", "MILLISECOND", "MICROSECOND"})
+
+
+def _date_trunc_sql(self: Spark2Generator, expression: exp.DateTrunc) -> str:
+    unit = weekstart_unit_to_str(self, expression)
+    if (
+        isinstance(unit, exp.Literal)
+        and unit.is_string
+        and unit.name.upper() in SPARK_TIME_TRUNC_UNITS
+    ):
+        return self.func("DATE_TRUNC", unit, expression.this)
+    return self.func("TRUNC", expression.this, unit)
+
+
+def _java_replacement(replacement: exp.Expr | None) -> exp.Expr | None:
+    if not isinstance(replacement, exp.Literal) or not replacement.is_string:
+        return replacement
+    text = replacement.name
+    converted = re.sub(
+        r"\\(\\|\d)", lambda m: m.group(0) if m.group(1) == "\\" else "$" + m.group(1), text
+    )
+    return replacement if converted == text else exp.Literal.string(converted)
+
+
+def _regexp_replace_sql(self: Spark2Generator, expression: exp.RegexpReplace) -> str:
+    return self.func(
+        "REGEXP_REPLACE",
+        expression.this,
+        expression.expression,
+        _java_replacement(expression.args["replacement"]),
+        expression.args.get("position"),
+    )
 
 
 def _map_sql(self: Spark2Generator, expression: exp.Map) -> str:
@@ -179,9 +214,7 @@ class Spark2Generator(HiveGenerator):
                 ]
             ),
             exp.DateFromParts: rename_func("MAKE_DATE"),
-            exp.DateTrunc: lambda self, e: self.func(
-                "TRUNC", e.this, weekstart_unit_to_str(self, e)
-            ),
+            exp.DateTrunc: _date_trunc_sql,
             exp.DayOfMonth: rename_func("DAYOFMONTH"),
             exp.DayOfWeek: rename_func("DAYOFWEEK"),
             # (DAY_OF_WEEK(datetime) % 7) + 1 is equivalent to DAYOFWEEK_ISO(datetime)
@@ -198,13 +231,7 @@ class Spark2Generator(HiveGenerator):
             exp.Map: _map_sql,
             exp.Pivot: transforms.preprocess([transforms.unqualify_pivot_fields]),
             exp.Reduce: rename_func("AGGREGATE"),
-            exp.RegexpReplace: lambda self, e: self.func(
-                "REGEXP_REPLACE",
-                e.this,
-                e.expression,
-                e.args["replacement"],
-                e.args.get("position"),
-            ),
+            exp.RegexpReplace: _regexp_replace_sql,
             exp.Select: transforms.preprocess(
                 [
                     transforms.eliminate_qualify,
