@@ -62,16 +62,38 @@ def normalise(rows):
 
 
 TIMESTAMP_AS_NUMBER = {"sqlite"}
+STRING_COMPARISON_CASES = {"string_low_bound", "string_compared_with_date", "string_in_list"}
+REJECTS_STRING_AGAINST_DATE = {"trino": "TYPE_MISMATCH"}
+PADDED = (("'1999-2-01'", "'1999-02-01'"), ("'1999-2-1'", "'1999-02-01'"))
 
 
 class UnpaddedDateLiteralsMixin:
     engine = ""
+
+    def assert_rejected_padded_or_not(self, sql, rejection):
+        padded = sql
+        for unpadded, zero_padded in PADDED:
+            padded = padded.replace(unpadded, zero_padded)
+        with engines.connect(self.engine) as connection:
+            for text in (sql, padded):
+                translated = translate(self.engine, text)
+                with self.assertRaises(Exception) as raised:
+                    connection.execute(translated)
+                print(
+                    f"DATE-LITERAL-MATRIX engine={self.engine} case=string_against_date "
+                    f"value=rejected({rejection}) sql={translated}"
+                )
+                self.assertIn(rejection, str(raised.exception), translated)
 
     def run_case(self, name):
         if name == "cast_timestamp" and self.engine in TIMESTAMP_AS_NUMBER:
             self.skipTest(f"{self.engine} has no timestamp type to read the literal as")
         sql, expected = CASES[name]
         translated = translate(self.engine, sql)
+        rejection = REJECTS_STRING_AGAINST_DATE.get(self.engine)
+        if rejection and name in STRING_COMPARISON_CASES:
+            self.assert_rejected_padded_or_not(sql, rejection)
+            return
         with engines.connect(self.engine) as connection:
             version = connection.execute(VERSION_SQL.get(self.engine, DEFAULT_VERSION_SQL))
             actual = normalise(connection.execute(translated))

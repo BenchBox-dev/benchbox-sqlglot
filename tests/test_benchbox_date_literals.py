@@ -107,9 +107,7 @@ class TestQuestDBDateLiterals(unittest.TestCase):
 class TestDataFusionTimestampLiterals(unittest.TestCase):
     def test_timestamp_cast_is_padded_and_date_is_untouched(self):
         tree = sqlglot.parse_one("SELECT CAST('1999-5-1 3:04:05' AS TIMESTAMP)", read="postgres")
-        self.assertEqual(
-            tree.sql("datafusion"), "SELECT CAST('1999-05-01 03:04:05' AS TIMESTAMP)"
-        )
+        self.assertEqual(tree.sql("datafusion"), "SELECT CAST('1999-05-01 03:04:05' AS TIMESTAMP)")
         tree = sqlglot.parse_one(
             "SELECT CAST('1999-5-01' AS DATE), 1 WHERE d = '1999-2-1'", read="postgres"
         )
