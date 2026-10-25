@@ -95,6 +95,59 @@ class TestReduceListAggregates(unittest.TestCase):
             "SELECT CARDINALITY(xs), LENGTH(name), CARDINALITY(ARRAY_AGG(1)) FROM a",
         )
 
+    def test_postgres_unnests_the_arrays(self):
+        out = rewrite(Q1_V7, "postgres")
+        self.assertNotIn("LIST_", out)
+        self.assertIn("(SELECT SUM(_v0) FROM UNNEST(quantities) AS _t(_v0)) AS sum_qty", out)
+        self.assertIn(
+            "(SELECT SUM(_v0 * (1 - _v1)) FROM UNNEST(prices, discounts) AS _t(_v0, _v1))", out
+        )
+        self.assertIn(
+            "(SELECT SUM(_v0 * (1 - _v1) * (1 + _v2)) FROM UNNEST(prices, discounts, taxes) "
+            "AS _t(_v0, _v1, _v2))",
+            out,
+        )
+        self.assertIn("(SELECT AVG(_v0) FROM UNNEST(prices) AS _t(_v0)) AS avg_price", out)
+        self.assertIn("ARRAY_LENGTH(quantities, 1) AS count_order", out)
+
+    def test_postgres_standalone_transform_keeps_order(self):
+        tree = sqlglot.parse_one(
+            "SELECT list_transform(list_zip(a, b), x -> x[1] + x[2]) FROM t", read="duckdb"
+        )
+        self.assertEqual(
+            reduce_list_aggregates(tree, "postgres").sql("postgres"),
+            "SELECT ARRAY(SELECT _v0 + _v1 FROM UNNEST(a, b) WITH ORDINALITY AS _t(_v0, _v1, _o) "
+            "ORDER BY _o) FROM t",
+        )
+
+    def test_datafusion_folds_inside_the_query_that_builds_the_lists(self):
+        out = rewrite(Q1_V7, "datafusion")
+        self.assertNotIn("LIST_", out)
+        self.assertIn("SUM(l_quantity) AS _fold0", out)
+        self.assertIn("SUM(l_extendedprice * (1 - l_discount)) AS _fold1", out)
+        self.assertIn("SUM(l_extendedprice * (1 - l_discount) * (1 + l_tax)) AS _fold2", out)
+        self.assertIn("AVG(CAST(l_extendedprice AS DOUBLE PRECISION)) AS _fold3", out)
+        self.assertIn("_fold1 AS sum_disc_price", out)
+        self.assertIn("ARRAY_LENGTH(quantities, 1) AS count_order", out)
+
+    def test_datafusion_keeps_filters_aligned(self):
+        aligned = rewrite(
+            "WITH a AS (SELECT k, list(x) FILTER (WHERE y > 0) AS xs, list(z) FILTER (WHERE y > 0) AS zs "
+            "FROM t GROUP BY k) SELECT list_sum(list_transform(list_zip(xs, zs), p -> p[1] * p[2])) FROM a",
+            "datafusion",
+        )
+        self.assertIn("SUM(x * z) FILTER(WHERE y > 0) AS _fold0", aligned)
+        for sql in (
+            "WITH a AS (SELECT k, list(x) FILTER (WHERE y > 0) AS xs, list(z) AS zs FROM t GROUP BY k) "
+            "SELECT list_sum(list_transform(list_zip(xs, zs), p -> p[1] * p[2])) FROM a",
+            "WITH a AS (SELECT k, list(x) AS xs FROM t GROUP BY k) "
+            "SELECT list_sum(list_transform(xs, v -> v * k)) FROM a",
+            "WITH a AS (SELECT k, xs FROM t) SELECT list_sum(xs) FROM a",
+            "SELECT list_sum(xs) FROM t",
+        ):
+            with self.subTest(sql):
+                self.assertIn("LIST_SUM", rewrite(sql, "datafusion").upper())
+
     def test_unsupported_lambda_shapes_are_left_alone(self):
         sql = "SELECT list_sum(list_transform(list_zip(a, b), x -> x[1] + len(x))) FROM t"
         tree = sqlglot.parse_one(sql, read="duckdb")
@@ -103,7 +156,7 @@ class TestReduceListAggregates(unittest.TestCase):
 
     def test_other_dialects_unchanged(self):
         tree = sqlglot.parse_one(Q1_V7, read="duckdb")
-        for dialect in ("duckdb", "postgres", "snowflake"):
+        for dialect in ("duckdb", "snowflake", "redshift", "clickhouse"):
             with self.subTest(dialect):
                 self.assertEqual(
                     reduce_list_aggregates(tree, dialect).sql(dialect), tree.sql(dialect)

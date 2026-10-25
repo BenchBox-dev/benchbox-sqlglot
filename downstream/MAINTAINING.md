@@ -191,7 +191,7 @@ runs them on chDB, DuckDB, StarRocks and Doris.
 alias inlining, column qualification, one-row sources for FROM-less selects, literal-subquery naming, grouped
 scalar subqueries, ordered list aggregates). Behavior that belongs to one dialect's output is generator behavior and
 a carried patch: `empty-group-by-generator` (a `SUPPORTS_EMPTY_GROUP_BY` flag in the base generator, off for
-Snowflake and Spark). The DataFusion generator is a new file, so it needs no patch. `tests/test_benchbox_compat_engines.py` proves each piece on the engines in ENGINE-GAPS.md.
+Snowflake and Spark; `sqlite-empty-group-by` turns it off for SQLite). The DataFusion generator is a new file, so it needs no patch. `tests/test_benchbox_compat_engines.py` proves each piece on the engines in ENGINE-GAPS.md.
 BigQuery rejects a non-default `NULLS FIRST`/`LAST` in the window `ORDER BY` of `FIRST_VALUE`, `LAST_VALUE` and `NTH_VALUE`
 unless the frame is an explicit `ROWS` frame; the BigQuery generator drops the clause when the key is also a `PARTITION BY`
 key and otherwise sorts on `key IS NULL` first. That is the carried patch `bigquery-window-nulls-ordering`; a query's own

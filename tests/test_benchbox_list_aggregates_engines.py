@@ -200,6 +200,20 @@ class TestSQLiteListAggregates(ListAggregatesOn, unittest.TestCase):
         return name_values_columns(tree)
 
 
+@requires_engine("duckdb")
+@requires_engine("postgres")
+class TestPostgresListAggregates(ListAggregatesOn, unittest.TestCase):
+    ENGINE = "postgres"
+    DIALECT = "postgres"
+
+
+@requires_engine("duckdb")
+@requires_engine("datafusion")
+class TestDataFusionListAggregates(ListAggregatesOn, unittest.TestCase):
+    ENGINE = "datafusion"
+    DIALECT = "datafusion"
+
+
 @requires_engine("pyspark")
 class TestSparkListAggregates(ListAggregatesOn, unittest.TestCase):
     ENGINE = "pyspark"

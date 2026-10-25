@@ -11,7 +11,9 @@ import typing as t
 from sqlglot import exp
 from sqlglot.dialects.bigquery import BigQuery
 from sqlglot.dialects.clickhouse import ClickHouse
+from sqlglot.dialects.datafusion import DataFusion
 from sqlglot.dialects.dialect import Dialect, DialectType
+from sqlglot.dialects.postgres import Postgres
 from sqlglot.dialects.presto import Presto
 from sqlglot.dialects.sqlite import SQLite
 from sqlglot.dialects.spark2 import Spark2
@@ -573,6 +575,10 @@ def _list_family(dialect: DialectType) -> str | None:
         return "presto"
     if isinstance(resolved, SQLite):
         return "sqlite"
+    if isinstance(resolved, DataFusion):
+        return "datafusion"
+    if type(resolved) is Postgres:
+        return "postgres"
     return None
 
 
@@ -694,6 +700,8 @@ class _ListRewriter:
             return arrays[0]
         if self.family == "sqlite":
             return self.sqlite_select(mapped, None)
+        if self.family == "postgres":
+            return self.postgres_select(mapped, None)
         n = len(arrays)
         parts = self.parts(mapped)
         names = [self.fresh(f"_v{i}") for i in range(n)]
@@ -751,6 +759,8 @@ class _ListRewriter:
             return self.bigquery_select(mapped, "SUM" if kind == "sum" else "AVG")
         if self.family == "sqlite":
             return self.sqlite_select(mapped, "SUM" if kind == "sum" else "AVG")
+        if self.family == "postgres":
+            return self.postgres_select(mapped, "SUM" if kind == "sum" else "AVG")
         array = self.array_value(mapped)
         acc, v, state = self.fresh("_acc"), self.fresh("_v"), self.fresh("_state")
         if kind == "sum":
@@ -820,6 +830,33 @@ class _ListRewriter:
             )
         else:
             sql = f"(SELECT {aggregate}(__body) FROM {source})"
+        return _build(sql, self.dialect, **parts)
+
+    def postgres_select(self, mapped: _Mapped, aggregate: str | None) -> exp.Expr:
+        """``(SELECT agg(body) FROM UNNEST(a, b, ...))``, or ``ARRAY(SELECT body ...)`` when ``aggregate`` is None.
+
+        PostgreSQL's multi-argument ``UNNEST`` zips its arrays and pads the shorter ones with ``NULL``,
+        as ``LIST_ZIP`` does; ``WITH ORDINALITY`` keeps the positions of the mapped array.
+        """
+        arrays = mapped.arrays
+        n = len(arrays)
+        parts = self.parts(mapped)
+        table = self.fresh("_t")
+        values = [self.fresh(f"_v{i}") for i in range(n)]
+        parts["__body"] = (
+            exp.column(values[0])
+            if mapped.body is None
+            else mapped.substitute(lambda k: exp.column(values[k]))
+        )
+        unnest = f"UNNEST({', '.join(f'__a{i}' for i in range(n))})"
+        if aggregate is None:
+            position = self.fresh("_o")
+            sql = (
+                f"ARRAY(SELECT __body FROM {unnest} WITH ORDINALITY AS {table}"
+                f"({', '.join([*values, position])}) ORDER BY {position})"
+            )
+        else:
+            sql = f"(SELECT {aggregate}(__body) FROM {unnest} AS {table}({', '.join(values)}))"
         return _build(sql, self.dialect, **parts)
 
     def bigquery_select(
@@ -899,6 +936,124 @@ def _list_lengths(expression: exp.Expr) -> list[exp.Length]:
     return found
 
 
+def _list_source(column: exp.Column, scope: Scope) -> tuple[exp.Select, int] | None:
+    """The ``SELECT`` that defines ``column`` and the position of its projection, or ``None``."""
+    sources = scope.sources
+    if column.table:
+        source = sources.get(column.table)
+    else:
+        candidates = [
+            s
+            for s in sources.values()
+            if isinstance(s, Scope)
+            and isinstance(s.expression, exp.Select)
+            and column.name in s.expression.named_selects
+        ]
+        source = candidates[0] if len(candidates) == 1 else None
+    if not isinstance(source, Scope) or not isinstance(source.expression, exp.Select):
+        return None
+    select = source.expression
+    if column.name not in select.named_selects or select.args.get("distinct"):
+        return None
+    return select, select.named_selects.index(column.name)
+
+
+def _list_aggregate(projection: exp.Expr) -> tuple[exp.Expr, exp.Expr | None] | None:
+    """The element expression and the ``FILTER`` condition of a ``LIST``/``ARRAY_AGG`` projection."""
+    node = projection.this if isinstance(projection, exp.Alias) else projection
+    condition: exp.Expr | None = None
+    if isinstance(node, exp.Filter):
+        condition = node.expression
+        node = node.this
+    if isinstance(node, exp.ArrayAgg):
+        value = node.this
+        if isinstance(value, exp.Order):
+            value = value.this
+    elif isinstance(node, exp.List) and len(node.expressions) == 1:
+        value = node.expressions[0]
+    else:
+        return None
+    if isinstance(value, exp.Distinct):
+        return None
+    return value, condition
+
+
+def _push_down_list_folds(expression: E) -> E:
+    """Fold a list inside the ``SELECT`` that builds it, for engines with no way to read an array element by element.
+
+    ``LIST_SUM(c)``, ``LIST_AVG(c)`` and ``LIST_SUM(LIST_TRANSFORM(LIST_ZIP(c1, c2, ...), x -> f(x[1], x[2], ...)))``,
+    where every ``c`` is a column of a ``WITH`` or derived table that defines it as ``LIST(v)`` or ``ARRAY_AGG(v)``,
+    become a column of that table, ``SUM(v)``, ``AVG(CAST(v AS DOUBLE))`` (DuckDB averages a list in double) or ``SUM(f(v1, v2, ...))``. Lists built by one ``GROUP BY``
+    query from the same rows are equally long and aligned, so the fold over rows is the fold over the list: ``NULL``
+    elements are skipped and an empty list gives ``NULL``. Lists built with a ``FILTER`` or ``DISTINCT`` that differ
+    are not aligned, and a lambda body that reads anything but its parameter cannot move, so those calls are left alone.
+    """
+    try:
+        scopes = traverse_scope(expression)
+    except OptimizeError:
+        return expression
+    used = {i.name.lower() for i in expression.find_all(exp.Identifier)}
+
+    def fresh(base: str) -> str:
+        name = base
+        while name.lower() in used:
+            name += "_"
+        used.add(name.lower())
+        return name
+
+    added: dict[tuple[int, str], str] = {}
+    for scope in scopes:
+        for node in list(scope.find_all(exp.Anonymous)):
+            if node.name.upper() not in _LIST_FOLDS or len(node.expressions) != 1:
+                continue
+            mapped = _mapped_array(node.expressions[0])
+            if not all(isinstance(array, exp.Column) for array in mapped.arrays):
+                continue
+            if mapped.body is not None and (
+                mapped.body.find(exp.Column, exp.Subquery, exp.Select) is not None
+            ):
+                continue
+            located = [_list_source(array, scope) for array in mapped.arrays]  # type: ignore[arg-type]
+            if any(found is None for found in located):
+                continue
+            select = located[0][0]  # type: ignore[index]
+            if any(found[0] is not select for found in located):  # type: ignore[index]
+                continue
+            aggregates = [
+                _list_aggregate(select.expressions[found[1]])  # type: ignore[index]
+                for found in located
+            ]
+            if any(aggregate is None for aggregate in aggregates):
+                continue
+            conditions = [aggregate[1] for aggregate in aggregates]  # type: ignore[index]
+            if any(condition != conditions[0] for condition in conditions):
+                continue
+            values = [
+                exp.Paren(this=aggregate[0].copy())  # type: ignore[index]
+                if isinstance(aggregate[0], _OPERATORS)  # type: ignore[index]
+                else aggregate[0].copy()  # type: ignore[index]
+                for aggregate in aggregates
+            ]
+            if mapped.body is None:
+                argument = values[0]
+            else:
+                argument = mapped.substitute(lambda k: values[k].copy())
+            folded: exp.Expr
+            if _LIST_FOLDS[node.name.upper()] == "sum":
+                folded = exp.Sum(this=argument)
+            else:
+                folded = exp.Avg(this=exp.cast(argument, exp.DType.DOUBLE, copy=False))
+            if conditions[0] is not None:
+                folded = exp.Filter(this=folded, expression=conditions[0].copy())
+            key = (id(select), folded.sql("datafusion"))
+            if key not in added:
+                added[key] = fresh(f"_fold{len(added)}")
+                select.select(exp.alias_(folded, added[key]), copy=False)
+            first = t.cast(exp.Column, mapped.arrays[0])
+            node.replace(exp.column(added[key], table=first.table or None))
+    return expression
+
+
 def reduce_list_aggregates(expression: E, dialect: DialectType, copy: bool = True) -> E:
     """Rewrite DuckDB list aggregates for engines without DuckDB's list functions.
 
@@ -919,6 +1074,11 @@ def reduce_list_aggregates(expression: E, dialect: DialectType, copy: bool = Tru
     - BigQuery: a scalar ``(SELECT SUM(...) FROM UNNEST(...))`` subquery that reads the zipped arrays
       by ``SAFE_OFFSET`` over ``GENERATE_ARRAY(0, GREATEST(ARRAY_LENGTH(...)) - 1)``, keeping the
       column type.
+    - PostgreSQL (the ``postgres`` dialect itself, not its derivatives): a scalar
+      ``(SELECT SUM(...) FROM UNNEST(a, b, ...) AS t(v0, v1, ...))`` subquery; the multi-argument
+      ``UNNEST`` zips its arrays and pads the shorter ones with ``NULL``.
+    - DataFusion: no array fold and no correlated ``UNNEST`` exist, so each fold moves into the
+      ``WITH`` or derived table that builds the lists (see ``_push_down_list_folds``).
 
     ``NULL`` elements are skipped and an empty or all-``NULL`` list gives ``NULL``, as DuckDB does;
     shorter zipped arrays read ``NULL`` past their end, as ``LIST_ZIP`` pads them. A ``LIST_ZIP``
@@ -965,6 +1125,9 @@ def reduce_list_aggregates(expression: E, dialect: DialectType, copy: bool = Tru
             else exp.ArraySize(this=length.this.copy()),
         )
 
+    if family == "datafusion":
+        return _push_down_list_folds(expression)
+
     def attached(node: exp.Expr) -> bool:
         while node.parent is not None:
             node = node.parent
@@ -987,7 +1150,7 @@ def reduce_list_aggregates(expression: E, dialect: DialectType, copy: bool = Tru
                     _LIST_FOLDS[node.name.upper()], _mapped_array(node.expressions[0])
                 )
             elif isinstance(node, exp.Transform) and (
-                family == "bigquery" or _zip_arguments(node.this) is not None
+                family in ("bigquery", "postgres") or _zip_arguments(node.this) is not None
             ):
                 mapped = _mapped_array(node)
                 if mapped.body is not None:

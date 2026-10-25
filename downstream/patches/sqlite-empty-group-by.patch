@@ -1,0 +1,68 @@
+diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
+index d6f96b0a..70ac59d6 100644
+--- a/sqlglot/generators/sqlite.py
++++ b/sqlglot/generators/sqlite.py
+@@ -163,7 +163,55 @@ def _offset_to_limit(expression: exp.Expr) -> exp.Expr:
+     return expression
+ 
+ 
++def _global_having_to_subquery(expression: exp.Expr) -> exp.Expr:
++    if not isinstance(expression, exp.Select):
++        return expression
++
++    group = expression.args.get("group")
++    having = expression.args.get("having")
++    if (
++        group is None
++        or having is None
++        or len(group.expressions) != 1
++        or not isinstance(group.expressions[0], exp.Tuple)
++        or group.expressions[0].expressions
++        or any(group.args.get(key) for key in ("all", "grouping_sets", "cube", "rollup", "totals"))
++        or any(
++            expression.args.get(key)
++            for key in ("order", "limit", "offset", "distinct", "qualify", "windows", "into")
++        )
++        or any(isinstance(projection, exp.Star) for projection in expression.expressions)
++        or any(projection.find(exp.Window) for projection in expression.expressions)
++    ):
++        return expression
++
++    names: list[str] = []
++    inner = expression.copy()
++    inner.set("group", None)
++    inner.set("having", None)
++    projections: list[exp.Expr] = []
++    for position, projection in enumerate(inner.expressions):
++        if isinstance(projection, exp.Alias) and projection.alias:
++            name = projection.alias
++        else:
++            name = f"_col_{position}"
++            projection = exp.alias_(projection, name)
++        names.append(name)
++        projections.append(projection)
++    flag = "_having"
++    while flag in names:
++        flag += "_"
++    projections.append(exp.alias_(having.this.copy(), flag))
++    inner.set("expressions", projections)
++    return (
++        exp.select(*(exp.column(name) for name in names))
++        .from_(exp.Subquery(this=inner, alias=exp.TableAlias(this=exp.to_identifier("_global"))))
++        .where(exp.column(flag))
++    )
++
++
+ class SQLiteGenerator(generator.Generator):
++    SUPPORTS_EMPTY_GROUP_BY = False
+     SELECT_KINDS: tuple[str, ...] = ()
+     TRY_SUPPORTED = False
+     SUPPORTS_UESCAPE = False
+@@ -242,6 +290,7 @@ class SQLiteGenerator(generator.Generator):
+         **{kind: _moments_sql for kind in MOMENT_AGGREGATES},
+         exp.Select: transforms.preprocess(
+             [
++                _global_having_to_subquery,
+                 _offset_to_limit,
+                 transforms.eliminate_distinct_on,
+                 transforms.eliminate_qualify,
