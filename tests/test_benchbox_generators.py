@@ -8,7 +8,7 @@ GLOBAL_AGGREGATE = "SELECT SUM(x) AS s FROM t WHERE y > 0 GROUP BY () HAVING SUM
 
 class TestEmptyGroupBy(unittest.TestCase):
     def test_dropped_where_unsupported(self):
-        for dialect in ("snowflake", "spark", "databricks", "datafusion"):
+        for dialect in ("snowflake", "spark", "databricks", "datafusion", "sqlite"):
             with self.subTest(dialect=dialect):
                 self.assertEqual(
                     sqlglot.transpile(GLOBAL_AGGREGATE, read="postgres", write=dialect)[0],
@@ -22,7 +22,7 @@ class TestEmptyGroupBy(unittest.TestCase):
                 )
 
     def test_kept_where_supported(self):
-        for dialect in ("postgres", "duckdb", "bigquery", "trino", "clickhouse", "sqlite"):
+        for dialect in ("postgres", "duckdb", "bigquery", "trino", "clickhouse"):
             with self.subTest(dialect=dialect):
                 self.assertIn(
                     "GROUP BY ()",
@@ -36,7 +36,7 @@ class TestEmptyGroupBy(unittest.TestCase):
             "SELECT SUM(x) OVER () FROM t GROUP BY ()",
         ):
             with self.subTest(query=query):
-                for dialect in ("snowflake", "spark", "datafusion"):
+                for dialect in ("snowflake", "spark", "datafusion", "sqlite"):
                     generated = sqlglot.transpile(query, read="postgres", write=dialect)[0]
                     self.assertIn("GROUP BY", generated)
                     with self.assertRaises(UnsupportedError):

@@ -317,6 +317,23 @@ class TestGeneratorsOnDataFusion(GeneratorsOnEngine, unittest.TestCase):
             engines.execute("datafusion", GLOBAL_AGGREGATE_SQL.format(rows=ROWS, bound=0))
 
 
+@requires_engine("sqlite")
+class TestGeneratorsOnSQLite(GeneratorsOnEngine, unittest.TestCase):
+    ENGINE = "sqlite"
+    DIALECT = "sqlite"
+
+    def test_empty_group_by_is_rejected_by_the_engine(self):
+        with self.assertRaises(Exception):
+            engines.execute("sqlite", GLOBAL_AGGREGATE_SQL.format(rows=ROWS, bound=0))
+
+    def test_tpch_havoc_6_v2_shape(self):
+        sql = (
+            "SELECT SUM(x * y) AS revenue FROM {rows} AS t WHERE y BETWEEN 1 AND 5 AND x < 24 "
+            "GROUP BY () HAVING SUM(x * y) IS NOT NULL"
+        ).format(rows=ROWS)
+        self.assertEqual(values(engines.execute("sqlite", self.translated(sql))), [(26,)])
+
+
 @requires_engine("pyspark")
 class TestGeneratorsOnPySpark(GeneratorsOnEngine, unittest.TestCase):
     ENGINE = "pyspark"
