@@ -107,6 +107,14 @@ distribution clauses, Redshift Spectrum tables and the `pg_mooncake` statements 
 below).
 `tests/test_questdb_execution.py` runs in the `questdb` job: it executes the QuestDB
 generator's comma-join expansion, `DATEADD`, `SUBSTRING` and CTE column list output.
+`tests/test_questdb_subquery_lowering_execution.py` runs in the same job: it runs the TPC-DS Q16, Q94 and Q95 texts
+BenchBox emits (correlated `EXISTS` and `NOT EXISTS`, which QuestDB 10.0.1 rejects with `Invalid table name or alias`,
+and `IN (subquery)`, which it rejects with `cannot compare LONG with type CURSOR`) on QuestDB and DuckDB over a small warehouse where every
+branch selects and rejects rows (NULL order numbers and warehouses, returned and unreturned orders, rows outside each
+filter), and compares the aggregates. It also runs the generator's smaller lowered shapes. QuestDB joins NULL to NULL
+and compares NULL as a value, so the lowering filters the inner keys to non-NULL and tests the `<>` operands for NULL.
+`NOT EXISTS` with an inequality, `NOT IN`, an `EXISTS` or `IN` under `OR`, correlations other than column equalities
+and one `<>`, and `IN` over a correlated or limited subquery are left as written and still fail on QuestDB.
 `tests/test_benchbox_null_ordering_engines.py` runs in every engine job: eight queries over six rows with two NULL
 sort keys (ASC and DESC with `LIMIT`, positional `ORDER BY`, a `GROUP BY` key, a window `ORDER BY` under `ROWS` and
 `RANGE` frames) are read as Netezza (NULL is the largest value: TPC-H, TPC-DS, SSB and the catalog benchmarks),

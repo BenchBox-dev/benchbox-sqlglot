@@ -132,6 +132,66 @@ class TestQuestDB(Validator):
         )
         self.validate_identity("SELECT x FROM a LEFT JOIN b ON a.k = b.k WHERE b.k IS NULL")
 
+    def test_subquery_lowering(self):
+        self.validate_all(
+            "SELECT 1 FROM t LEFT JOIN (SELECT DISTINCT r.k AS _qx_exists_1_k0 FROM r "
+            "WHERE NOT r.k IS NULL) AS _qx_exists_1 ON t.k = _qx_exists_1._qx_exists_1_k0 "
+            "WHERE _qx_exists_1._qx_exists_1_k0 IS NULL",
+            read={"postgres": "SELECT 1 FROM t WHERE NOT EXISTS(SELECT * FROM r WHERE t.k = r.k)"},
+        )
+        self.validate_all(
+            "SELECT 1 FROM t JOIN (SELECT DISTINCT r.k AS _qx_exists_1_k0 FROM r "
+            "WHERE NOT r.k IS NULL AND r.v > 1) AS _qx_exists_1 "
+            "ON t.k = _qx_exists_1._qx_exists_1_k0",
+            read={
+                "postgres": "SELECT 1 FROM t WHERE EXISTS(SELECT * FROM r WHERE t.k = r.k AND r.v > 1)"
+            },
+        )
+        self.validate_all(
+            "SELECT 1 FROM t JOIN (SELECT r.k AS _qx_exists_1_k0, MIN(r.w) AS _qx_exists_1_lo, "
+            "MAX(r.w) AS _qx_exists_1_hi FROM r WHERE NOT r.k IS NULL GROUP BY r.k) AS _qx_exists_1 "
+            "ON t.k = _qx_exists_1._qx_exists_1_k0 WHERE NOT t.w IS NULL "
+            "AND NOT _qx_exists_1._qx_exists_1_lo IS NULL "
+            "AND (t.w <> _qx_exists_1._qx_exists_1_lo OR t.w <> _qx_exists_1._qx_exists_1_hi)",
+            read={
+                "postgres": "SELECT 1 FROM t WHERE EXISTS(SELECT * FROM r WHERE t.k = r.k AND t.w <> r.w)"
+            },
+        )
+        self.validate_all(
+            "SELECT 1 FROM t JOIN (SELECT DISTINCT _qx_in_1_k0 FROM "
+            "(SELECT r.k AS _qx_in_1_k0 FROM r WHERE r.v > 1) AS _qx_in_1_s "
+            "WHERE NOT _qx_in_1_k0 IS NULL) AS _qx_in_1 ON t.k = _qx_in_1._qx_in_1_k0",
+            read={"postgres": "SELECT 1 FROM t WHERE t.k IN (SELECT r.k FROM r WHERE r.v > 1)"},
+        )
+
+    def test_subquery_aliases_do_not_collide(self):
+        self.validate_all(
+            "SELECT 1 FROM t AS _qx_exists_1 JOIN "
+            "(SELECT DISTINCT r.k AS _qx_exists_2_k0 FROM r WHERE NOT r.k IS NULL) "
+            "AS _qx_exists_2 ON _qx_exists_1.k = _qx_exists_2._qx_exists_2_k0 JOIN "
+            "(SELECT DISTINCT r.k AS _qx_exists_3_k0 FROM r WHERE NOT r.k IS NULL) "
+            "AS _qx_exists_3 ON _qx_exists_1.k = _qx_exists_3._qx_exists_3_k0",
+            read={
+                "postgres": "SELECT 1 FROM t AS _qx_exists_1 WHERE "
+                "EXISTS(SELECT 1 FROM r WHERE _qx_exists_1.k = r.k) AND "
+                "EXISTS(SELECT 1 FROM r WHERE _qx_exists_1.k = r.k)"
+            },
+        )
+
+    def test_subqueries_that_are_not_lowered(self):
+        for sql in (
+            "SELECT 1 FROM t WHERE NOT EXISTS(SELECT * FROM r WHERE t.k = r.k AND t.w <> r.w)",
+            "SELECT 1 FROM t WHERE t.v > 1 OR EXISTS(SELECT * FROM r WHERE t.k = r.k)",
+            "SELECT 1 FROM t WHERE EXISTS(SELECT * FROM r WHERE t.k > r.k)",
+            "SELECT 1 FROM t WHERE EXISTS(SELECT * FROM r)",
+            "SELECT 1 FROM t WHERE NOT t.k IN (SELECT r.k FROM r)",
+            "SELECT 1 FROM t WHERE t.k IN (SELECT r.k FROM r WHERE r.m = t.m)",
+            "SELECT 1 FROM t WHERE t.k IN (SELECT r.k FROM r LIMIT 2)",
+            "SELECT 1 FROM t WHERE t.k IN (1, 2)",
+        ):
+            with self.subTest(sql=sql):
+                self.validate_identity(sql)
+
     def test_interval_arithmetic(self):
         self.validate_all(
             "SELECT DATEADD('d', -90, CAST('1998-12-01' AS DATE))",

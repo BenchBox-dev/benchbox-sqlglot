@@ -319,12 +319,14 @@
         "platform-dialect-modules"
       ],
       "paths": [
-        "tests/test_questdb_execution.py"
+        "tests/test_questdb_execution.py",
+        "tests/test_questdb_subquery_lowering_execution.py"
       ],
       "tests": [
-        "tests.test_questdb_execution"
+        "tests.test_questdb_execution",
+        "tests.test_questdb_subquery_lowering_execution"
       ],
-      "reason": "Execute the QuestDB generator's output on QuestDB and compare rows; the generator itself is in platform-dialect-modules' sqlglot/generators/questdb.py, which needs no carried patch because it edits no upstream-owned file."
+      "reason": "Execute the QuestDB generator's output on QuestDB and compare rows, including the lowering of correlated EXISTS and IN (subquery) against DuckDB; the generator itself is in platform-dialect-modules' sqlglot/generators/questdb.py, which needs no carried patch because it edits no upstream-owned file."
     },
     {
       "id": "databricks-primary-key-ordering",
