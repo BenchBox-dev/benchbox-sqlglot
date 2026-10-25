@@ -2,7 +2,7 @@
   "schema": 1,
   "distribution": "benchbox-sqlglot",
   "import_package": "benchbox._vendor.sqlglot",
-  "version": "30.24.0.13",
+  "version": "30.24.0.14",
   "upstream": {
     "repository": "https://github.com/tobymao/sqlglot",
     "tag": "v30.24.0",
