@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import re
 import typing as t
 
@@ -39,6 +40,43 @@ TRUNC_FORMATS = {
     "MINUTE": "%Y-%m-%d %H:%M:00",
     "SECOND": "%Y-%m-%d %H:%M:%S",
 }
+
+
+_DATE_TEXT = re.compile(r"(\d{1,4})-(\d{1,2})-(\d{1,2})")
+_TIMESTAMP_TEXT = re.compile(
+    r"(\d{1,4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2})(\.\d+)?)?"
+)
+
+
+def _canonical_date(text: str) -> str | None:
+    """``text`` as ``YYYY-MM-DD`` when it is a valid date written with unpadded fields, else ``None``."""
+    match = _DATE_TEXT.fullmatch(text.strip())
+    if not match:
+        return None
+    year, month, day = (int(part) for part in match.groups())
+    try:
+        datetime.date(year, month, day)
+    except ValueError:
+        return None
+    return f"{year:04d}-{month:02d}-{day:02d}"
+
+
+def _canonical_timestamp(text: str) -> str | None:
+    """``text`` as ``YYYY-MM-DD[ HH:MM:SS[.f]]`` when it is a valid date or timestamp, else ``None``."""
+    date = _canonical_date(text)
+    if date is not None:
+        return date
+    match = _TIMESTAMP_TEXT.fullmatch(text.strip())
+    if not match:
+        return None
+    year, month, day, hour, minute = (int(part) for part in match.groups()[:5])
+    second = int(match.group(6) or 0)
+    try:
+        datetime.datetime(year, month, day, hour, minute, second)
+    except ValueError:
+        return None
+    fraction = match.group(7) or ""
+    return f"{year:04d}-{month:02d}-{day:02d} {hour:02d}:{minute:02d}:{second:02d}{fraction}"
 
 
 def _moments_sql(self: SQLiteGenerator, expression: exp.Expr) -> str:
@@ -187,7 +225,6 @@ class SQLiteGenerator(generator.Generator):
         exp.CurrentTimestamp: lambda *_: "CURRENT_TIMESTAMP",
         exp.CurrentVersion: lambda *_: "SQLITE_VERSION()",
         exp.ColumnDef: transforms.preprocess([_generated_to_auto_increment]),
-        exp.DateStrToDate: lambda self, e: self.sql(e, "this"),
         exp.If: rename_func("IIF"),
         exp.ILike: no_ilike_sql,
         exp.JSONArrayAgg: unsupported_args("order", "null_handling", "return_type", "strict")(
@@ -213,7 +250,6 @@ class SQLiteGenerator(generator.Generator):
         ),
         exp.StrPosition: lambda self, e: strposition_sql(self, e, func_name="INSTR"),
         exp.TableSample: no_tablesample_sql,
-        exp.TimeStrToTime: lambda self, e: self.sql(e, "this"),
         exp.TimeToStr: lambda self, e: self.func("STRFTIME", e.args.get("format"), e.this),
         exp.TryCast: no_trycast_sql,
         exp.TsOrDsToTimestamp: lambda self, e: self.sql(e, "this"),
@@ -459,7 +495,7 @@ class SQLiteGenerator(generator.Generator):
             # SQLite carries an overflowing month end into the next month, while the
             # source engines clamp it, so only inputs that cannot overflow are lowered:
             # a NULL, or a literal whose day of month is at most 28.
-            literal = date.this
+            literal = self._canonical_literal(date.this)
             if isinstance(literal, exp.Null) or (
                 isinstance(literal, exp.Literal)
                 and literal.is_string
@@ -542,33 +578,31 @@ class SQLiteGenerator(generator.Generator):
                 node.replace(exp.Anonymous(this="DATETIME", expressions=[node.copy()]))
 
     def eq_sql(self, expression: exp.EQ) -> str:
-        self._align_dates_with_truncation(expression.this, expression.expression)
+        self._align_operands(expression.this, expression.expression)
         return super().eq_sql(expression)
 
     def neq_sql(self, expression: exp.NEQ) -> str:
-        self._align_dates_with_truncation(expression.this, expression.expression)
+        self._align_operands(expression.this, expression.expression)
         return super().neq_sql(expression)
 
     def lt_sql(self, expression: exp.LT) -> str:
-        self._align_dates_with_truncation(expression.this, expression.expression)
+        self._align_operands(expression.this, expression.expression)
         return super().lt_sql(expression)
 
     def lte_sql(self, expression: exp.LTE) -> str:
-        self._align_dates_with_truncation(expression.this, expression.expression)
+        self._align_operands(expression.this, expression.expression)
         return super().lte_sql(expression)
 
     def gt_sql(self, expression: exp.GT) -> str:
-        self._align_dates_with_truncation(expression.this, expression.expression)
+        self._align_operands(expression.this, expression.expression)
         return super().gt_sql(expression)
 
     def gte_sql(self, expression: exp.GTE) -> str:
-        self._align_dates_with_truncation(expression.this, expression.expression)
+        self._align_operands(expression.this, expression.expression)
         return super().gte_sql(expression)
 
     def between_sql(self, expression: exp.Between) -> str:
-        self._align_dates_with_truncation(
-            expression.this, expression.args["low"], expression.args["high"]
-        )
+        self._align_operands(expression.this, expression.args["low"], expression.args["high"])
         return super().between_sql(expression)
 
     def datetrunc_sql(self, expression: exp.DateTrunc) -> str:
@@ -577,9 +611,54 @@ class SQLiteGenerator(generator.Generator):
     def timestamptrunc_sql(self, expression: exp.TimestampTrunc) -> str:
         return self._truncate_sql(expression)
 
+    @staticmethod
+    def _canonical_literal(node: exp.Expr, timestamp: bool = False) -> exp.Expr:
+        # SQLite parses date text only when every field is zero padded, so DATE('1999-5-01')
+        # is NULL and '1999-5-01' sorts after '1999-12-01'; the source engines read both.
+        # A string that is not a valid date is left for the engine to reject or ignore.
+        if isinstance(node, exp.Literal) and node.is_string:
+            canonical = (_canonical_timestamp if timestamp else _canonical_date)(node.name)
+            if canonical is not None and canonical != node.name:
+                return exp.Literal.string(canonical)
+        return node
+
+    def _align_date_literals(self, *operands: exp.Expr) -> None:
+        # The source engines coerce a string compared with a DATE to a date; SQLite compares
+        # the texts, so an unpadded literal must be written in the stored zero-padded form.
+        literals = [n for n in operands if isinstance(n, exp.Literal) and n.is_string]
+        if not literals:
+            return
+        if not any(
+            self._is_date(n) for n in operands if not any(n is literal for literal in literals)
+        ):
+            return
+        for literal in literals:
+            canonical = self._canonical_literal(literal)
+            if canonical is not literal:
+                literal.replace(canonical)
+
+    def _align_operands(self, *operands: exp.Expr) -> None:
+        self._align_date_literals(*operands)
+        self._align_dates_with_truncation(*operands)
+
+    def in_sql(self, expression: exp.In) -> str:
+        self._align_date_literals(expression.this, *expression.expressions)
+        return super().in_sql(expression)
+
+    def datestrtodate_sql(self, expression: exp.DateStrToDate) -> str:
+        return self.sql(self._canonical_literal(expression.this))
+
+    def timestrtotime_sql(self, expression: exp.TimeStrToTime) -> str:
+        return self.sql(self._canonical_literal(expression.this, timestamp=True))
+
     def cast_sql(self, expression: exp.Cast, safe_prefix: str | None = None) -> str:
         if expression.is_type("date"):
-            return self.func("DATE", expression.this)
+            return self.func("DATE", self._canonical_literal(expression.this))
+        if expression.is_type(exp.DType.TIMESTAMP, exp.DType.TIMESTAMPNTZ, exp.DType.DATETIME):
+            canonical = self._canonical_literal(expression.this, timestamp=True)
+            if canonical is not expression.this:
+                expression = expression.copy()
+                expression.set("this", canonical)
 
         return super().cast_sql(expression)
 

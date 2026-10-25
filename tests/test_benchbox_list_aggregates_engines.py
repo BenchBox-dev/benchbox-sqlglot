@@ -92,9 +92,34 @@ def with_lineitem(tree: exp.Expr, dialect: str) -> exp.Expr:
     return tree
 
 
+def name_values_columns(tree: exp.Expr) -> exp.Expr:
+    """Name each aliased ``VALUES`` column in a select list, for engines whose table alias takes no columns."""
+    tree = tree.copy()
+    for values in list(tree.find_all(exp.Values)):
+        alias = values.args.get("alias")
+        if alias is None or not alias.columns:
+            continue
+        bare = values.copy()
+        bare.set("alias", None)
+        columns = [
+            exp.alias_(exp.column(f"column{i}"), column.name)
+            for i, column in enumerate(alias.columns, 1)
+        ]
+        values.replace(
+            exp.Subquery(
+                this=exp.select(*columns).from_(bare),
+                alias=exp.TableAlias(this=alias.this.copy()),
+            )
+        )
+    return tree
+
+
 class ListAggregatesOn:
     ENGINE = ""
     DIALECT = ""
+
+    def prepare(self, tree):
+        return tree
 
     def execute(self, engine, sql):
         return normalize(engines.execute(engine, sql))
@@ -116,7 +141,7 @@ class ListAggregatesOn:
         expected = self.execute(
             "duckdb", order_list_aggregates(original, order_by, "duckdb").sql("duckdb")
         )
-        ordered = order_list_aggregates(original, order_by, self.DIALECT)
+        ordered = order_list_aggregates(self.prepare(original), order_by, self.DIALECT)
         rewritten = reduce_list_aggregates(ordered, self.DIALECT).sql(self.DIALECT)
         self.assert_rows_equal(self.execute(self.ENGINE, rewritten), expected)
         return expected
@@ -163,6 +188,16 @@ class TestBigQueryListAggregatesOnDuckDB(ListAggregatesOn, unittest.TestCase):
             sql = sql.replace("SAFE_OFFSET(_pos)", "SAFE_ORDINAL(_pos + 1)")
             sql = sqlglot.transpile(sql, read="bigquery", write="duckdb")[0]
         return super().execute(engine, sql)
+
+
+@requires_engine("duckdb")
+@requires_engine("sqlite")
+class TestSQLiteListAggregates(ListAggregatesOn, unittest.TestCase):
+    ENGINE = "sqlite"
+    DIALECT = "sqlite"
+
+    def prepare(self, tree):
+        return name_values_columns(tree)
 
 
 @requires_engine("pyspark")

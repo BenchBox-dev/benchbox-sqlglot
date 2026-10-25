@@ -804,7 +804,7 @@
         "tests.test_benchbox_list_aggregates",
         "tests.test_benchbox_list_aggregates_engines"
       ],
-      "reason": "reduce_list_aggregates in compat.py (an original file of engine-compat-rewrites, so no patch is needed) rewrites DuckDB LIST_SUM, LIST_AVG, LIST_TRANSFORM over LIST_ZIP and LEN of a list column (TPC-Havoc 1_v7) for Presto, Trino, Athena (REDUCE over ZIP_WITH or TRANSFORM(ZIP)), Spark and Databricks (AGGREGATE over ZIP_WITH) and BigQuery (UNNEST subselects over GENERATE_ARRAY with SAFE_OFFSET). Tests execute DuckDB against PySpark for Spark and Databricks and against Trino for the Presto family, with NULL elements, an all-NULL list and an uneven zip; BigQuery runs as its text transpiled to DuckDB (an engine gap) plus golden text."
+      "reason": "reduce_list_aggregates in compat.py (an original file of engine-compat-rewrites, so no patch is needed) rewrites DuckDB LIST_SUM, LIST_AVG, LIST_TRANSFORM over LIST_ZIP and LEN of a list column (TPC-Havoc 1_v7) for Presto, Trino, Athena (REDUCE over ZIP_WITH or TRANSFORM(ZIP)), Spark and Databricks (AGGREGATE over ZIP_WITH) BigQuery (UNNEST subselects over GENERATE_ARRAY with SAFE_OFFSET) and SQLite (JSON_GROUP_ARRAY lists read through JSON_EACH, aligned by key position in one grouped pass). Tests execute DuckDB against sqlite3 for SQLite, PySpark for Spark and Databricks and against Trino for the Presto family, with NULL elements, an all-NULL list and an uneven zip; BigQuery runs as its text transpiled to DuckDB (an engine gap) plus golden text."
     },
     {
       "id": "tpcds-runner-override-rewrites",
@@ -872,6 +872,26 @@
         "tests.test_round_inputs_engines"
       ],
       "reason": "round_inputs_to_decimal in rewrites.py (an original file, so no patch is needed) casts the input of every ROUND to DECIMAL so PostgreSQL rounds one-argument doubles half away from zero as DuckDB does and accepts a scale on columns of unknown type. Tests run the FlightData ROUND shapes on DuckDB and PostgreSQL, and assert the unrewritten PostgreSQL rows differ (downstream/ENGINE-GAPS.md)."
+    },
+    {
+      "id": "sqlite-date-literals",
+      "source": "2a27b606c5df416962f9e38a3499b99a98166d06",
+      "status": "carried",
+      "upstream_state": "not_offered",
+      "upstream_reason": "SQLite date text normalization that reads mark_date_columns from the fork's benchbox package, so it needs a typed-only reduction before an upstream offer.",
+      "depends": [
+        "sqlite-date-integer-semantics",
+        "sqlite-grouping-sets"
+      ],
+      "paths": [
+        "sqlglot/generators/sqlite.py",
+        "tests/dialects/test_sqlite.py"
+      ],
+      "tests": [
+        "tests.dialects.test_sqlite"
+      ],
+      "reason": "Write a string literal that is cast to DATE or TIMESTAMP (CAST('1999-5-01' AS DATE), DATE '1999-5-1', TimeStrToTime, DateStrToDate), or compared with, IN-listed against or BETWEEN-bounded by a known DATE (a CAST, a DATE literal, a schema or sqlglot.benchbox.rewrites.mark_date_columns), in zero-padded YYYY-MM-DD[ HH:MM:SS] form. SQLite reads only padded date text, so DATE('1999-5-01') was NULL (TPC-DS Q16, Q94 and Q95, base and OBT, filtered on NULL bounds) and '1999-5-1' sorted after '1999-12-01'. A string that is not a valid calendar date is left unchanged. Tests assert the text, the unchanged invalid strings and row counts equal to DuckDB on sqlite3.",
+      "patch": "downstream/patches/sqlite-date-literals.patch"
     }
   ]
 }

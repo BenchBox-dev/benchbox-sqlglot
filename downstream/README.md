@@ -77,6 +77,10 @@ example `date_integer_arithmetic_to_interval(expression, date_columns)`, which t
 `mark_date_columns(expression, date_columns)` types those columns as `DATE` on the tree, so the SQLite
 generator writes `d_date + 5` as `DATE(d_date, '5 DAY')`, `d2 - d1` as a day count and a `DATE_TRUNC`
 compared with a date as timestamp text; pass the marked expression, not its SQL text, to `.sql('sqlite')`.
+The SQLite generator also writes a string literal that is cast to `DATE` or `TIMESTAMP` (`CAST('1999-5-01' AS DATE)`,
+`DATE '1999-5-1'`), or compared with, `IN`-listed against or `BETWEEN`-bounded by a known date (a marked column or a
+cast), in zero-padded `YYYY-MM-DD[ HH:MM:SS]` form, because SQLite reads only padded date text (`DATE('1999-5-01')`
+is `NULL` and `'1999-5-1'` sorts after `'1999-12-01'`). A string that is not a valid date is left unchanged.
 
 The adapter rewrites in the same module are:
 
@@ -191,21 +195,24 @@ every gate (which columns, which alias, which keys) to the caller and returns a 
 - `wrap_grouped_scalar_subqueries(expression, aggregate=exp.First)` wraps a scalar subquery projected
   by a `GROUP BY` select in an aggregate.
 - `order_list_aggregates(expression, order_by, dialect)` turns `LIST(x)` and unordered `ARRAY_AGG(x)`
-  into `ARRAY_AGG(x ORDER BY keys)`, or on Spark, Spark 2 and Databricks into
-  `TRANSFORM(SORT_ARRAY(COLLECT_LIST(STRUCT(keys..., x AS _v))), r -> r._v)`; `dialect` picks the NULL ordering
-  that needs no clause.
+  into `ARRAY_AGG(x ORDER BY keys)`, on Spark, Spark 2 and Databricks into
+  `TRANSFORM(SORT_ARRAY(COLLECT_LIST(STRUCT(keys..., x AS _v))), r -> r._v)`, or on SQLite into the JSON array
+  `JSON_GROUP_ARRAY(x)` (SQLite steps every aggregate of a `GROUP BY` query over the same rows in the same order, so
+  the lists align; an ordered aggregate needs SQLite 3.44, so `order_by` is not applied); `dialect` picks the NULL
+  ordering that needs no clause.
 - `reduce_list_aggregates(expression, dialect)` rewrites DuckDB's list functions for `presto`, `trino`, `athena`,
-  `bigquery`, `spark` and `databricks` (other dialects are returned unchanged). `LIST_SUM(list)` and `LIST_AVG(list)`,
+  `bigquery`, `spark`, `databricks` and `sqlite` (other dialects are returned unchanged). `LIST_SUM(list)` and `LIST_AVG(list)`,
   alone or over `LIST_TRANSFORM(LIST_ZIP(a, b, ...), x -> f(x[1], x[2], ...))` (TPC-Havoc `1_v7`), become `REDUCE`
   over `ZIP_WITH` (two arrays) or `TRANSFORM(ZIP(...))` (three to five) on Presto, Trino and Athena; `AGGREGATE`
   over `ZIP_WITH` (arrays beyond the second are zipped into structs first) on Spark and Databricks; and a scalar
   `(SELECT SUM(...) FROM UNNEST(...))` that reads the zipped arrays by `SAFE_OFFSET` over
-  `GENERATE_ARRAY(0, GREATEST(ARRAY_LENGTH(...)) - 1)` on BigQuery. The `REDUCE`/`AGGREGATE` forms compute in `DOUBLE`
+  `GENERATE_ARRAY(0, GREATEST(ARRAY_LENGTH(...)) - 1)` on BigQuery, and a scalar
+  `(SELECT SUM(...) FROM JSON_EACH(...))` that aligns the zipped JSON arrays by their `key` position in one grouped pass on SQLite. The `REDUCE`/`AGGREGATE` forms compute in `DOUBLE`
   (BigQuery keeps the column type); `NULL` elements are skipped and an empty or all-`NULL` list gives `NULL`, as in
   DuckDB, and a shorter zipped array reads `NULL` past its end, as `LIST_ZIP` pads. A `LIST_TRANSFORM` over
   `LIST_ZIP` outside an aggregate becomes the same `ZIP_WITH` forms (an ordered `ARRAY(SELECT ...)` on BigQuery),
   a bare `LIST_ZIP` becomes `ZIP` or `ARRAYS_ZIP`, and `LEN`/`LENGTH` of a column that a `LIST` or `ARRAY_AGG` defines
-  in a `WITH` or derived table becomes `CARDINALITY`, `SIZE` or `ARRAY_LENGTH`. A lambda that uses its parameter other
+  in a `WITH` or derived table becomes `CARDINALITY`, `SIZE`, `ARRAY_LENGTH` or `JSON_ARRAY_LENGTH`. A lambda that uses its parameter other
   than as `x[<literal>]` over a zip is left unchanged. It is a rewrite, not a generator change, because the
   array-typed `LEN` and the correlated `UNNEST` need the surrounding query. Call `order_list_aggregates` first so
   every zipped list is built in the same order; BenchBox calls
