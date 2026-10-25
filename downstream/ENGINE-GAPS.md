@@ -223,7 +223,7 @@ weaker than execution and must be named as such in the pull request.
 
 | Engine | Why | Substitute evidence |
 |---|---|---|
-| SingleStore | The only dev container (`singlestoredb-dev`) requires a license key, which is a secret; the workflow forbids secrets | Golden-output tests with the `singlestore` dialect, including the query forms BenchBox generates from it (`:>` casts and `NULLS FIRST`/`NULLS LAST` instead of the `CASE WHEN ... IS NULL` emulation the `mysql` dialect writes; `tests/test_benchbox_native_dialects.py`). Those forms are text only: no run checks `:>` precedence against `+ INTERVAL`, or `NULLS FIRST`/`LAST`, on a SingleStore server. The MySQL-protocol client path is covered by the StarRocks and Doris jobs |
+| SingleStore | The only dev container (`singlestoredb-dev`) requires a license key, which is a secret; the workflow forbids secrets | Golden-output tests with the `singlestore` dialect, including the query forms BenchBox generates from it (`:>` casts and `NULLS FIRST`/`NULLS LAST` instead of the `CASE WHEN ... IS NULL` emulation the `mysql` dialect writes; `tests/test_benchbox_native_dialects.py`). Those forms are text only: no run checks `:>` precedence against `+ INTERVAL`, or `NULLS FIRST`/`LAST`, on a SingleStore server. JSON array indexes are written as integers (`JSON_EXTRACT_JSON(c, 'a', 0)`), as the SingleStore keypath documentation specifies, but no run executes them on a SingleStore server. The MySQL-protocol client path is covered by the StarRocks and Doris jobs |
 
 ### Obtainable engine, not yet added to CI
 

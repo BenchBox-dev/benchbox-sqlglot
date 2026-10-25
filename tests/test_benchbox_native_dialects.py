@@ -64,6 +64,16 @@ class TestSingleStoreNativeDialect(unittest.TestCase):
         self.assertNotIn("CAST(", sql)
         self.assertNotIn("CASE WHEN", sql)
 
+    def test_json_array_indexes_are_integers(self):
+        self.assertEqual(
+            transpile("SELECT JSON_EXTRACT(c, '$.a.preferences[0]') FROM t", "singlestore", read="mysql"),
+            "SELECT JSON_EXTRACT_JSON(`c`, 'a', 'preferences', 0) FROM `t`",
+        )
+        self.assertEqual(
+            transpile("SELECT c->'$.a[1].b' FROM t", "singlestore", read="mysql"),
+            "SELECT JSON_EXTRACT_JSON(`c`, 'a', 1, 'b') FROM `t`",
+        )
+
     def test_mysql_dialect_still_emulates_what_singlestore_writes_natively(self):
         sql = transpile(TPCH_Q2_SHAPE, "mysql")
         self.assertIn("CASE WHEN", sql)
