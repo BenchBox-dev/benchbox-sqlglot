@@ -13,6 +13,7 @@ from sqlglot.dialects.bigquery import BigQuery
 from sqlglot.dialects.clickhouse import ClickHouse
 from sqlglot.dialects.dialect import Dialect, DialectType
 from sqlglot.dialects.presto import Presto
+from sqlglot.dialects.sqlite import SQLite
 from sqlglot.dialects.spark2 import Spark2
 from sqlglot.errors import OptimizeError
 from sqlglot.optimizer.scope import Scope, traverse_scope
@@ -507,7 +508,8 @@ def order_list_aggregates(
     Spark, Spark 2 and Databricks have no ordered collect, so the array is built as
     ``TRANSFORM(SORT_ARRAY(COLLECT_LIST(STRUCT(key AS _k0, ..., x AS _v))), r -> r._v)``, which sorts
     by the keys and keeps NULL elements, as ``ARRAY_AGG`` does. An ``ARRAY_AGG`` that already orders
-    is left alone.
+    is left alone. SQLite has no arrays, so the list is built as a JSON array,
+    ``JSON_GROUP_ARRAY(x ORDER BY key, ...)`` (an ordered aggregate needs SQLite 3.44 or later).
 
     Args:
         expression: the expression to rewrite.
@@ -532,7 +534,15 @@ def order_list_aggregates(
         else:
             continue
         replacement: exp.Expr
-        if isinstance(resolved, Spark2):
+        ordering = exp.Order(
+            this=value.copy(),
+            expressions=[
+                exp.Ordered(this=exp.column(key), nulls_first=nulls_first) for key in order_by
+            ],
+        )
+        if isinstance(resolved, SQLite):
+            replacement = exp.JSONArrayAgg(this=ordering)
+        elif isinstance(resolved, Spark2):
             fields = [f"{key} AS _k{i}" for i, key in enumerate(order_by)]
             fields.append(f"{value.sql(dialect)} AS _v")
             replacement = exp.maybe_parse(
@@ -540,15 +550,7 @@ def order_list_aggregates(
                 dialect=dialect,
             )
         else:
-            replacement = exp.ArrayAgg(
-                this=exp.Order(
-                    this=value.copy(),
-                    expressions=[
-                        exp.Ordered(this=exp.column(key), nulls_first=nulls_first)
-                        for key in order_by
-                    ],
-                )
-            )
+            replacement = exp.ArrayAgg(this=ordering)
         if node is expression:
             return replacement  # type: ignore[return-value]
         node.replace(replacement)
@@ -556,7 +558,7 @@ def order_list_aggregates(
 
 
 _LIST_FOLDS = {"LIST_SUM": "sum", "LIST_AVG": "avg"}
-_LIST_ARRAY_TYPES = (exp.List, exp.ArrayAgg, exp.Array, exp.Transform)
+_LIST_ARRAY_TYPES = (exp.List, exp.ArrayAgg, exp.JSONArrayAgg, exp.Array, exp.Transform)
 
 
 def _list_family(dialect: DialectType) -> str | None:
@@ -567,6 +569,8 @@ def _list_family(dialect: DialectType) -> str | None:
         return "spark"
     if isinstance(resolved, Presto):
         return "presto"
+    if isinstance(resolved, SQLite):
+        return "sqlite"
     return None
 
 
@@ -682,10 +686,12 @@ class _ListRewriter:
         return {f"__a{i}": array for i, array in enumerate(mapped.arrays)}
 
     def array_value(self, mapped: _Mapped) -> exp.Expr:
-        """The mapped array as an array expression (Presto, Trino, Athena, Spark, Databricks)."""
+        """The mapped array as an array expression (Presto, Trino, Athena, Spark, Databricks, SQLite)."""
         arrays = mapped.arrays
         if mapped.body is None:
             return arrays[0]
+        if self.family == "sqlite":
+            return self.sqlite_select(mapped, None)
         n = len(arrays)
         parts = self.parts(mapped)
         names = [self.fresh(f"_v{i}") for i in range(n)]
@@ -741,6 +747,8 @@ class _ListRewriter:
     def fold(self, kind: str, mapped: _Mapped) -> exp.Expr:
         if self.family == "bigquery":
             return self.bigquery_select(mapped, "SUM" if kind == "sum" else "AVG")
+        if self.family == "sqlite":
+            return self.sqlite_select(mapped, "SUM" if kind == "sum" else "AVG")
         array = self.array_value(mapped)
         acc, v, state = self.fresh("_acc"), self.fresh("_v"), self.fresh("_state")
         if kind == "sum":
@@ -764,6 +772,34 @@ class _ListRewriter:
                 f"{state} -> CASE WHEN {state}.c = 0 THEN NULL ELSE {state}.s / {state}.c END)"
             )
         return _build(sql, self.dialect, __m=array)
+
+    def sqlite_select(self, mapped: _Mapped, aggregate: str | None) -> exp.Expr:
+        """``(SELECT agg(body) FROM JSON_EACH(...))``, or the mapped JSON array when ``aggregate`` is None."""
+        arrays = mapped.arrays
+        n = len(arrays)
+        parts = self.parts(mapped)
+        items = [self.fresh(f"_j{i}") for i in range(n)]
+        if mapped.body is None:
+            parts["__body"] = _build(f"{items[0]}.value", self.dialect)
+        else:
+            parts["__body"] = mapped.substitute(lambda k: _build(f"{items[k]}.value", self.dialect))
+        if n == 1:
+            source = f"JSON_EACH(__a0) AS {items[0]}"
+            order = f"{items[0]}.key"
+        else:
+            keys = self.fresh("_k")
+            union = " UNION ".join(f"SELECT key FROM JSON_EACH(__a{i})" for i in range(n))
+            joins = " ".join(
+                f"LEFT JOIN JSON_EACH(__a{i}) AS {items[i]} ON {items[i]}.key = {keys}.key"
+                for i in range(n)
+            )
+            source = f"({union}) AS {keys} {joins}"
+            order = f"{keys}.key"
+        if aggregate is None:
+            sql = f"(SELECT JSON_GROUP_ARRAY(__body ORDER BY {order}) FROM {source})"
+        else:
+            sql = f"(SELECT {aggregate}(__body) FROM {source})"
+        return _build(sql, self.dialect, **parts)
 
     def bigquery_select(
         self, mapped: _Mapped, aggregate: str | None, ordered: bool = False
@@ -846,7 +882,7 @@ def reduce_list_aggregates(expression: E, dialect: DialectType, copy: bool = Tru
     """Rewrite DuckDB list aggregates for engines without DuckDB's list functions.
 
     DuckDB's ``LIST_SUM``, ``LIST_AVG``, ``LIST_TRANSFORM``, ``LIST_ZIP`` and ``LEN`` over a list
-    column have no spelling in Presto, Trino, Athena, BigQuery, Spark or Databricks. A bare
+    column have no spelling in Presto, Trino, Athena, BigQuery, Spark, Databricks or SQLite. A bare
     ``LIST_SUM(list)`` or ``LIST_AVG(list)``, and the zipped and mapped shape
     ``LIST_SUM(LIST_TRANSFORM(LIST_ZIP(a, b, ...), x -> f(x[1], x[2], ...)))`` (TPC-Havoc ``1_v7``),
     become:
@@ -855,6 +891,10 @@ def reduce_list_aggregates(expression: E, dialect: DialectType, copy: bool = Tru
       (three to five arrays), written in ``DOUBLE``.
     - Spark, Databricks: ``AGGREGATE`` over ``ZIP_WITH`` (arrays beyond the second are zipped into
       structs first), written in ``DOUBLE``.
+    - SQLite: the list is a JSON array (see ``order_list_aggregates``) and each fold is a scalar
+      ``(SELECT SUM(...) FROM JSON_EACH(...))`` subquery; zipped arrays are joined by their ``key``
+      position, so a shorter array reads ``NULL`` past its end. A bare ``LIST_ZIP`` has no
+      equivalent and is left alone.
     - BigQuery: a scalar ``(SELECT SUM(...) FROM UNNEST(...))`` subquery that reads the zipped arrays
       by ``SAFE_OFFSET`` over ``GENERATE_ARRAY(0, GREATEST(ARRAY_LENGTH(...)) - 1)``, keeping the
       column type.
@@ -866,7 +906,8 @@ def reduce_list_aggregates(expression: E, dialect: DialectType, copy: bool = Tru
     becomes ``ZIP_WITH``/``TRANSFORM(ZIP(...))`` (Presto family, Spark family) or an ordered
     ``ARRAY(SELECT ...)`` (BigQuery); a bare ``LIST_ZIP`` becomes ``ZIP`` or ``ARRAYS_ZIP`` (BigQuery has no
     equivalent and is left alone). ``LEN``/``LENGTH`` of a column that a ``LIST`` or ``ARRAY_AGG``
-    defines in a ``WITH`` or derived table becomes ``CARDINALITY``, ``SIZE`` or ``ARRAY_LENGTH``.
+    defines in a ``WITH`` or derived table becomes ``CARDINALITY``, ``SIZE``, ``ARRAY_LENGTH`` or
+    ``JSON_ARRAY_LENGTH`` (SQLite).
 
     Run ``order_list_aggregates`` first so every list a zip reads is built in the same order. Other
     dialects, and calls the rewrite does not recognise, are left alone. Arrays that are not plain
@@ -896,7 +937,12 @@ def reduce_list_aggregates(expression: E, dialect: DialectType, copy: bool = Tru
             node.replace(replacement)
 
     for length in lengths:
-        swap(length, exp.ArraySize(this=length.this.copy()))
+        swap(
+            length,
+            exp.Anonymous(this="JSON_ARRAY_LENGTH", expressions=[length.this.copy()])
+            if family == "sqlite"
+            else exp.ArraySize(this=length.this.copy()),
+        )
 
     def attached(node: exp.Expr) -> bool:
         while node.parent is not None:
@@ -929,7 +975,7 @@ def reduce_list_aggregates(expression: E, dialect: DialectType, copy: bool = Tru
                         if family == "bigquery"
                         else rewriter.array_value(mapped)
                     )
-            elif family != "bigquery" and _zip_arguments(node) is not None:
+            elif family in ("presto", "spark") and _zip_arguments(node) is not None:
                 name = "ZIP" if family == "presto" else "ARRAYS_ZIP"
                 replacement = exp.Anonymous(
                     this=name, expressions=[a.copy() for a in node.expressions]

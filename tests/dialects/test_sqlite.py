@@ -1538,3 +1538,97 @@ class TestSQLite(Validator):
                         ]
                 with self.subTest(dialect=dialect, query=query):
                     self.assertEqual(outputs["sqlite"], outputs["duckdb"])
+
+    def test_unpadded_date_literals_are_written_zero_padded(self):
+        for source, expected in (
+            ("CAST('1999-5-01' AS DATE)", "DATE('1999-05-01')"),
+            ("DATE '1999-5-1'", "DATE('1999-05-01')"),
+            ("CAST('99-12-3' AS DATE)", "DATE('0099-12-03')"),
+            ("CAST('1999-05-01' AS DATE)", "DATE('1999-05-01')"),
+            ("CAST(' 1999-5-1 ' AS DATE)", "DATE('1999-05-01')"),
+            ("CAST('1999-5-01' AS DATE) + INTERVAL '60' DAY", "DATE(DATE('1999-05-01'), '60 DAY')"),
+            ("CAST('1999-5-01' AS DATE) - INTERVAL '2' MONTH", "DATE('1999-05-01', '-2 month')"),
+            ("CAST('1999-5-1 3:04' AS TIMESTAMP)", "CAST('1999-05-01 03:04:00' AS TIMESTAMPNTZ)"),
+            (
+                "CAST('1999-5-1 3:04:05.25' AS TIMESTAMP)",
+                "CAST('1999-05-01 03:04:05.25' AS TIMESTAMPNTZ)",
+            ),
+            ("CAST('1999-5-1' AS TIMESTAMP)", "CAST('1999-05-01' AS TIMESTAMPNTZ)"),
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(
+                    parse_one(f"SELECT {source}", read="duckdb").sql("sqlite"),
+                    f"SELECT {expected}",
+                )
+
+    def test_invalid_date_literals_are_left_unchanged(self):
+        for literal in (
+            "1999-13-01",
+            "1999-2-30",
+            "0-1-1",
+            "1999-5",
+            "1999/5/1",
+            "May 1",
+            "1999-5-1x",
+        ):
+            with self.subTest(literal=literal):
+                self.assertEqual(
+                    parse_one(f"SELECT CAST('{literal}' AS DATE)", read="duckdb").sql("sqlite"),
+                    f"SELECT DATE('{literal}')",
+                )
+
+    def test_unpadded_literal_compared_with_a_date_column(self):
+        from sqlglot.benchbox.rewrites import mark_date_columns
+
+        marked = mark_date_columns(
+            parse_one(
+                "SELECT 1 FROM t WHERE d = '1999-2-1' AND d IN ('1999-2-1', 'x', '2000-1-1') "
+                "AND d BETWEEN '1999-2-1' AND '1999-12-3' AND '1999-2-1' < d AND d <> '1999-2-1' "
+                "AND other = '1999-2-1'",
+                read="duckdb",
+            ),
+            ["d"],
+        )
+        self.assertEqual(
+            marked.sql("sqlite"),
+            "SELECT 1 FROM t WHERE d = '1999-02-01' AND d IN ('1999-02-01', 'x', '2000-01-01') "
+            "AND d BETWEEN '1999-02-01' AND '1999-12-03' AND '1999-02-01' < d AND d <> '1999-02-01' "
+            "AND other = '1999-2-1'",
+        )
+        self.assertEqual(
+            parse_one("SELECT 1 FROM t WHERE d = '1999-2-1'", read="duckdb").sql("sqlite"),
+            "SELECT 1 FROM t WHERE d = '1999-2-1'",
+        )
+
+    def test_unpadded_date_literals_match_duckdb_execution(self):
+        from sqlglot.benchbox.rewrites import mark_date_columns
+
+        rows = ("1999-01-31", "1999-02-01", "1999-02-15", "1999-05-01", "1999-12-01", "2000-02-01")
+        queries = (
+            "SELECT COUNT(*) FROM t WHERE d BETWEEN CAST('1999-2-01' AS DATE) "
+            "AND CAST('1999-2-01' AS DATE) + INTERVAL '60' DAY",
+            "SELECT COUNT(*) FROM t WHERE d >= DATE '1999-2-1' AND d < DATE '1999-5-1'",
+            "SELECT COUNT(*) FROM t WHERE d = '1999-2-1'",
+            "SELECT COUNT(*) FROM t WHERE d IN ('1999-2-1', '1999-5-1', '2000-2-1')",
+            "SELECT COUNT(*) FROM t WHERE d BETWEEN '1999-2-1' AND '1999-5-1'",
+            "SELECT COUNT(*) FROM t WHERE d > '1999-2-1' AND d < '1999-12-1'",
+            "SELECT COUNT(*) FROM t WHERE d <= CAST('1999-12-1' AS DATE) - INTERVAL '1' MONTH",
+        )
+        for query in queries:
+            outputs = {}
+            for engine in ("sqlite", "duckdb"):
+                with engines.connect(engine) as connection:
+                    column = "TEXT" if engine == "sqlite" else "DATE"
+                    connection.execute(f"CREATE TABLE t (d {column})")
+                    for row in rows:
+                        connection.execute(f"INSERT INTO t VALUES ('{row}')")
+                    tree = mark_date_columns(parse_one(query, read="duckdb"), ["d"])
+                    outputs[engine] = [
+                        tuple(row)
+                        for row in connection.execute(
+                            tree.sql(engine, unsupported_level=ErrorLevel.RAISE)
+                        )
+                    ]
+            with self.subTest(query=query):
+                self.assertEqual(outputs["sqlite"], outputs["duckdb"])
+                self.assertGreater(outputs["duckdb"][0][0], 0)
