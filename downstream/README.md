@@ -197,8 +197,9 @@ every gate (which columns, which alias, which keys) to the caller and returns a 
 - `order_list_aggregates(expression, order_by, dialect)` turns `LIST(x)` and unordered `ARRAY_AGG(x)`
   into `ARRAY_AGG(x ORDER BY keys)`, on Spark, Spark 2 and Databricks into
   `TRANSFORM(SORT_ARRAY(COLLECT_LIST(STRUCT(keys..., x AS _v))), r -> r._v)`, or on SQLite into the JSON array
-  `JSON_GROUP_ARRAY(x ORDER BY keys)` (an ordered aggregate needs SQLite 3.44); `dialect` picks the NULL ordering
-  that needs no clause.
+  `JSON_GROUP_ARRAY(x)` (SQLite steps every aggregate of a `GROUP BY` query over the same rows in the same order, so
+  the lists align; an ordered aggregate needs SQLite 3.44, so `order_by` is not applied); `dialect` picks the NULL
+  ordering that needs no clause.
 - `reduce_list_aggregates(expression, dialect)` rewrites DuckDB's list functions for `presto`, `trino`, `athena`,
   `bigquery`, `spark`, `databricks` and `sqlite` (other dialects are returned unchanged). `LIST_SUM(list)` and `LIST_AVG(list)`,
   alone or over `LIST_TRANSFORM(LIST_ZIP(a, b, ...), x -> f(x[1], x[2], ...))` (TPC-Havoc `1_v7`), become `REDUCE`

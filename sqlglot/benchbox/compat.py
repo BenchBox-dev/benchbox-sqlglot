@@ -509,7 +509,9 @@ def order_list_aggregates(
     ``TRANSFORM(SORT_ARRAY(COLLECT_LIST(STRUCT(key AS _k0, ..., x AS _v))), r -> r._v)``, which sorts
     by the keys and keeps NULL elements, as ``ARRAY_AGG`` does. An ``ARRAY_AGG`` that already orders
     is left alone. SQLite has no arrays, so the list is built as a JSON array,
-    ``JSON_GROUP_ARRAY(x ORDER BY key, ...)`` (an ordered aggregate needs SQLite 3.44 or later).
+    ``JSON_GROUP_ARRAY(x)``; SQLite steps every aggregate of a ``GROUP BY`` query over the same rows in
+    the same order, so lists built together align, and ``order_by`` is not applied (an ordered aggregate
+    needs SQLite 3.44).
 
     Args:
         expression: the expression to rewrite.
@@ -541,7 +543,7 @@ def order_list_aggregates(
             ],
         )
         if isinstance(resolved, SQLite):
-            replacement = exp.JSONArrayAgg(this=ordering)
+            replacement = exp.JSONArrayAgg(this=value.copy())
         elif isinstance(resolved, Spark2):
             fields = [f"{key} AS _k{i}" for i, key in enumerate(order_by)]
             fields.append(f"{value.sql(dialect)} AS _v")
@@ -811,7 +813,11 @@ class _ListRewriter:
             source = f"(SELECT key AS {position}, {columns} FROM ({rows}) AS {union} GROUP BY key) AS {zipped}"
             order = f"{zipped}.{position}"
         if aggregate is None:
-            sql = f"(SELECT JSON_GROUP_ARRAY(__body ORDER BY {order}) FROM {source})"
+            row = self.fresh("_r")
+            sql = (
+                f"(SELECT JSON_GROUP_ARRAY({row}) FROM "
+                f"(SELECT __body AS {row} FROM {source} ORDER BY {order}))"
+            )
         else:
             sql = f"(SELECT {aggregate}(__body) FROM {source})"
         return _build(sql, self.dialect, **parts)
