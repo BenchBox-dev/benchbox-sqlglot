@@ -1052,7 +1052,7 @@
     },
     {
       "id": "sqlite-empty-group-by",
-      "source": "AMEND",
+      "source": "329cb733961942c521bdd44adc3f7c58fec15837",
       "status": "carried",
       "upstream_state": "not_offered",
       "upstream_reason": "SQLite generator flag value with no BenchBox-specific behavior; a candidate once empty-group-by-generator is offered.",
