@@ -326,6 +326,28 @@ class TestGeneratorsOnSQLite(GeneratorsOnEngine, unittest.TestCase):
         with self.assertRaises(Exception):
             engines.execute("sqlite", GLOBAL_AGGREGATE_SQL.format(rows=ROWS, bound=0))
 
+    def test_having_is_never_written_without_a_group_by(self):
+        for bound in (0, 100):
+            text = self.translated(GLOBAL_AGGREGATE_SQL.format(rows=ROWS, bound=bound))
+            self.assertNotIn("HAVING", text)
+            self.assertNotIn("GROUP BY", text)
+
+    def test_tpch_havoc_14_v2_shape(self):
+        sql = (
+            f"SELECT 100.00 * SUM(CASE WHEN k = 'a' THEN x * y ELSE 0 END) / SUM(x * y) AS promo "
+            f"FROM {ROWS} AS t WHERE y > 0 GROUP BY () HAVING SUM(x * y) > 0"
+        )
+        expected = (
+            values(engines.execute("duckdb", sql)) if engines.is_available("duckdb") else None
+        )
+        rows = values(engines.execute("sqlite", self.translated(sql)))
+        self.assertAlmostEqual(rows[0][0], 100.0 * 11 / 26, places=9)
+        if expected is not None:
+            self.assertAlmostEqual(rows[0][0], expected[0][0], places=9)
+        self.assertEqual(
+            engines.execute("sqlite", self.translated(sql.replace("y > 0", "y > 100"))), []
+        )
+
     def test_tpch_havoc_6_v2_shape(self):
         sql = (
             f"SELECT SUM(x * y) AS revenue FROM {ROWS} AS t WHERE y BETWEEN 1 AND 5 AND x < 24 "

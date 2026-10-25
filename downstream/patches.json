@@ -1052,7 +1052,7 @@
     },
     {
       "id": "sqlite-empty-group-by",
-      "source": "aec1c9070ba846ab79705d0479f714c19dbf9cc7",
+      "source": "AMEND",
       "status": "carried",
       "upstream_state": "not_offered",
       "upstream_reason": "SQLite generator flag value with no BenchBox-specific behavior; a candidate once empty-group-by-generator is offered.",
@@ -1067,7 +1067,7 @@
         "tests.test_benchbox_generators",
         "tests.test_benchbox_compat_engines"
       ],
-      "reason": "SQLite has no GROUP BY (): TPC-Havoc 6_v2 and 14_v2 (a global aggregate written GROUP BY () HAVING ...) failed with a syntax error near the closing parenthesis. The SQLite generator turns SUPPORTS_EMPTY_GROUP_BY off, so a global aggregate drops the clause and any other GROUP BY () warns as unsupported. Execution tests run the 6_v2 shape on sqlite3 and assert sqlite3 rejects the original.",
+      "reason": "SQLite has no GROUP BY (), and before 3.39 it rejects HAVING without a GROUP BY: TPC-Havoc 6_v2 and 14_v2 (a global aggregate written GROUP BY () HAVING ...) failed with a syntax error near the closing parenthesis. The SQLite generator turns SUPPORTS_EMPTY_GROUP_BY off, so a global aggregate drops the clause and any other GROUP BY () warns as unsupported, and a global aggregate with HAVING (and no ORDER BY, LIMIT, DISTINCT, window or star projection) is written as SELECT ... FROM (SELECT <projections>, <having> AS _having FROM ...) AS _global WHERE _having, which every SQLite version accepts and which keeps the empty-input row of a global aggregate for the HAVING to filter. Execution tests run the 6_v2 and 14_v2 shapes on sqlite3, assert no HAVING is written without a GROUP BY, and assert sqlite3 rejects the original.",
       "patch": "downstream/patches/sqlite-empty-group-by.patch"
     },
     {
