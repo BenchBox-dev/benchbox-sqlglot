@@ -22,9 +22,9 @@ from tests.engines import requires_engine
 
 ROWS = (
     "SELECT 1 AS id, 'a' AS g, 3 AS k, 10 AS v "
-    "UNION ALL SELECT 2, 'a', CAST(NULL AS INT), 20 "
+    "UNION ALL SELECT 2, 'a', NULL, 20 "
     "UNION ALL SELECT 3, 'b', 1, 30 "
-    "UNION ALL SELECT 4, 'b', CAST(NULL AS INT), 40 "
+    "UNION ALL SELECT 4, 'b', NULL, 40 "
     "UNION ALL SELECT 5, 'a', 2, 50 "
     "UNION ALL SELECT 6, 'b', 3, 60"
 )
@@ -73,7 +73,14 @@ SOURCES = {"netezza": LARGE, "duckdb": LAST, "clickhouse": LAST}
 
 
 def number(value):
-    if value is None or isinstance(value, str):
+    if isinstance(value, str):
+        if value in ("NULL", "\\N"):
+            return None
+        try:
+            value = float(value)
+        except ValueError:
+            return value
+    if value is None:
         return value
     as_float = float(value)
     return int(as_float) if as_float == int(as_float) else as_float
