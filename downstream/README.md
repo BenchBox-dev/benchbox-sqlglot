@@ -206,7 +206,7 @@ every gate (which columns, which alias, which keys) to the caller and returns a 
   over `ZIP_WITH` (arrays beyond the second are zipped into structs first) on Spark and Databricks; and a scalar
   `(SELECT SUM(...) FROM UNNEST(...))` that reads the zipped arrays by `SAFE_OFFSET` over
   `GENERATE_ARRAY(0, GREATEST(ARRAY_LENGTH(...)) - 1)` on BigQuery, and a scalar
-  `(SELECT SUM(...) FROM JSON_EACH(...))` that joins the zipped JSON arrays on their `key` position on SQLite. The `REDUCE`/`AGGREGATE` forms compute in `DOUBLE`
+  `(SELECT SUM(...) FROM JSON_EACH(...))` that aligns the zipped JSON arrays by their `key` position in one grouped pass on SQLite. The `REDUCE`/`AGGREGATE` forms compute in `DOUBLE`
   (BigQuery keeps the column type); `NULL` elements are skipped and an empty or all-`NULL` list gives `NULL`, as in
   DuckDB, and a shorter zipped array reads `NULL` past its end, as `LIST_ZIP` pads. A `LIST_TRANSFORM` over
   `LIST_ZIP` outside an aggregate becomes the same `ZIP_WITH` forms (an ordered `ARRAY(SELECT ...)` on BigQuery),

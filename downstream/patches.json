@@ -804,7 +804,7 @@
         "tests.test_benchbox_list_aggregates",
         "tests.test_benchbox_list_aggregates_engines"
       ],
-      "reason": "reduce_list_aggregates in compat.py (an original file of engine-compat-rewrites, so no patch is needed) rewrites DuckDB LIST_SUM, LIST_AVG, LIST_TRANSFORM over LIST_ZIP and LEN of a list column (TPC-Havoc 1_v7) for Presto, Trino, Athena (REDUCE over ZIP_WITH or TRANSFORM(ZIP)), Spark and Databricks (AGGREGATE over ZIP_WITH) BigQuery (UNNEST subselects over GENERATE_ARRAY with SAFE_OFFSET) and SQLite (JSON_GROUP_ARRAY lists read through JSON_EACH, joined by key position). Tests execute DuckDB against sqlite3 for SQLite, PySpark for Spark and Databricks and against Trino for the Presto family, with NULL elements, an all-NULL list and an uneven zip; BigQuery runs as its text transpiled to DuckDB (an engine gap) plus golden text."
+      "reason": "reduce_list_aggregates in compat.py (an original file of engine-compat-rewrites, so no patch is needed) rewrites DuckDB LIST_SUM, LIST_AVG, LIST_TRANSFORM over LIST_ZIP and LEN of a list column (TPC-Havoc 1_v7) for Presto, Trino, Athena (REDUCE over ZIP_WITH or TRANSFORM(ZIP)), Spark and Databricks (AGGREGATE over ZIP_WITH) BigQuery (UNNEST subselects over GENERATE_ARRAY with SAFE_OFFSET) and SQLite (JSON_GROUP_ARRAY lists read through JSON_EACH, aligned by key position in one grouped pass). Tests execute DuckDB against sqlite3 for SQLite, PySpark for Spark and Databricks and against Trino for the Presto family, with NULL elements, an all-NULL list and an uneven zip; BigQuery runs as its text transpiled to DuckDB (an engine gap) plus golden text."
     },
     {
       "id": "tpcds-runner-override-rewrites",

@@ -774,27 +774,42 @@ class _ListRewriter:
         return _build(sql, self.dialect, __m=array)
 
     def sqlite_select(self, mapped: _Mapped, aggregate: str | None) -> exp.Expr:
-        """``(SELECT agg(body) FROM JSON_EACH(...))``, or the mapped JSON array when ``aggregate`` is None."""
+        """``(SELECT agg(body) FROM JSON_EACH(...))``, or the mapped JSON array when ``aggregate`` is None.
+
+        Zipped arrays are aligned by position with one grouped pass over the union of their
+        ``JSON_EACH`` rows, so the cost is linear in the array length and a shorter array reads ``NULL``.
+        """
         arrays = mapped.arrays
         n = len(arrays)
         parts = self.parts(mapped)
-        items = [self.fresh(f"_j{i}") for i in range(n)]
-        if mapped.body is None:
-            parts["__body"] = _build(f"{items[0]}.value", self.dialect)
-        else:
-            parts["__body"] = mapped.substitute(lambda k: _build(f"{items[k]}.value", self.dialect))
         if n == 1:
-            source = f"JSON_EACH(__a0) AS {items[0]}"
-            order = f"{items[0]}.key"
-        else:
-            keys = self.fresh("_k")
-            union = " UNION ".join(f"SELECT key FROM JSON_EACH(__a{i})" for i in range(n))
-            joins = " ".join(
-                f"LEFT JOIN JSON_EACH(__a{i}) AS {items[i]} ON {items[i]}.key = {keys}.key"
-                for i in range(n)
+            item = self.fresh("_j0")
+            parts["__body"] = (
+                _build(f"{item}.value", self.dialect)
+                if mapped.body is None
+                else mapped.substitute(lambda _: _build(f"{item}.value", self.dialect))
             )
-            source = f"({union}) AS {keys} {joins}"
-            order = f"{keys}.key"
+            source = f"JSON_EACH(__a0) AS {item}"
+            order = f"{item}.key"
+        else:
+            zipped, source_id, union, position = (
+                self.fresh("_z"),
+                self.fresh("_s"),
+                self.fresh("_u"),
+                self.fresh("_pos"),
+            )
+            values = [self.fresh(f"_v{i}") for i in range(n)]
+            parts["__body"] = mapped.substitute(
+                lambda k: _build(f"{zipped}.{values[k]}", self.dialect)
+            )
+            rows = " UNION ALL ".join(
+                f"SELECT {i} AS {source_id}, key, value FROM JSON_EACH(__a{i})" for i in range(n)
+            )
+            columns = ", ".join(
+                f"MAX(CASE WHEN {source_id} = {i} THEN value END) AS {values[i]}" for i in range(n)
+            )
+            source = f"(SELECT key AS {position}, {columns} FROM ({rows}) AS {union} GROUP BY key) AS {zipped}"
+            order = f"{zipped}.{position}"
         if aggregate is None:
             sql = f"(SELECT JSON_GROUP_ARRAY(__body ORDER BY {order}) FROM {source})"
         else:
@@ -892,8 +907,8 @@ def reduce_list_aggregates(expression: E, dialect: DialectType, copy: bool = Tru
     - Spark, Databricks: ``AGGREGATE`` over ``ZIP_WITH`` (arrays beyond the second are zipped into
       structs first), written in ``DOUBLE``.
     - SQLite: the list is a JSON array (see ``order_list_aggregates``) and each fold is a scalar
-      ``(SELECT SUM(...) FROM JSON_EACH(...))`` subquery; zipped arrays are joined by their ``key``
-      position, so a shorter array reads ``NULL`` past its end. A bare ``LIST_ZIP`` has no
+      ``(SELECT SUM(...) FROM JSON_EACH(...))`` subquery; zipped arrays are aligned by their ``key``
+      position in one grouped pass, so a shorter array reads ``NULL`` past its end. A bare ``LIST_ZIP`` has no
       equivalent and is left alone.
     - BigQuery: a scalar ``(SELECT SUM(...) FROM UNNEST(...))`` subquery that reads the zipped arrays
       by ``SAFE_OFFSET`` over ``GENERATE_ARRAY(0, GREATEST(ARRAY_LENGTH(...)) - 1)``, keeping the
