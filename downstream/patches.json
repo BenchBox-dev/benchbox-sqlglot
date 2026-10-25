@@ -927,7 +927,7 @@
     },
     {
       "id": "benchbox-native-dialects",
-      "source": "6b213588b788c4f224650f66f1a90c9c5dd21a21",
+      "source": "d8ac5c95090e9b399e70de77c510c8f25cbdbb29",
       "status": "original",
       "depends": [
         "real-engine-ci"
@@ -942,7 +942,7 @@
     },
     {
       "id": "singlestore-json-integer-index",
-      "source": "be94d0c319aa8c7fd6a0e106bbf43d5a6a2621a1",
+      "source": "c0df323d7df95768e834bf169e1262c6f5379f55",
       "status": "carried",
       "upstream_state": "not_offered",
       "upstream_reason": "Not yet offered upstream; SingleStore has no engine in CI to verify the keypath form, so the evidence is the SingleStore keypath documentation and golden text.",
