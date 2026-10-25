@@ -1,0 +1,279 @@
+diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
+index 8b25799b..d6f96b0a 100644
+--- a/sqlglot/generators/sqlite.py
++++ b/sqlglot/generators/sqlite.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import datetime
+ import re
+ import typing as t
+ 
+@@ -41,6 +42,43 @@ TRUNC_FORMATS = {
+ }
+ 
+ 
++_DATE_TEXT = re.compile(r"(\d{1,4})-(\d{1,2})-(\d{1,2})")
++_TIMESTAMP_TEXT = re.compile(
++    r"(\d{1,4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2})(\.\d+)?)?"
++)
++
++
++def _canonical_date(text: str) -> str | None:
++    """``text`` as ``YYYY-MM-DD`` when it is a valid date written with unpadded fields, else ``None``."""
++    match = _DATE_TEXT.fullmatch(text.strip())
++    if not match:
++        return None
++    year, month, day = (int(part) for part in match.groups())
++    try:
++        datetime.date(year, month, day)
++    except ValueError:
++        return None
++    return f"{year:04d}-{month:02d}-{day:02d}"
++
++
++def _canonical_timestamp(text: str) -> str | None:
++    """``text`` as ``YYYY-MM-DD[ HH:MM:SS[.f]]`` when it is a valid date or timestamp, else ``None``."""
++    date = _canonical_date(text)
++    if date is not None:
++        return date
++    match = _TIMESTAMP_TEXT.fullmatch(text.strip())
++    if not match:
++        return None
++    year, month, day, hour, minute = (int(part) for part in match.groups()[:5])
++    second = int(match.group(6) or 0)
++    try:
++        datetime.datetime(year, month, day, hour, minute, second)
++    except ValueError:
++        return None
++    fraction = match.group(7) or ""
++    return f"{year:04d}-{month:02d}-{day:02d} {hour:02d}:{minute:02d}:{second:02d}{fraction}"
++
++
+ def _moments_sql(self: SQLiteGenerator, expression: exp.Expr) -> str:
+     if is_expandable(expression):
+         return self.sql(expand_moments(expression))
+@@ -187,7 +225,6 @@ class SQLiteGenerator(generator.Generator):
+         exp.CurrentTimestamp: lambda *_: "CURRENT_TIMESTAMP",
+         exp.CurrentVersion: lambda *_: "SQLITE_VERSION()",
+         exp.ColumnDef: transforms.preprocess([_generated_to_auto_increment]),
+-        exp.DateStrToDate: lambda self, e: self.sql(e, "this"),
+         exp.If: rename_func("IIF"),
+         exp.ILike: no_ilike_sql,
+         exp.JSONArrayAgg: unsupported_args("order", "null_handling", "return_type", "strict")(
+@@ -213,7 +250,6 @@ class SQLiteGenerator(generator.Generator):
+         ),
+         exp.StrPosition: lambda self, e: strposition_sql(self, e, func_name="INSTR"),
+         exp.TableSample: no_tablesample_sql,
+-        exp.TimeStrToTime: lambda self, e: self.sql(e, "this"),
+         exp.TimeToStr: lambda self, e: self.func("STRFTIME", e.args.get("format"), e.this),
+         exp.TryCast: no_trycast_sql,
+         exp.TsOrDsToTimestamp: lambda self, e: self.sql(e, "this"),
+@@ -459,7 +495,7 @@ class SQLiteGenerator(generator.Generator):
+             # SQLite carries an overflowing month end into the next month, while the
+             # source engines clamp it, so only inputs that cannot overflow are lowered:
+             # a NULL, or a literal whose day of month is at most 28.
+-            literal = date.this
++            literal = self._canonical_literal(date.this)
+             if isinstance(literal, exp.Null) or (
+                 isinstance(literal, exp.Literal)
+                 and literal.is_string
+@@ -542,33 +578,31 @@ class SQLiteGenerator(generator.Generator):
+                 node.replace(exp.Anonymous(this="DATETIME", expressions=[node.copy()]))
+ 
+     def eq_sql(self, expression: exp.EQ) -> str:
+-        self._align_dates_with_truncation(expression.this, expression.expression)
++        self._align_operands(expression.this, expression.expression)
+         return super().eq_sql(expression)
+ 
+     def neq_sql(self, expression: exp.NEQ) -> str:
+-        self._align_dates_with_truncation(expression.this, expression.expression)
++        self._align_operands(expression.this, expression.expression)
+         return super().neq_sql(expression)
+ 
+     def lt_sql(self, expression: exp.LT) -> str:
+-        self._align_dates_with_truncation(expression.this, expression.expression)
++        self._align_operands(expression.this, expression.expression)
+         return super().lt_sql(expression)
+ 
+     def lte_sql(self, expression: exp.LTE) -> str:
+-        self._align_dates_with_truncation(expression.this, expression.expression)
++        self._align_operands(expression.this, expression.expression)
+         return super().lte_sql(expression)
+ 
+     def gt_sql(self, expression: exp.GT) -> str:
+-        self._align_dates_with_truncation(expression.this, expression.expression)
++        self._align_operands(expression.this, expression.expression)
+         return super().gt_sql(expression)
+ 
+     def gte_sql(self, expression: exp.GTE) -> str:
+-        self._align_dates_with_truncation(expression.this, expression.expression)
++        self._align_operands(expression.this, expression.expression)
+         return super().gte_sql(expression)
+ 
+     def between_sql(self, expression: exp.Between) -> str:
+-        self._align_dates_with_truncation(
+-            expression.this, expression.args["low"], expression.args["high"]
+-        )
++        self._align_operands(expression.this, expression.args["low"], expression.args["high"])
+         return super().between_sql(expression)
+ 
+     def datetrunc_sql(self, expression: exp.DateTrunc) -> str:
+@@ -577,9 +611,54 @@ class SQLiteGenerator(generator.Generator):
+     def timestamptrunc_sql(self, expression: exp.TimestampTrunc) -> str:
+         return self._truncate_sql(expression)
+ 
++    @staticmethod
++    def _canonical_literal(node: exp.Expr, timestamp: bool = False) -> exp.Expr:
++        # SQLite parses date text only when every field is zero padded, so DATE('1999-5-01')
++        # is NULL and '1999-5-01' sorts after '1999-12-01'; the source engines read both.
++        # A string that is not a valid date is left for the engine to reject or ignore.
++        if isinstance(node, exp.Literal) and node.is_string:
++            canonical = (_canonical_timestamp if timestamp else _canonical_date)(node.name)
++            if canonical is not None and canonical != node.name:
++                return exp.Literal.string(canonical)
++        return node
++
++    def _align_date_literals(self, *operands: exp.Expr) -> None:
++        # The source engines coerce a string compared with a DATE to a date; SQLite compares
++        # the texts, so an unpadded literal must be written in the stored zero-padded form.
++        literals = [n for n in operands if isinstance(n, exp.Literal) and n.is_string]
++        if not literals:
++            return
++        if not any(
++            self._is_date(n) for n in operands if not any(n is literal for literal in literals)
++        ):
++            return
++        for literal in literals:
++            canonical = self._canonical_literal(literal)
++            if canonical is not literal:
++                literal.replace(canonical)
++
++    def _align_operands(self, *operands: exp.Expr) -> None:
++        self._align_date_literals(*operands)
++        self._align_dates_with_truncation(*operands)
++
++    def in_sql(self, expression: exp.In) -> str:
++        self._align_date_literals(expression.this, *expression.expressions)
++        return super().in_sql(expression)
++
++    def datestrtodate_sql(self, expression: exp.DateStrToDate) -> str:
++        return self.sql(self._canonical_literal(expression.this))
++
++    def timestrtotime_sql(self, expression: exp.TimeStrToTime) -> str:
++        return self.sql(self._canonical_literal(expression.this, timestamp=True))
++
+     def cast_sql(self, expression: exp.Cast, safe_prefix: str | None = None) -> str:
+         if expression.is_type("date"):
+-            return self.func("DATE", expression.this)
++            return self.func("DATE", self._canonical_literal(expression.this))
++        if expression.is_type(exp.DType.TIMESTAMP, exp.DType.TIMESTAMPNTZ, exp.DType.DATETIME):
++            canonical = self._canonical_literal(expression.this, timestamp=True)
++            if canonical is not expression.this:
++                expression = expression.copy()
++                expression.set("this", canonical)
+ 
+         return super().cast_sql(expression)
+ 
+diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
+index 1db6df18..f2ff3b13 100644
+--- a/tests/dialects/test_sqlite.py
++++ b/tests/dialects/test_sqlite.py
+@@ -1538,3 +1538,97 @@ class TestSQLite(Validator):
+                         ]
+                 with self.subTest(dialect=dialect, query=query):
+                     self.assertEqual(outputs["sqlite"], outputs["duckdb"])
++
++    def test_unpadded_date_literals_are_written_zero_padded(self):
++        for source, expected in (
++            ("CAST('1999-5-01' AS DATE)", "DATE('1999-05-01')"),
++            ("DATE '1999-5-1'", "DATE('1999-05-01')"),
++            ("CAST('99-12-3' AS DATE)", "DATE('0099-12-03')"),
++            ("CAST('1999-05-01' AS DATE)", "DATE('1999-05-01')"),
++            ("CAST(' 1999-5-1 ' AS DATE)", "DATE('1999-05-01')"),
++            ("CAST('1999-5-01' AS DATE) + INTERVAL '60' DAY", "DATE(DATE('1999-05-01'), '60 DAY')"),
++            ("CAST('1999-5-01' AS DATE) - INTERVAL '2' MONTH", "DATE('1999-05-01', '-2 month')"),
++            ("CAST('1999-5-1 3:04' AS TIMESTAMP)", "CAST('1999-05-01 03:04:00' AS TIMESTAMPNTZ)"),
++            (
++                "CAST('1999-5-1 3:04:05.25' AS TIMESTAMP)",
++                "CAST('1999-05-01 03:04:05.25' AS TIMESTAMPNTZ)",
++            ),
++            ("CAST('1999-5-1' AS TIMESTAMP)", "CAST('1999-05-01' AS TIMESTAMPNTZ)"),
++        ):
++            with self.subTest(source=source):
++                self.assertEqual(
++                    parse_one(f"SELECT {source}", read="duckdb").sql("sqlite"),
++                    f"SELECT {expected}",
++                )
++
++    def test_invalid_date_literals_are_left_unchanged(self):
++        for literal in (
++            "1999-13-01",
++            "1999-2-30",
++            "0-1-1",
++            "1999-5",
++            "1999/5/1",
++            "May 1",
++            "1999-5-1x",
++        ):
++            with self.subTest(literal=literal):
++                self.assertEqual(
++                    parse_one(f"SELECT CAST('{literal}' AS DATE)", read="duckdb").sql("sqlite"),
++                    f"SELECT DATE('{literal}')",
++                )
++
++    def test_unpadded_literal_compared_with_a_date_column(self):
++        from sqlglot.benchbox.rewrites import mark_date_columns
++
++        marked = mark_date_columns(
++            parse_one(
++                "SELECT 1 FROM t WHERE d = '1999-2-1' AND d IN ('1999-2-1', 'x', '2000-1-1') "
++                "AND d BETWEEN '1999-2-1' AND '1999-12-3' AND '1999-2-1' < d AND d <> '1999-2-1' "
++                "AND other = '1999-2-1'",
++                read="duckdb",
++            ),
++            ["d"],
++        )
++        self.assertEqual(
++            marked.sql("sqlite"),
++            "SELECT 1 FROM t WHERE d = '1999-02-01' AND d IN ('1999-02-01', 'x', '2000-01-01') "
++            "AND d BETWEEN '1999-02-01' AND '1999-12-03' AND '1999-02-01' < d AND d <> '1999-02-01' "
++            "AND other = '1999-2-1'",
++        )
++        self.assertEqual(
++            parse_one("SELECT 1 FROM t WHERE d = '1999-2-1'", read="duckdb").sql("sqlite"),
++            "SELECT 1 FROM t WHERE d = '1999-2-1'",
++        )
++
++    def test_unpadded_date_literals_match_duckdb_execution(self):
++        from sqlglot.benchbox.rewrites import mark_date_columns
++
++        rows = ("1999-01-31", "1999-02-01", "1999-02-15", "1999-05-01", "1999-12-01", "2000-02-01")
++        queries = (
++            "SELECT COUNT(*) FROM t WHERE d BETWEEN CAST('1999-2-01' AS DATE) "
++            "AND CAST('1999-2-01' AS DATE) + INTERVAL '60' DAY",
++            "SELECT COUNT(*) FROM t WHERE d >= DATE '1999-2-1' AND d < DATE '1999-5-1'",
++            "SELECT COUNT(*) FROM t WHERE d = '1999-2-1'",
++            "SELECT COUNT(*) FROM t WHERE d IN ('1999-2-1', '1999-5-1', '2000-2-1')",
++            "SELECT COUNT(*) FROM t WHERE d BETWEEN '1999-2-1' AND '1999-5-1'",
++            "SELECT COUNT(*) FROM t WHERE d > '1999-2-1' AND d < '1999-12-1'",
++            "SELECT COUNT(*) FROM t WHERE d <= CAST('1999-12-1' AS DATE) - INTERVAL '1' MONTH",
++        )
++        for query in queries:
++            outputs = {}
++            for engine in ("sqlite", "duckdb"):
++                with engines.connect(engine) as connection:
++                    column = "TEXT" if engine == "sqlite" else "DATE"
++                    connection.execute(f"CREATE TABLE t (d {column})")
++                    for row in rows:
++                        connection.execute(f"INSERT INTO t VALUES ('{row}')")
++                    tree = mark_date_columns(parse_one(query, read="duckdb"), ["d"])
++                    outputs[engine] = [
++                        tuple(row)
++                        for row in connection.execute(
++                            tree.sql(engine, unsupported_level=ErrorLevel.RAISE)
++                        )
++                    ]
++            with self.subTest(query=query):
++                self.assertEqual(outputs["sqlite"], outputs["duckdb"])
++                self.assertGreater(outputs["duckdb"][0][0], 0)
