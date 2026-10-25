@@ -100,7 +100,7 @@ jobs:
       - name: Engine package versions
         run: .venv/bin/python -m tests.engines versions
       - run: .venv/bin/python -m tests.engines wait trino 300
-      - run: .venv/bin/python -m unittest tests.test_engines tests.test_unpadded_date_literals_engines tests.test_benchbox_ddl_lakehouse.TestTrinoMemoryCatalog tests.test_netezza_exact_division_engines tests.test_benchbox_list_aggregates_engines -v
+      - run: .venv/bin/python -m unittest tests.test_engines tests.test_unpadded_date_literals_engines tests.test_benchbox_ddl_lakehouse.TestTrinoMemoryCatalog tests.test_netezza_exact_division_engines tests.test_benchbox_list_aggregates_engines tests.test_benchbox_native_dialects -v
 
   questdb:
     runs-on: ubuntu-latest
