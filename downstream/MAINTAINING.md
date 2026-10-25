@@ -142,8 +142,9 @@ or edit needs an entry in the same change.
 Every `carried` entry records where it stands with upstream:
 `upstream_state` is `not_offered` (no upstream PR yet), `offered` (an upstream
 PR or issue exists; `upstream` lists its links and the reason says where it
-stands) or `declined` (the fork does not intend to offer it, or upstream
-refused it), with a
+stands) or `declined` (the fork keeps it by design and does not intend to
+offer it, or upstream refused it; a refusal lists its issue or pull request in
+`upstream`), with a
 non-empty `upstream_reason`. Upstream links must be `tobymao/sqlglot` pull
 request or issue URLs. A retired patch becomes `upstreamed` and loses these
 fields; `upstreamed` and `excluded` entries keep their `upstream` links.
