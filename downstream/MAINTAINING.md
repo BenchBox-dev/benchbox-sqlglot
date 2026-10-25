@@ -217,7 +217,10 @@ constructs QuestDB rejects in a form it runs: comma joins become explicit joins,
 `x +/- INTERVAL 'n' DAY|MONTH|YEAR` becomes `DATEADD('d'|'M'|'y', +/-n, x)`,
 `SUBSTRING(x FROM a [FOR b])` becomes `SUBSTRING(x, a, b)` (the length of `x` when no
 length is given) and a CTE column list moves into the query's aliases. Each is proved
-by `tests/test_questdb_execution.py` on the `questdb` job's container.
+by `tests/test_questdb_execution.py` on the `questdb` job's container. Correlated
+`[NOT] EXISTS` and `IN (subquery)` conjuncts of a WHERE become joins to derived tables
+(distinct keys, or per-key `MIN`/`MAX` for one `<>` correlation), proved against DuckDB
+by `tests/test_questdb_subquery_lowering_execution.py`.
 
 The Netezza parser (`sqlglot/parsers/netezza.py`, an `original` file) reads `DATE('now' ...)`
 and `JULIANDAY` into portable date nodes, so no target generator needs to know the SQLite
