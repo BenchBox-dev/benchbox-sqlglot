@@ -1718,7 +1718,10 @@ class TestDialect(Validator):
             (
                 "trino",
                 "ARRAY_SORT(ARRAY_AGG(x ORDER BY y))",
-                ("ARRAY_SORT(ARRAY_AGG(x ORDER BY y))", f"ARRAY_SORT {unfoldable}"),
+                (
+                    "ARRAY_SORT(ARRAY_AGG(x ORDER BY CASE WHEN y IS NULL THEN 1 ELSE 0 END, y))",
+                    f"ARRAY_SORT {unfoldable}",
+                ),
             ),
             (
                 "",

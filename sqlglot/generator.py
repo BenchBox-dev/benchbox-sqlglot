@@ -305,6 +305,10 @@ class Generator:
     # such as window specifications, aggregate functions etc
     NULL_ORDERING_SUPPORTED: bool | None = True
 
+    # Whether a window ORDER BY accepts an expression, so that an unsupported NULLS FIRST/LAST
+    # can be simulated with a leading sort key
+    SUPPORTS_NULL_SORT_KEY_IN_WINDOW = True
+
     # Window functions that support NULLS FIRST/LAST
     WINDOW_FUNCS_WITH_NULL_ORDERING: t.ClassVar[tuple[type[exp.Expression], ...]] = ()
 
@@ -3295,6 +3299,42 @@ class Generator:
 
         return match
 
+    def _null_sort_target(self, expression: exp.Ordered, this: str) -> str:
+        resolved = self._resolve_ordered_for_null_ordering_simulation(expression)
+        return self.sql(resolved) if resolved is not None else this
+
+    def _null_sort_key(self, target: str, this: str, nulls_sort_change: str) -> str:
+        null_sort_order = " DESC" if nulls_sort_change == " NULLS FIRST" else ""
+        return f"CASE WHEN {target} IS NULL THEN 1 ELSE 0 END{null_sort_order}, {this}"
+
+    def _null_sort_key_fits_frame(self, spec: exp.WindowSpec) -> bool:
+        if spec.text("kind").upper() != "RANGE":
+            return True
+        return all(
+            isinstance(spec.args.get(bound), str) or spec.args.get(bound) is None
+            for bound in ("start", "end")
+        )
+
+    def _resolve_ordinal_for_null_ordering_simulation(
+        self, expression: exp.Ordered
+    ) -> exp.Expr | None:
+        order = expression.parent
+        select = order.parent if isinstance(order, exp.Order) else None
+        if not isinstance(select, exp.Select) or select.args.get("distinct"):
+            return None
+
+        position = expression.this.to_py() if expression.this.is_int else 0
+        projections = select.selects
+        if not 1 <= position <= len(projections) or any(
+            projection.find(exp.Star) for projection in projections
+        ):
+            return None
+
+        projection = projections[position - 1]
+        if projection.find(exp.Window):
+            return None
+        return projection.this if isinstance(projection, exp.Alias) else projection
+
     def ordered_sql(self, expression: exp.Ordered) -> str:
         desc = expression.args.get("desc")
         asc = not desc
@@ -3339,36 +3379,59 @@ class Generator:
                 isinstance(window_this, self.WINDOW_FUNCS_WITH_NULL_ORDERING)
                 and (not spec or spec.text("kind").upper() == "ROWS")
             ):
-                if window_this and spec:
+                if window_this and (
+                    not self.SUPPORTS_NULL_SORT_KEY_IN_WINDOW
+                    or (spec and not self._null_sort_key_fits_frame(spec))
+                ):
                     self.unsupported(
                         f"'{nulls_sort_change.strip()}' translation not supported in window function {window_this.sql_name()}"
                     )
                     nulls_sort_change = ""
-                elif self.NULL_ORDERING_SUPPORTED is False and (
-                    (asc and nulls_sort_change == " NULLS LAST")
-                    or (desc and nulls_sort_change == " NULLS FIRST")
+                elif window_this and (
+                    spec
+                    or self.NULL_ORDERING_SUPPORTED is None
+                    or isinstance(window_this, exp.AggFunc)
                 ):
-                    # BigQuery does not allow these ordering/nulls combinations when used under
-                    # an aggregation func or under a window containing one
-                    ancestor = expression.find_ancestor(exp.AggFunc, exp.Window, exp.Select)
-
-                    if isinstance(ancestor, exp.Window):
-                        ancestor = ancestor.this
-                    if isinstance(ancestor, exp.AggFunc):
-                        self.unsupported(
-                            f"'{nulls_sort_change.strip()}' translation not supported for aggregate function {ancestor.sql_name()} with {sort_order} sort order"
-                        )
-                        nulls_sort_change = ""
-                elif self.NULL_ORDERING_SUPPORTED is None:
                     if expression.this.is_int:
                         self.unsupported(
                             f"'{nulls_sort_change.strip()}' translation not supported with positional ordering"
                         )
                     elif not isinstance(expression.this, exp.Rand):
-                        resolved = self._resolve_ordered_for_null_ordering_simulation(expression)
-                        target = self.sql(resolved) if resolved is not None else this
-                        null_sort_order = " DESC" if nulls_sort_change == " NULLS FIRST" else ""
-                        this = f"CASE WHEN {target} IS NULL THEN 1 ELSE 0 END{null_sort_order}, {target}"
+                        target = self._null_sort_target(expression, this)
+                        this = self._null_sort_key(target, this, nulls_sort_change)
+                    nulls_sort_change = ""
+                elif self.NULL_ORDERING_SUPPORTED is False and (
+                    (asc and nulls_sort_change == " NULLS LAST")
+                    or (desc and nulls_sort_change == " NULLS FIRST")
+                ):
+                    ancestor = expression.find_ancestor(exp.AggFunc, exp.Window, exp.Select)
+
+                    if isinstance(ancestor, exp.AggFunc):
+                        order = expression.parent
+                        if isinstance(order, exp.Order) and not isinstance(
+                            order.this, exp.Distinct
+                        ):
+                            target = self._null_sort_target(expression, this)
+                            this = self._null_sort_key(target, this, nulls_sort_change)
+                        else:
+                            self.unsupported(
+                                f"'{nulls_sort_change.strip()}' translation not supported for aggregate function {ancestor.sql_name()} with {sort_order} sort order"
+                            )
+                        nulls_sort_change = ""
+                elif self.NULL_ORDERING_SUPPORTED is None:
+                    if expression.this.is_int:
+                        projection = self._resolve_ordinal_for_null_ordering_simulation(expression)
+                        if projection is None:
+                            self.unsupported(
+                                f"'{nulls_sort_change.strip()}' translation not supported with positional ordering"
+                            )
+                        else:
+                            this = self._null_sort_key(
+                                self.sql(projection), this, nulls_sort_change
+                            )
+                    elif not isinstance(expression.this, exp.Rand):
+                        target = self._null_sort_target(expression, this)
+                        this = self._null_sort_key(target, target, nulls_sort_change)
                     nulls_sort_change = ""
 
         with_fill = self.sql(expression, "with_fill")

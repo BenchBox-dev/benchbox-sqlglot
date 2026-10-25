@@ -41,7 +41,7 @@ jobs:
       - name: PySpark needs Java 17
         run: echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
       - run: .venv/bin/python -m tests.engines status
-      - run: .venv/bin/python -m unittest tests.test_engines tests.test_unpadded_date_literals_engines tests.test_platform_dialects_engines tests.test_benchbox_adapter_rewrites_engines tests.test_benchbox_compat_engines tests.test_benchbox_subqueries_engines tests.test_sqlite_idioms_execution tests.test_benchbox_row_sources_engines tests.test_regexp_replace_execution tests.test_benchbox_ddl tests.test_engine_rewrites_execution tests.test_benchbox_ddl_engines tests.test_benchbox_ddl_lakehouse tests.test_benchbox_ddl_parity tests.test_netezza_exact_division_engines tests.test_round_inputs_engines tests.test_benchbox_grouping_sets tests.test_benchbox_list_aggregates tests.test_benchbox_list_aggregates_engines tests.test_benchbox_runner_overrides tests.test_benchbox_runner_overrides_engines tests.dialects.test_sqlite -v
+      - run: .venv/bin/python -m unittest tests.test_engines tests.test_unpadded_date_literals_engines tests.test_platform_dialects_engines tests.test_benchbox_adapter_rewrites_engines tests.test_benchbox_compat_engines tests.test_benchbox_subqueries_engines tests.test_sqlite_idioms_execution tests.test_benchbox_row_sources_engines tests.test_regexp_replace_execution tests.test_benchbox_ddl tests.test_engine_rewrites_execution tests.test_benchbox_ddl_engines tests.test_benchbox_ddl_lakehouse tests.test_benchbox_ddl_parity tests.test_netezza_exact_division_engines tests.test_round_inputs_engines tests.test_benchbox_grouping_sets tests.test_benchbox_list_aggregates tests.test_benchbox_list_aggregates_engines tests.test_benchbox_runner_overrides tests.test_benchbox_runner_overrides_engines tests.dialects.test_sqlite tests.test_benchbox_null_ordering_engines -v
 
   postgres:
     runs-on: ubuntu-latest
@@ -74,7 +74,7 @@ jobs:
       - name: Engine package versions
         run: .venv/bin/python -m tests.engines versions
       - run: .venv/bin/python -m tests.engines wait postgres 120
-      - run: .venv/bin/python -m unittest tests.test_engines tests.test_unpadded_date_literals_engines tests.test_platform_dialects_engines tests.test_benchbox_adapter_rewrites_engines tests.test_benchbox_compat_engines tests.test_benchbox_subqueries_engines tests.test_sqlite_idioms_execution tests.test_benchbox_row_sources_engines tests.test_regexp_replace_execution tests.test_benchbox_ddl tests.test_benchbox_ddl_parity tests.test_netezza_exact_division_engines tests.test_round_inputs_engines tests.test_benchbox_runner_overrides_engines -v
+      - run: .venv/bin/python -m unittest tests.test_engines tests.test_unpadded_date_literals_engines tests.test_platform_dialects_engines tests.test_benchbox_adapter_rewrites_engines tests.test_benchbox_compat_engines tests.test_benchbox_subqueries_engines tests.test_sqlite_idioms_execution tests.test_benchbox_row_sources_engines tests.test_regexp_replace_execution tests.test_benchbox_ddl tests.test_benchbox_ddl_parity tests.test_netezza_exact_division_engines tests.test_round_inputs_engines tests.test_benchbox_runner_overrides_engines tests.test_benchbox_null_ordering_engines -v
 
   trino:
     runs-on: ubuntu-latest
@@ -100,7 +100,7 @@ jobs:
       - name: Engine package versions
         run: .venv/bin/python -m tests.engines versions
       - run: .venv/bin/python -m tests.engines wait trino 300
-      - run: .venv/bin/python -m unittest tests.test_engines tests.test_unpadded_date_literals_engines tests.test_benchbox_ddl_lakehouse.TestTrinoMemoryCatalog tests.test_netezza_exact_division_engines tests.test_benchbox_list_aggregates_engines tests.test_benchbox_native_dialects -v
+      - run: .venv/bin/python -m unittest tests.test_engines tests.test_unpadded_date_literals_engines tests.test_benchbox_ddl_lakehouse.TestTrinoMemoryCatalog tests.test_netezza_exact_division_engines tests.test_benchbox_list_aggregates_engines tests.test_benchbox_native_dialects tests.test_benchbox_null_ordering_engines -v
 
   questdb:
     runs-on: ubuntu-latest
@@ -126,7 +126,7 @@ jobs:
       - name: Engine package versions
         run: .venv/bin/python -m tests.engines versions
       - run: .venv/bin/python -m tests.engines wait questdb 180
-      - run: .venv/bin/python -m unittest tests.test_engines tests.test_unpadded_date_literals_engines tests.test_questdb_execution tests.test_benchbox_ddl_parity tests.test_netezza_exact_division_engines -v
+      - run: .venv/bin/python -m unittest tests.test_engines tests.test_unpadded_date_literals_engines tests.test_questdb_execution tests.test_benchbox_ddl_parity tests.test_netezza_exact_division_engines tests.test_benchbox_null_ordering_engines -v
 
   starrocks:
     runs-on: ubuntu-latest
@@ -149,7 +149,7 @@ jobs:
       - name: Engine package versions
         run: .venv/bin/python -m tests.engines versions
       - run: .venv/bin/python -m tests.engines wait starrocks 600
-      - run: .venv/bin/python -m unittest tests.test_engines tests.test_unpadded_date_literals_engines tests.test_sqlite_idioms_execution tests.test_benchbox_row_sources_engines tests.test_engine_rewrites_execution tests.test_benchbox_ddl_engines tests.test_netezza_exact_division_engines -v
+      - run: .venv/bin/python -m unittest tests.test_engines tests.test_unpadded_date_literals_engines tests.test_sqlite_idioms_execution tests.test_benchbox_row_sources_engines tests.test_engine_rewrites_execution tests.test_benchbox_ddl_engines tests.test_netezza_exact_division_engines tests.test_benchbox_null_ordering_engines -v
       - name: Container log
         if: failure()
         run: docker logs --tail 200 starrocks
@@ -177,7 +177,7 @@ jobs:
       - name: Engine package versions
         run: .venv/bin/python -m tests.engines versions
       - run: .venv/bin/python -m tests.engines wait doris 600
-      - run: .venv/bin/python -m unittest tests.test_engines tests.test_unpadded_date_literals_engines tests.test_sqlite_idioms_execution tests.test_benchbox_row_sources_engines tests.test_engine_rewrites_execution tests.test_benchbox_ddl_engines tests.test_netezza_exact_division_engines -v
+      - run: .venv/bin/python -m unittest tests.test_engines tests.test_unpadded_date_literals_engines tests.test_sqlite_idioms_execution tests.test_benchbox_row_sources_engines tests.test_engine_rewrites_execution tests.test_benchbox_ddl_engines tests.test_netezza_exact_division_engines tests.test_benchbox_null_ordering_engines -v
       - name: Container log
         if: failure()
         run: docker logs --tail 200 doris
