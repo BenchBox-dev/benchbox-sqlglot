@@ -122,12 +122,17 @@ def _decorrelate_subqueries(expression: exp.Expr) -> exp.Expr:
         outer.add(_table_ref(join.this))
 
     conjuncts = _flatten_and(where.this)
+    occupied = {identifier.name.lower() for identifier in expression.find_all(exp.Identifier)}
     new_joins: list[exp.Join] = []
     rewritten: list[exp.Expr] = []
     for conjunct in conjuncts:
         negated = isinstance(conjunct, exp.Not) and isinstance(conjunct.this, exp.Exists)
         exists = conjunct.this if negated else conjunct
         number = len(new_joins) + 1
+        while any(
+            name.startswith((f"_qx_exists_{number}", f"_qx_in_{number}")) for name in occupied
+        ):
+            number += 1
         if isinstance(exists, exp.Exists):
             lowered = _lower_exists(exists, negated, outer, f"_qx_exists_{number}")
         elif isinstance(conjunct, exp.In):
@@ -139,6 +144,7 @@ def _decorrelate_subqueries(expression: exp.Expr) -> exp.Expr:
             continue
         join, predicate = lowered
         new_joins.append(join)
+        occupied.add(join.this.alias.lower())
         if predicate is not None:
             rewritten.append(predicate)
 

@@ -164,6 +164,20 @@ class TestQuestDB(Validator):
             read={"postgres": "SELECT 1 FROM t WHERE t.k IN (SELECT r.k FROM r WHERE r.v > 1)"},
         )
 
+    def test_subquery_aliases_do_not_collide(self):
+        self.validate_all(
+            "SELECT 1 FROM t AS _qx_exists_1 JOIN "
+            "(SELECT DISTINCT r.k AS _qx_exists_2_k0 FROM r WHERE NOT r.k IS NULL) "
+            "AS _qx_exists_2 ON _qx_exists_1.k = _qx_exists_2._qx_exists_2_k0 JOIN "
+            "(SELECT DISTINCT r.k AS _qx_exists_3_k0 FROM r WHERE NOT r.k IS NULL) "
+            "AS _qx_exists_3 ON _qx_exists_1.k = _qx_exists_3._qx_exists_3_k0",
+            read={
+                "postgres": "SELECT 1 FROM t AS _qx_exists_1 WHERE "
+                "EXISTS(SELECT 1 FROM r WHERE _qx_exists_1.k = r.k) AND "
+                "EXISTS(SELECT 1 FROM r WHERE _qx_exists_1.k = r.k)"
+            },
+        )
+
     def test_subqueries_that_are_not_lowered(self):
         for sql in (
             "SELECT 1 FROM t WHERE NOT EXISTS(SELECT * FROM r WHERE t.k = r.k AND t.w <> r.w)",
