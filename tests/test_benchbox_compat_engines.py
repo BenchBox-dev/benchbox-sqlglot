@@ -328,9 +328,9 @@ class TestGeneratorsOnSQLite(GeneratorsOnEngine, unittest.TestCase):
 
     def test_tpch_havoc_6_v2_shape(self):
         sql = (
-            "SELECT SUM(x * y) AS revenue FROM {rows} AS t WHERE y BETWEEN 1 AND 5 AND x < 24 "
+            f"SELECT SUM(x * y) AS revenue FROM {ROWS} AS t WHERE y BETWEEN 1 AND 5 AND x < 24 "
             "GROUP BY () HAVING SUM(x * y) IS NOT NULL"
-        ).format(rows=ROWS)
+        )
         self.assertEqual(values(engines.execute("sqlite", self.translated(sql))), [(26,)])
 
 

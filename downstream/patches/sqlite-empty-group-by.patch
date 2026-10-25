@@ -1,0 +1,12 @@
+diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
+index d6f96b0a..861dfd29 100644
+--- a/sqlglot/generators/sqlite.py
++++ b/sqlglot/generators/sqlite.py
+@@ -164,6 +164,7 @@ def _offset_to_limit(expression: exp.Expr) -> exp.Expr:
+ 
+ 
+ class SQLiteGenerator(generator.Generator):
++    SUPPORTS_EMPTY_GROUP_BY = False
+     SELECT_KINDS: tuple[str, ...] = ()
+     TRY_SUPPORTED = False
+     SUPPORTS_UESCAPE = False

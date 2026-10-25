@@ -1049,8 +1049,8 @@ def _push_down_list_folds(expression: E) -> E:
             if key not in added:
                 added[key] = fresh(f"_fold{len(added)}")
                 select.select(exp.alias_(folded, added[key]), copy=False)
-            array = mapped.arrays[0]
-            node.replace(exp.column(added[key], table=array.table or None))
+            first = t.cast(exp.Column, mapped.arrays[0])
+            node.replace(exp.column(added[key], table=first.table or None))
     return expression
 
 

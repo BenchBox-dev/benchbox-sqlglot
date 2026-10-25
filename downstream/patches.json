@@ -569,7 +569,7 @@
         "tests.test_benchbox_generators",
         "tests.test_benchbox_compat_engines"
       ],
-      "reason": "Engine-compatibility rewrites in sqlglot.benchbox.compat (alias inlining, column qualification by name, one-row sources for FROM-less selects, FILTER removal for BigQuery, ClickHouse and others, literal-subquery naming and VALUES, grouped scalar subqueries, ordered list aggregates) with every gate an argument, the DataFusion generator that drops an unsupported GROUP BY (), and execution tests on Postgres, DuckDB, DataFusion, PySpark and chDB."
+      "reason": "Engine-compatibility rewrites in sqlglot.benchbox.compat (alias inlining, column qualification by name, one-row sources for FROM-less selects, FILTER removal for BigQuery, ClickHouse and others, literal-subquery naming and VALUES, grouped scalar subqueries, ordered list aggregates) with every gate an argument, the DataFusion generator that drops an unsupported GROUP BY () (SQLite drops it through sqlite-empty-group-by), and execution tests on Postgres, DuckDB, DataFusion, PySpark and chDB."
     },
     {
       "id": "netezza-exact-division",
@@ -816,7 +816,7 @@
         "tests.test_benchbox_list_aggregates",
         "tests.test_benchbox_list_aggregates_engines"
       ],
-      "reason": "reduce_list_aggregates in compat.py (an original file of engine-compat-rewrites, so no patch is needed) rewrites DuckDB LIST_SUM, LIST_AVG, LIST_TRANSFORM over LIST_ZIP and LEN of a list column (TPC-Havoc 1_v7) for Presto, Trino, Athena (REDUCE over ZIP_WITH or TRANSFORM(ZIP)), Spark and Databricks (AGGREGATE over ZIP_WITH) BigQuery (UNNEST subselects over GENERATE_ARRAY with SAFE_OFFSET) and SQLite (JSON_GROUP_ARRAY lists read through JSON_EACH, aligned by key position in one grouped pass). Tests execute DuckDB against sqlite3 for SQLite, PySpark for Spark and Databricks and against Trino for the Presto family, with NULL elements, an all-NULL list and an uneven zip; BigQuery runs as its text transpiled to DuckDB (an engine gap) plus golden text."
+      "reason": "reduce_list_aggregates in compat.py (an original file of engine-compat-rewrites, so no patch is needed) rewrites DuckDB LIST_SUM, LIST_AVG, LIST_TRANSFORM over LIST_ZIP and LEN of a list column (TPC-Havoc 1_v7) for Presto, Trino, Athena (REDUCE over ZIP_WITH or TRANSFORM(ZIP)), Spark and Databricks (AGGREGATE over ZIP_WITH) BigQuery (UNNEST subselects over GENERATE_ARRAY with SAFE_OFFSET) SQLite (JSON_GROUP_ARRAY lists read through JSON_EACH, aligned by key position in one grouped pass), PostgreSQL (a scalar subquery over its zipping multi-argument UNNEST) and DataFusion (each fold becomes a SUM or AVG column of the query that builds the lists, because DataFusion has no array fold and no correlated UNNEST). Tests execute DuckDB against sqlite3 for SQLite, the PostgreSQL service for PostgreSQL, DataFusion for DataFusion, PySpark for Spark and Databricks and against Trino for the Presto family, with NULL elements, an all-NULL list and an uneven zip; BigQuery runs as its text transpiled to DuckDB (an engine gap) plus golden text."
     },
     {
       "id": "tpcds-runner-override-rewrites",
@@ -1049,6 +1049,43 @@
         "tests.test_benchbox_spark_translation_engines"
       ],
       "reason": "ClickBench Q29 and Q43 written for Databricks, as exact text and as rows on PySpark against DuckDB and a hand computation: a referrer dataset with four distinct hosts compares the grouped key values, and a timestamp dataset with five distinct minutes and four excluded rows compares the grouped minutes and counts."
+    },
+    {
+      "id": "sqlite-empty-group-by",
+      "source": "aec1c9070ba846ab79705d0479f714c19dbf9cc7",
+      "status": "carried",
+      "upstream_state": "not_offered",
+      "upstream_reason": "SQLite generator flag value with no BenchBox-specific behavior; a candidate once empty-group-by-generator is offered.",
+      "depends": [
+        "empty-group-by-generator",
+        "sqlite-date-literals"
+      ],
+      "paths": [
+        "sqlglot/generators/sqlite.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_generators",
+        "tests.test_benchbox_compat_engines"
+      ],
+      "reason": "SQLite has no GROUP BY (): TPC-Havoc 6_v2 and 14_v2 (a global aggregate written GROUP BY () HAVING ...) failed with a syntax error near the closing parenthesis. The SQLite generator turns SUPPORTS_EMPTY_GROUP_BY off, so a global aggregate drops the clause and any other GROUP BY () warns as unsupported. Execution tests run the 6_v2 shape on sqlite3 and assert sqlite3 rejects the original.",
+      "patch": "downstream/patches/sqlite-empty-group-by.patch"
+    },
+    {
+      "id": "obt-postgres-engines",
+      "source": "2f0674224dfb6101bd96e3e5ec5d48bf6e877db3",
+      "status": "original",
+      "depends": [
+        "real-engine-ci",
+        "benchbox-rewrites",
+        "engine-compat-rewrites"
+      ],
+      "paths": [
+        "tests/test_benchbox_obt_postgres_engines.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_obt_postgres_engines"
+      ],
+      "reason": "The TPC-DS one-big-table Q36 and Q2 shapes, written in DuckDB over DOUBLE columns, on PostgreSQL against DuckDB: the engine rejects an output alias inside an ORDER BY expression and ROUND(double precision, integer), and inline_order_by_aliases and round_inputs_to_decimal give DuckDB's rows."
     }
   ]
 }

@@ -79,9 +79,7 @@ def postgres(sql, *rewrites):
 
 
 def normalize(rows):
-    return [
-        tuple(float(v) if isinstance(v, (Decimal, float)) else v for v in row) for row in rows
-    ]
+    return [tuple(float(v) if isinstance(v, (Decimal, float)) else v for v in row) for row in rows]
 
 
 @requires_engine("duckdb")
