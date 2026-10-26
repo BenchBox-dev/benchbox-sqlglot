@@ -994,27 +994,6 @@
       "patch": "downstream/patches/null-ordering-source-semantics.patch"
     },
     {
-      "id": "sqlite-index-null-ordering",
-      "source": "dbf8811e8c48766a88c14665b0642ad060567dcd",
-      "status": "carried",
-      "upstream_state": "not_offered",
-      "upstream_reason": "SQLite CREATE INDEX null-ordering suppression keyed to the fork's null-ordering-source-semantics emission; a candidate once that entry is offered.",
-      "depends": [
-        "null-ordering-source-semantics"
-      ],
-      "paths": [
-        "sqlglot/generator.py",
-        "sqlglot/generators/sqlite.py",
-        "tests/dialects/test_sqlite.py"
-      ],
-      "tests": [
-        "tests.dialects.test_sqlite",
-        "tests.test_benchbox_null_ordering_engines"
-      ],
-      "reason": "SQLite's indexed-column grammar has no NULLS FIRST/LAST clause, so duckdb, netezza and postgres sources transpiled to SQLite emitted CREATE INDEX statements SQLite rejects (unsupported use of NULLS LAST), which broke the translated write-primitives DDL on SQLite. The base generator gains INDEX_NULL_ORDERING_SUPPORTED (default True, preserving every other target) and drops the clause inside index definitions where a target opts out; SQLite opts out. ORDER BY keeps the placement. Unit plus real-SQLite execution coverage.",
-      "patch": "downstream/patches/sqlite-index-null-ordering.patch"
-    },
-    {
       "id": "null-ordering-engines",
       "source": "7289d835a9d212d83fb9c23854e6a18ce8f88006",
       "status": "original",
@@ -1092,6 +1071,27 @@
       ],
       "reason": "SQLite has no GROUP BY (), and before 3.39 it rejects HAVING without a GROUP BY: TPC-Havoc 6_v2 and 14_v2 (a global aggregate written GROUP BY () HAVING ...) failed with a syntax error near the closing parenthesis. The SQLite generator turns SUPPORTS_EMPTY_GROUP_BY off, so a global aggregate drops the clause and any other GROUP BY () warns as unsupported, and a global aggregate with HAVING (and no ORDER BY, LIMIT, DISTINCT, window or star projection) is written as SELECT ... FROM (SELECT <projections>, <having> AS _having FROM ...) AS _global WHERE _having, which every SQLite version accepts and which keeps the empty-input row of a global aggregate for the HAVING to filter. Execution tests run the 6_v2 and 14_v2 shapes on sqlite3, assert no HAVING is written without a GROUP BY, and assert sqlite3 rejects the original.",
       "patch": "downstream/patches/sqlite-empty-group-by.patch"
+    },
+    {
+      "id": "sqlite-index-null-ordering",
+      "source": "dbf8811e8c48766a88c14665b0642ad060567dcd",
+      "status": "carried",
+      "upstream_state": "not_offered",
+      "upstream_reason": "SQLite CREATE INDEX null-ordering suppression keyed to the fork's null-ordering-source-semantics emission; a candidate once that entry is offered.",
+      "depends": [
+        "null-ordering-source-semantics"
+      ],
+      "paths": [
+        "sqlglot/generator.py",
+        "sqlglot/generators/sqlite.py",
+        "tests/dialects/test_sqlite.py"
+      ],
+      "tests": [
+        "tests.dialects.test_sqlite",
+        "tests.test_benchbox_null_ordering_engines"
+      ],
+      "reason": "SQLite's indexed-column grammar has no NULLS FIRST/LAST clause, so duckdb, netezza and postgres sources transpiled to SQLite emitted CREATE INDEX statements SQLite rejects (unsupported use of NULLS LAST), which broke the translated write-primitives DDL on SQLite. The base generator gains INDEX_NULL_ORDERING_SUPPORTED (default True, preserving every other target) and drops the clause inside index definitions where a target opts out; SQLite opts out. ORDER BY keeps the placement. Unit plus real-SQLite execution coverage.",
+      "patch": "downstream/patches/sqlite-index-null-ordering.patch"
     },
     {
       "id": "obt-postgres-engines",
