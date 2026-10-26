@@ -144,10 +144,13 @@ for _source in SOURCES:
 
 del _source, _name, _case
 
+
 class TestSQLiteIndexNullOrdering(unittest.TestCase):
     @requires_engine("sqlite")
     def test_duckdb_create_index_executes_on_sqlite(self):
-        ddl = sqlglot.transpile("CREATE INDEX idx_k ON t (k, v DESC)", read="duckdb", write="sqlite")[0]
+        ddl = sqlglot.transpile(
+            "CREATE INDEX idx_k ON t (k, v DESC)", read="duckdb", write="sqlite"
+        )[0]
         self.assertNotIn("NULLS", ddl)
         with engines.connect("sqlite") as connection:
             connection.execute("CREATE TABLE t (k INTEGER, v TEXT)")
