@@ -212,6 +212,9 @@ def _global_having_to_subquery(expression: exp.Expr) -> exp.Expr:
 
 class SQLiteGenerator(generator.Generator):
     SUPPORTS_EMPTY_GROUP_BY = False
+    # SQLite's indexed-column grammar (CREATE INDEX) has no NULLS FIRST/LAST
+    # clause, so index key definitions drop the null ordering ORDER BY keeps.
+    INDEX_NULL_ORDERING_SUPPORTED = False
     SELECT_KINDS: tuple[str, ...] = ()
     TRY_SUPPORTED = False
     SUPPORTS_UESCAPE = False

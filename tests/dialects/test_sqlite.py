@@ -1632,3 +1632,26 @@ class TestSQLite(Validator):
             with self.subTest(query=query):
                 self.assertEqual(outputs["sqlite"], outputs["duckdb"])
                 self.assertGreater(outputs["duckdb"][0][0], 0)
+
+    def test_create_index_drops_null_ordering(self):
+        for source in ("duckdb", "netezza", "postgres"):
+            with self.subTest(source=source):
+                self.assertEqual(
+                    parse_one("CREATE INDEX idx_a ON tbl (c1, c2 DESC)", read=source).sql("sqlite"),
+                    "CREATE INDEX idx_a ON tbl(c1, c2 DESC)",
+                )
+        self.assertEqual(
+            parse_one("SELECT a FROM t ORDER BY a", read="duckdb").sql("sqlite"),
+            "SELECT a FROM t ORDER BY a NULLS LAST",
+        )
+
+    @requires_engine("sqlite")
+    def test_create_index_without_null_ordering_executes(self):
+        ddl = parse_one("CREATE INDEX idx_a ON t (k, v DESC)", read="duckdb").sql("sqlite")
+        self.assertNotIn("NULLS", ddl)
+        with engines.connect("sqlite") as connection:
+            connection.execute("CREATE TABLE t (k INTEGER, v TEXT)")
+            connection.execute("INSERT INTO t VALUES (1, 'a'), (NULL, 'b'), (2, 'c')")
+            connection.execute(ddl)
+            (count,) = connection.execute("SELECT COUNT(*) FROM t")[0]
+        self.assertEqual(count, 3)

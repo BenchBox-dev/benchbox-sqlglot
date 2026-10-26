@@ -1073,6 +1073,27 @@
       "patch": "downstream/patches/sqlite-empty-group-by.patch"
     },
     {
+      "id": "sqlite-index-null-ordering",
+      "source": "dbf8811e8c48766a88c14665b0642ad060567dcd",
+      "status": "carried",
+      "upstream_state": "not_offered",
+      "upstream_reason": "SQLite CREATE INDEX null-ordering suppression keyed to the fork's null-ordering-source-semantics emission; a candidate once that entry is offered.",
+      "depends": [
+        "null-ordering-source-semantics"
+      ],
+      "paths": [
+        "sqlglot/generator.py",
+        "sqlglot/generators/sqlite.py",
+        "tests/dialects/test_sqlite.py"
+      ],
+      "tests": [
+        "tests.dialects.test_sqlite",
+        "tests.test_benchbox_null_ordering_engines"
+      ],
+      "reason": "SQLite's indexed-column grammar has no NULLS FIRST/LAST clause, so duckdb, netezza and postgres sources transpiled to SQLite emitted CREATE INDEX statements SQLite rejects (unsupported use of NULLS LAST), which broke the translated write-primitives DDL on SQLite. The base generator gains INDEX_NULL_ORDERING_SUPPORTED (default True, preserving every other target) and drops the clause inside index definitions where a target opts out; SQLite opts out. ORDER BY keeps the placement. Unit plus real-SQLite execution coverage.",
+      "patch": "downstream/patches/sqlite-index-null-ordering.patch"
+    },
+    {
       "id": "obt-postgres-engines",
       "source": "2f0674224dfb6101bd96e3e5ec5d48bf6e877db3",
       "status": "original",
