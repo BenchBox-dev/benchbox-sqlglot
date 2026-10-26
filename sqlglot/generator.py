@@ -305,6 +305,12 @@ class Generator:
     # such as window specifications, aggregate functions etc
     NULL_ORDERING_SUPPORTED: bool | None = True
 
+    # Whether explicit NULLS FIRST/LAST is supported in index key definitions
+    # (e.g. CREATE INDEX). SQLite's indexed-column grammar has no null-ordering
+    # clause, so targets without support drop it there even though ORDER BY
+    # keeps the placement.
+    INDEX_NULL_ORDERING_SUPPORTED: bool = True
+
     # Whether a window ORDER BY accepts an expression, so that an unsupported NULLS FIRST/LAST
     # can be simulated with a leading sort key
     SUPPORTS_NULL_SORT_KEY_IN_WINDOW = True
@@ -3359,6 +3365,10 @@ class Generator:
             and not nulls_are_last
         ):
             nulls_sort_change = " NULLS LAST"
+
+        if nulls_sort_change and not self.INDEX_NULL_ORDERING_SUPPORTED:
+            if expression.find_ancestor(exp.Index, exp.IndexParameters):
+                nulls_sort_change = ""
 
         # If the NULLS FIRST/LAST clause is unsupported, we add another sort key to simulate it
         if nulls_sort_change and not self.NULL_ORDERING_SUPPORTED:
