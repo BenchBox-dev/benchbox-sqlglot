@@ -1,3 +1,5 @@
 # The upstream optimizer tests of v30.25.0 execute DuckDB 2 semantics (joins on subqueries
-# that DuckDB 1.x cannot plan). The engine tests keep their own pins in engines-requirements.txt.
-duckdb>=2
+# that DuckDB 1.x cannot plan), and DuckDB 2 needs Python 3.11 or newer; those fixtures
+# declare execute_min_python 3.11. The engine tests keep their own pins in engines-requirements.txt.
+duckdb>=2; python_version >= '3.11'
+duckdb<2; python_version < '3.11'

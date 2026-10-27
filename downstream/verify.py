@@ -192,7 +192,15 @@ def verify(
         runtime(python, work)
         run([str(python), "-I", "-m", PACKAGE, "--version"], work)
         if full:
-            install(python, work, "duckdb>=2", "pandas", "pytz", "typing_extensions")
+            install(
+                python,
+                work,
+                "duckdb>=2; python_version >= '3.11'",
+                "duckdb<2; python_version < '3.11'",
+                "pandas",
+                "pytz",
+                "typing_extensions",
+            )
             stage_suite(ROOT, work, namespace=PACKAGE)
             env = {
                 **os.environ,
