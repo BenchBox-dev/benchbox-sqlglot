@@ -103,7 +103,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sqlglot-coexistence-fixture"
 version = "1.0"
-dependencies = ["sqlglot==30.24.0", "benchbox-sqlglot=={version}"]
+dependencies = ["sqlglot==30.25.0", "benchbox-sqlglot=={version}"]
 [project.entry-points."sqlglot.dialects"]
 upstreamfixture = "upstream_fixture:Fixture"
 [project.entry-points."benchbox._vendor.sqlglot.dialects"]
