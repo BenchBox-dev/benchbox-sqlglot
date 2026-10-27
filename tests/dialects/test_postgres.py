@@ -9,6 +9,37 @@ class TestPostgres(Validator):
     maxDiff = None
     dialect = "postgres"
 
+    def test_create_tablespace(self):
+        for sql in (
+            "CREATE TABLE t (a INT PRIMARY KEY) TABLESPACE pg_default",
+            "CREATE TABLE t (a INT) WITH (fillfactor=70) TABLESPACE pg_default",
+            "CREATE INDEX i ON t(a) TABLESPACE pg_default",
+            "CREATE MATERIALIZED VIEW mv TABLESPACE pg_default AS SELECT 1 AS a",
+            "CREATE TABLE t (a INT, CONSTRAINT pk PRIMARY KEY (a) USING INDEX TABLESPACE pg_default)",
+            "CREATE TABLE t (a INT, UNIQUE (a) USING INDEX TABLESPACE pg_default)",
+            "CREATE TABLE t (a INT PRIMARY KEY USING INDEX TABLESPACE pg_default)",
+            'CREATE TABLE t (a INT) TABLESPACE "pg_default"',
+            'CREATE INDEX i ON t(a) TABLESPACE "pg_default"',
+            'CREATE MATERIALIZED VIEW mv TABLESPACE "pg_default" AS SELECT 1 AS a',
+            'CREATE TABLE t (a INT PRIMARY KEY USING INDEX TABLESPACE "pg_default" DEFERRABLE INITIALLY DEFERRED)',
+            "CREATE TABLE t (a INT PRIMARY KEY WITH (fillfactor=70) USING INDEX TABLESPACE pg_default)",
+            'CREATE TABLE t (a INT UNIQUE USING INDEX TABLESPACE "pg_default" DEFERRABLE)',
+            "CREATE TABLE t (a INT UNIQUE NULLS NOT DISTINCT WITH (fillfactor=70) USING INDEX TABLESPACE pg_default)",
+            "CREATE TABLE t (a INT, b INT, PRIMARY KEY (a) INCLUDE (b) WITH (fillfactor=70) USING INDEX TABLESPACE pg_default DEFERRABLE)",
+            "CREATE TABLE t (a INT, b INT, CONSTRAINT uq UNIQUE (a) INCLUDE (b) WITH (fillfactor=70) USING INDEX TABLESPACE pg_default DEFERRABLE)",
+            'CREATE INDEX i ON t USING btree(a) INCLUDE (b) WITH (fillfactor=70) TABLESPACE "pg_default" WHERE a > 0',
+            "CREATE TABLE t (a INT4RANGE, EXCLUDE USING gist(a WITH &&) USING INDEX TABLESPACE pg_default WHERE (NOT a IS NULL))",
+            "CREATE TABLE t (a INT) USING heap TABLESPACE pg_default",
+            "CREATE TABLE t USING heap WITH (fillfactor=70) TABLESPACE pg_default AS SELECT 1 AS a WITH NO DATA",
+            "CREATE MATERIALIZED VIEW mv USING heap WITH (fillfactor=70) TABLESPACE pg_default AS SELECT 1 AS a",
+            "CREATE TEMPORARY TABLE t (a INT) USING heap WITH (fillfactor=70) ON COMMIT DELETE ROWS TABLESPACE pg_default",
+            "CREATE TEMPORARY TABLE t USING heap WITH (fillfactor=70) ON COMMIT PRESERVE ROWS TABLESPACE pg_default AS SELECT 1 AS a",
+            "CREATE TEMPORARY TABLE t ON COMMIT DELETE ROWS AS SELECT 1 AS a",
+        ):
+            with self.subTest(sql=sql):
+                create = self.validate_identity(sql).assert_is(exp.Create)
+                self.validate_identity(create.sql("postgres", pretty=True), sql)
+
     def test_is_precedence(self):
         for predicate in (
             "NULL IN (0)",
@@ -165,6 +196,23 @@ class TestPostgres(Validator):
         )
         self.validate_identity("SELECT ST_DISTANCE(gg1, gg2, FALSE) AS sphere_dist")
         self.validate_identity("SHA384(x)")
+        self.validate_all(
+            "SELECT SHA256(x)",
+            write={"duckdb": "SELECT UNHEX(SHA256(x))"},
+        )
+        for length in (256, 384, 512):
+            self.validate_all(
+                f"SELECT SHA{length}(x)",
+                write={"snowflake": f"SELECT SHA2_BINARY(x, {length})"},
+            )
+        self.validate_all(
+            "SELECT ENCODE(SHA256(x), 'hex')",
+            read={
+                "duckdb": "SELECT SHA256(x)",
+                "snowflake": "SELECT SHA2(x, 256)",
+                "spark": "SELECT SHA2(x, 256)",
+            },
+        )
         self.validate_identity("1.x", "1. AS x")
         self.validate_identity("|/ x", "SQRT(x)")
         self.validate_identity("||/ x", "CBRT(x)")
@@ -240,6 +288,8 @@ class TestPostgres(Validator):
         self.validate_identity("SELECT INTERVAL '2.5 MONTH'")
         self.validate_identity("SELECT INTERVAL '-10.75 MINUTE'")
         self.validate_identity("SELECT INTERVAL '0.123456789 SECOND'")
+        self.validate_identity("SELECT INTERVAL '1'' SECOND; SELECT 1; --'")
+        self.validate_identity("SELECT INTERVAL '1''; SELECT 1; --' DAY TO SECOND")
         self.validate_identity("SELECT date_col - INTERVAL '30' FROM t")
         self.validate_identity("SELECT date_col - INTERVAL '1' AS one_second_later")
         self.validate_identity(
@@ -1438,7 +1488,8 @@ FROM json_data, field_ids""",
             "INSERT INTO book (isbn, title) VALUES ($1, $2) ON CONFLICT(isbn) WHERE deleted_at IS NULL DO UPDATE SET title = EXCLUDED.title RETURNING id, isbn"
         )
         self.validate_identity(
-            "INSERT INTO newtable AS t(a, b, c) VALUES (1, 2, 3) ON CONFLICT(c) DO UPDATE SET a = t.a + 1 WHERE t.a < 1"
+            "INSERT INTO newtable AS t(a, b, c) VALUES (1, 2, 3) ON CONFLICT(c) DO UPDATE SET a = t.a + 1 WHERE t.a < 1",
+            "INSERT INTO newtable AS t (a, b, c) VALUES (1, 2, 3) ON CONFLICT(c) DO UPDATE SET a = t.a + 1 WHERE t.a < 1",
         )
         self.validate_identity(
             "INSERT INTO t (id, a) VALUES (1, FALSE) ON CONFLICT(id) DO UPDATE SET a = t.x OR t.y, b = t.x AND t.y WHERE t.id = 1 RETURNING a"
@@ -1898,6 +1949,10 @@ FROM json_data, field_ids""",
         self.validate_identity("SELECT U&'can''t'")
         self.validate_identity("SELECT U&'a''b''c'")
         self.validate_identity("SELECT U&'can''t !0061' UESCAPE '!' AS label")
+        self.validate_all(
+            "SELECT U&'d\\0061t\\0061', U&'d!+000061ta' UESCAPE '!', U&'a\\\\b', U&'\\D83D\\DE00'",
+            write={"duckdb": "SELECT 'data', 'data', 'a\\b', '\U0001f600'"},
+        )
 
         self.validate_all(
             "SELECT U&'Hello winter \\2603 !'",

@@ -3,7 +3,7 @@
 [`BenchBox-dev/benchbox-sqlglot`](https://github.com/BenchBox-dev/benchbox-sqlglot)
 is the maintained source fork of [SQLGlot](https://github.com/tobymao/sqlglot),
 licensed under the original MIT license. The fork targets SQL used
-by BenchBox. The base is upstream 30.24.0 plus the entries in
+by BenchBox. The base is upstream 30.25.0 plus the entries in
 `patches.json`: edits to upstream-owned files are carried patches (`fix: retain <ID>`
 commits), and `original` entries are limited to wholly new files.
 

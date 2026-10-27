@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index d6f96b0a..70ac59d6 100644
+index 20723966..18f23e9b 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
 @@ -163,7 +163,55 @@ def _offset_to_limit(expression: exp.Expr) -> exp.Expr:

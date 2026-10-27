@@ -1,10 +1,10 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index 19665536..37971340 100644
+index 29fa7b47..5fd58727 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
 @@ -402,6 +402,15 @@ class SQLiteGenerator(generator.Generator):
-         modifier = f"'{modifier} {unit.name}'" if unit else f"'{modifier}'"
-         return self.func("DATE", expression.this, modifier)
+         modifier = f"{modifier} {unit.name}" if unit else modifier
+         return self.func("DATE", expression.this, exp.Literal.string(modifier))
  
 +    def datesub_sql(self, expression: exp.DateSub) -> str:
 +        return self.dateadd_sql(
@@ -18,7 +18,7 @@ index 19665536..37971340 100644
      def _date_interval_sql(self, expression: exp.Add | exp.Sub) -> str | None:
          date, interval = expression.this, expression.expression
          if isinstance(expression, exp.Add) and isinstance(date, exp.Interval):
-@@ -514,7 +523,9 @@ class SQLiteGenerator(generator.Generator):
+@@ -518,7 +527,9 @@ class SQLiteGenerator(generator.Generator):
  
          sql = f"(JULIANDAY({self.sql(expression, 'this')}) - JULIANDAY({self.sql(expression, 'expression')}))"
  
@@ -30,10 +30,10 @@ index 19665536..37971340 100644
          elif unit == "YEAR":
              sql = f"{sql} / 365.0"
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index 818c2db0..5b376bbb 100644
+index 70bb581a..34a9e0b4 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
-@@ -1124,3 +1124,40 @@ class TestSQLite(Validator):
+@@ -1215,3 +1215,40 @@ class TestSQLite(Validator):
              "CREATE TRIGGER view_insert INSTEAD OF INSERT ON employee_view BEGIN INSERT INTO employees (id, name, department) VALUES (NEW.id, NEW.name, NEW.department) END",
              check_command_warning=True,
          )

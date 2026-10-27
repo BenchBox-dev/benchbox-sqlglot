@@ -13,6 +13,10 @@ from setuptools.command.build_ext import build_ext
 class TestSQLGlotC(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        version = mock.patch.dict(os.environ, {"SETUPTOOLS_SCM_PRETEND_VERSION": "0.0.0"})
+        version.start()
+        cls.addClassCleanup(version.stop)
+
         with (
             mock.patch("setuptools.setup"),
             mock.patch.dict(sys.modules, {"mypyc.build": mock.Mock(mypycify=lambda *a, **k: [])}),
@@ -28,17 +32,26 @@ class TestSQLGlotC(unittest.TestCase):
         self.root = Path(temporary.name)
         self.source = self.root / "sqlglot"
         self.source.mkdir()
-        self.command = self.build_ext(
-            Distribution(
+
+        # setuptools_scm's finalize hook reads pyproject.toml from the cwd; the repo root's
+        # [tool.setuptools_scm] would make it warn that the version is already set.
+        cwd = os.getcwd()
+        os.chdir(self.root)
+        try:
+            distribution = Distribution(
                 {
+                    "version": "0.0.0",
                     "ext_modules": [
                         Extension("sqlglot.optimizer.scope", ["scope.c"]),
                         Extension("sqlglot.optimizer.scope__mypyc", ["native.c"]),
                         Extension("standalone__mypyc", ["runtime.c"]),
-                    ]
+                    ],
                 }
             )
-        )
+        finally:
+            os.chdir(cwd)
+
+        self.command = self.build_ext(distribution)
         self.command.build_lib = str(self.root / "build" / "lib")
         self.command.ensure_finalized()
         for extension in self.command.extensions:

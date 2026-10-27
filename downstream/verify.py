@@ -103,7 +103,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sqlglot-coexistence-fixture"
 version = "1.0"
-dependencies = ["sqlglot==30.24.0", "benchbox-sqlglot=={version}"]
+dependencies = ["sqlglot==30.25.0", "benchbox-sqlglot=={version}"]
 [project.entry-points."sqlglot.dialects"]
 upstreamfixture = "upstream_fixture:Fixture"
 [project.entry-points."benchbox._vendor.sqlglot.dialects"]
@@ -192,7 +192,15 @@ def verify(
         runtime(python, work)
         run([str(python), "-I", "-m", PACKAGE, "--version"], work)
         if full:
-            install(python, work, "duckdb>=0.6,<2", "pandas", "pytz", "typing_extensions")
+            install(
+                python,
+                work,
+                "duckdb>=2; python_version >= '3.11'",
+                "duckdb<2; python_version < '3.11'",
+                "pandas",
+                "pytz",
+                "typing_extensions",
+            )
             stage_suite(ROOT, work, namespace=PACKAGE)
             env = {
                 **os.environ,

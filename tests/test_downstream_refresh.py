@@ -177,6 +177,46 @@ class TestDownstreamRefresh(unittest.TestCase):
             with self.assertRaises(ValueError):
                 candidate(root, "v1.2.0", directory / "candidate-two", "candidate-two", set())
 
+    def test_original_entries_sharing_a_path_each_keep_a_commit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            root = directory / "source"
+            root.mkdir()
+            self.command(root, "init", "-q", "-b", "main")
+            self.command(root, "config", "user.name", "Test Fixture")
+            self.command(root, "config", "user.email", "fixture@example.invalid")
+            (root / "base.py").write_text("BASE = 1\n")
+            self.commit(root, ["base.py"], "Record upstream base")
+            self.command(root, "tag", "v1.0.0")
+            base = git(root, "rev-parse", "HEAD")
+            (root / "shared.py").write_text("SHARED = 1\n")
+            self.commit(root, ["shared.py"], "Add shared module")
+            downstream = root / "downstream"
+            downstream.mkdir()
+            data = {
+                "schema": 1,
+                "version": "1.0.0.1",
+                "upstream": {"tag": "v1.0.0", "sha": base},
+                "patches": [
+                    {"id": "first", "status": "original", "depends": [], "paths": ["shared.py"]},
+                    {"id": "second", "status": "original", "depends": [], "paths": ["shared.py"]},
+                ],
+            }
+            (downstream / "patches.json").write_text(json.dumps(data))
+            self.commit(root, ["downstream/patches.json"], "Record downstream entries")
+            self.command(root, "switch", "-qc", "upstream", "v1.0.0")
+            (root / "other.py").write_text("OTHER = 1\n")
+            self.commit(root, ["other.py"], "Extend upstream runtime")
+            self.command(root, "tag", "v1.1.0")
+            self.command(root, "switch", "-q", "main")
+            first = directory / "candidate"
+            candidate(root, "v1.1.0", first, "candidate", set())
+            self.assertEqual(
+                git(first, "log", "--format=%s", "v1.1.0..HEAD").splitlines(),
+                ["feat: retain second", "feat: retain first"],
+            )
+            integrate(root, "v1.1.0", "candidate", directory / "integration", "integration", {})
+
     def test_normalized_series_reconstructs_current_source(self):
         root = Path(__file__).resolve().parents[1]
         data = json.loads((root / "downstream/patches.json").read_text())

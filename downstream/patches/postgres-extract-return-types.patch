@@ -13,10 +13,10 @@ index 62b5bc07..0b5da196 100644
  
  class GetExtract(Expression, Func):
 diff --git a/sqlglot/generators/postgres.py b/sqlglot/generators/postgres.py
-index bc7ffb9b..7d9c661a 100644
+index aae5153f..f4743e4b 100644
 --- a/sqlglot/generators/postgres.py
 +++ b/sqlglot/generators/postgres.py
-@@ -440,6 +440,15 @@ class PostgresGenerator(generator.Generator):
+@@ -460,6 +460,15 @@ class PostgresGenerator(generator.Generator):
              exp.Literal.string("hex"),
          )
  
@@ -33,10 +33,10 @@ index bc7ffb9b..7d9c661a 100644
          self.unsupported("Table comments are not supported in the CREATE statement")
          return ""
 diff --git a/sqlglot/optimizer/annotate_types.py b/sqlglot/optimizer/annotate_types.py
-index eb627b08..a2ddbb1e 100644
+index b0e402ce..cbd763b2 100644
 --- a/sqlglot/optimizer/annotate_types.py
 +++ b/sqlglot/optimizer/annotate_types.py
-@@ -1090,7 +1090,9 @@ class TypeAnnotator:
+@@ -1147,7 +1147,9 @@ class TypeAnnotator:
  
      def _annotate_extract(self, expression: exp.Extract) -> exp.Extract:
          part = expression.name
@@ -48,7 +48,7 @@ index eb627b08..a2ddbb1e 100644
          elif part == "DATE":
              self._set_type(expression, exp.DType.DATE)
 diff --git a/sqlglot/parsers/postgres.py b/sqlglot/parsers/postgres.py
-index e3429114..a61cbb54 100644
+index 008a1865..8295def1 100644
 --- a/sqlglot/parsers/postgres.py
 +++ b/sqlglot/parsers/postgres.py
 @@ -90,6 +90,7 @@ class PostgresParser(parser.Parser):
@@ -59,7 +59,7 @@ index e3429114..a61cbb54 100644
  
      # The one-byte "char" type is distinct from CHAR, and it can only be referenced by
      # quoting it: https://www.postgresql.org/docs/current/datatype-character.html
-@@ -326,6 +327,12 @@ class PostgresParser(parser.Parser):
+@@ -335,6 +336,12 @@ class PostgresParser(parser.Parser):
          self._match_text_seq("S")
          return self.expression(exp.Placeholder(this=this))
  
@@ -72,7 +72,7 @@ index e3429114..a61cbb54 100644
      def _parse_date_part(self) -> exp.Expr:
          part = self._parse_type()
          self._match(TokenType.COMMA)
-@@ -334,7 +341,11 @@ class PostgresParser(parser.Parser):
+@@ -343,7 +350,11 @@ class PostgresParser(parser.Parser):
          if part and isinstance(part, (exp.Column, exp.Literal)):
              part = exp.var(part.name.upper())
  
@@ -83,8 +83,8 @@ index e3429114..a61cbb54 100644
 +            )
 +        )
  
-     def _parse_unique_key(self) -> exp.Expr | None:
-         return None
+     def _parse_unique(self) -> exp.UniqueColumnConstraint:
+         return self.expression(
 diff --git a/sqlglot/parsers/redshift.py b/sqlglot/parsers/redshift.py
 index 5faade46..ad115971 100644
 --- a/sqlglot/parsers/redshift.py
@@ -99,10 +99,10 @@ index 5faade46..ad115971 100644
  
      FUNCTIONS = {
 diff --git a/tests/dialects/test_postgres.py b/tests/dialects/test_postgres.py
-index b70aa909..a6e1b56b 100644
+index 3f4d60ea..2b70e569 100644
 --- a/tests/dialects/test_postgres.py
 +++ b/tests/dialects/test_postgres.py
-@@ -114,6 +114,27 @@ class TestPostgres(Validator):
+@@ -145,6 +145,27 @@ class TestPostgres(Validator):
              if expression.args.get("returning"):
                  self.assertIsInstance(expression.args["returning"], exp.DataType)
  
@@ -130,7 +130,7 @@ index b70aa909..a6e1b56b 100644
      def test_postgres(self):
          expr = self.parse_one("SELECT * FROM r CROSS JOIN LATERAL UNNEST(ARRAY[1]) AS s(location)")
          unnest = expr.args["joins"][0].this.this
-@@ -337,11 +358,11 @@ class TestPostgres(Validator):
+@@ -387,11 +408,11 @@ class TestPostgres(Validator):
          )
          self.validate_identity(
              "SELECT DATE_PART('isodow'::varchar(6), current_date)",
@@ -144,7 +144,7 @@ index b70aa909..a6e1b56b 100644
          )
          self.validate_identity(
              "END WORK AND NO CHAIN",
-@@ -813,16 +834,16 @@ FROM json_data, field_ids""",
+@@ -863,16 +884,16 @@ FROM json_data, field_ids""",
          self.validate_all(
              "SELECT DATE_PART('minute', timestamp '2023-01-04 04:05:06.789')",
              write={

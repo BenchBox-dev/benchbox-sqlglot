@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index 95b6dcc7..e006f4b1 100644
+index b9399dff..b9dde8b7 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
 @@ -457,11 +457,47 @@ class SQLiteGenerator(generator.Generator):
@@ -101,10 +101,10 @@ index 95b6dcc7..e006f4b1 100644
          return self._truncate_sql(expression)
  
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index 0f826d8a..72ef6c0b 100644
+index 8ae85bd0..b9cbae06 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
-@@ -1348,3 +1348,141 @@ class TestSQLite(Validator):
+@@ -1439,3 +1439,141 @@ class TestSQLite(Validator):
              connection.execute("INSERT INTO ev VALUES ('1998-04-08 13:45:10')")
              sql = parse_one("SELECT DATE_TRUNC('day', ts) FROM ev", read="postgres").sql("sqlite")
              self.assertEqual(connection.execute(sql), [("1998-04-08 00:00:00",)])

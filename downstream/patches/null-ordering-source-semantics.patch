@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generator.py b/sqlglot/generator.py
-index e00b53f2..bd3b2223 100644
+index 41945db6..1cd0a3a9 100644
 --- a/sqlglot/generator.py
 +++ b/sqlglot/generator.py
 @@ -305,6 +305,10 @@ class Generator:
@@ -13,7 +13,7 @@ index e00b53f2..bd3b2223 100644
      # Window functions that support NULLS FIRST/LAST
      WINDOW_FUNCS_WITH_NULL_ORDERING: t.ClassVar[tuple[type[exp.Expression], ...]] = ()
  
-@@ -3295,6 +3299,42 @@ class Generator:
+@@ -3326,6 +3330,42 @@ class Generator:
  
          return match
  
@@ -56,7 +56,7 @@ index e00b53f2..bd3b2223 100644
      def ordered_sql(self, expression: exp.Ordered) -> str:
          desc = expression.args.get("desc")
          asc = not desc
-@@ -3339,36 +3379,59 @@ class Generator:
+@@ -3370,36 +3410,59 @@ class Generator:
                  isinstance(window_this, self.WINDOW_FUNCS_WITH_NULL_ORDERING)
                  and (not spec or spec.text("kind").upper() == "ROWS")
              ):
@@ -132,10 +132,10 @@ index e00b53f2..bd3b2223 100644
  
          with_fill = self.sql(expression, "with_fill")
 diff --git a/tests/dialects/test_bigquery.py b/tests/dialects/test_bigquery.py
-index c4376c02..ee4f6e86 100644
+index 77dae830..aebb6e56 100644
 --- a/tests/dialects/test_bigquery.py
 +++ b/tests/dialects/test_bigquery.py
-@@ -2997,29 +2997,56 @@ OPTIONS (
+@@ -3004,29 +3004,56 @@ OPTIONS (
          )
  
      def test_null_ordering(self):
@@ -203,7 +203,7 @@ index c4376c02..ee4f6e86 100644
          for func_call in (
              "FIRST_VALUE(col1)",
 diff --git a/tests/dialects/test_dialect.py b/tests/dialects/test_dialect.py
-index 75a5dcde..b6d256b8 100644
+index 83aca6c6..32eacf1a 100644
 --- a/tests/dialects/test_dialect.py
 +++ b/tests/dialects/test_dialect.py
 @@ -1175,7 +1175,7 @@ class TestDialect(Validator):
@@ -228,10 +228,10 @@ index 75a5dcde..b6d256b8 100644
              (
                  "",
 diff --git a/tests/dialects/test_duckdb.py b/tests/dialects/test_duckdb.py
-index d8c20b6c..52b29aee 100644
+index f8d0f1cf..d48391f5 100644
 --- a/tests/dialects/test_duckdb.py
 +++ b/tests/dialects/test_duckdb.py
-@@ -240,7 +240,7 @@ class TestDuckDB(Validator):
+@@ -486,7 +486,7 @@ class TestDuckDB(Validator):
          self.validate_all(
              "SELECT SUM(X) OVER (ORDER BY x)",
              write={
@@ -241,10 +241,10 @@ index d8c20b6c..52b29aee 100644
                  "mysql": "SELECT SUM(X) OVER (ORDER BY CASE WHEN x IS NULL THEN 1 ELSE 0 END, x)",
              },
 diff --git a/tests/dialects/test_mysql.py b/tests/dialects/test_mysql.py
-index 78b10c5f..f4df395d 100644
+index edfb57ec..bbccb45e 100644
 --- a/tests/dialects/test_mysql.py
 +++ b/tests/dialects/test_mysql.py
-@@ -2269,10 +2269,14 @@ COMMENT='客户账户表'"""
+@@ -2273,10 +2273,14 @@ COMMENT='客户账户表'"""
  
      def test_ignore_respect_nulls(self):
          self.validate_all(
@@ -260,7 +260,7 @@ index 78b10c5f..f4df395d 100644
              write={
                  "mysql": "SELECT FIRST_VALUE(col1) OVER (ORDER BY col2 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM table1",
                  "oracle": "SELECT FIRST_VALUE(col1) OVER (ORDER BY col2 NULLS FIRST ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM table1",
-@@ -2291,10 +2295,14 @@ COMMENT='客户账户表'"""
+@@ -2295,10 +2299,14 @@ COMMENT='客户账户表'"""
          )
  
          self.validate_all(

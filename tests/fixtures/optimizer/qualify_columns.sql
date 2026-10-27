@@ -212,6 +212,37 @@ SELECT 1 AS Z, C.Z + 1 AS W FROM (SELECT T.Z AS Z FROM T T) C;
 SELECT t.x FROM READ_PARQUET('path.parquet', hive_partition=1) AS t;
 SELECT t.x AS x FROM READ_PARQUET('path.parquet', hive_partition = 1) AS t;
 
+# dialect: duckdb
+SELECT r FROM range(3) AS r(range);
+SELECT r AS r FROM RANGE(0, 3) AS r(range);
+
+# dialect: duckdb
+SELECT r.range AS x FROM range(3) AS r ORDER BY SUM(x) OVER ();
+SELECT r.range AS x FROM RANGE(0, 3) AS r ORDER BY SUM(x) OVER ();
+
+# dialect: duckdb
+SELECT range + 1 AS range FROM range(3) AS r;
+SELECT r.range + 1 AS range FROM RANGE(0, 3) AS r;
+
+# dialect: duckdb
+SELECT range + 1 AS x FROM range(3) AS r(range) WHERE x > 1;
+SELECT r.range + 1 AS x FROM RANGE(0, 3) AS r(range) WHERE (r.range + 1) > 1;
+
+# dialect: duckdb
+# execute: false
+SELECT x, y + 1 FROM READ_PARQUET('data.parquet') AS r WHERE x > 0;
+SELECT r.x AS x, r.y + 1 AS _col_1 FROM READ_PARQUET('data.parquet') AS r WHERE r.x > 0;
+
+# dialect: duckdb
+# execute: false
+SELECT payload.field AS payload FROM READ_PARQUET('data.parquet') AS r;
+SELECT r.payload.field AS payload FROM READ_PARQUET('data.parquet') AS r;
+
+# dialect: duckdb
+# execute: false
+SELECT *, x FROM READ_PARQUET('data.parquet') AS r;
+SELECT *, r.x AS x FROM READ_PARQUET('data.parquet') AS r;
+
 # title: oracle WHERE column sharing a projection alias name is a source column
 # dialect: oracle
 # execute: false
@@ -1002,8 +1033,8 @@ SELECT c.f::VARCHAR(MAX) AS f, e AS e FROM a.b AS c, c.d AS e;
 SELECT CAST(c.f AS VARCHAR(MAX)) AS f, e AS e FROM a.b AS c, c.d AS e;
 
 # dialect: bigquery
-WITH cte AS (SELECT 1 AS col) SELECT * FROM cte LEFT JOIN UNNEST((SELECT ARRAY_AGG(DISTINCT x) AS agg FROM UNNEST([1]) AS x WHERE col = 1));
-WITH cte AS (SELECT 1 AS col) SELECT * FROM cte AS cte LEFT JOIN UNNEST((SELECT ARRAY_AGG(DISTINCT x) AS agg FROM UNNEST([1]) AS x WHERE cte.col = 1));
+WITH cte AS (SELECT 1 AS col) SELECT * FROM cte LEFT JOIN UNNEST((SELECT ARRAY_AGG(DISTINCT x) AS agg FROM UNNEST([1]) AS x WHERE col = 1)) AS unnested;
+WITH cte AS (SELECT 1 AS col) SELECT cte.col AS col, unnested AS unnested FROM cte AS cte LEFT JOIN UNNEST((SELECT ARRAY_AGG(DISTINCT x) AS agg FROM UNNEST([1]) AS x WHERE cte.col = 1)) AS unnested;
 
 # dialect: bigquery
 SELECT * FROM UNNEST(ARRAY<STRUCT<percentile STRING, value INT64, score FLOAT64>>[("p10", 1, 0.0)]);
@@ -1103,6 +1134,31 @@ WITH RECURSIVE t AS (SELECT 1 AS c UNION ALL SELECT t.c + 1 AS c FROM t AS t WHE
 # title: expand DISTINCT ON ordinals / projection names
 SELECT DISTINCT ON (new_col, b + 1, 1) t1.a AS new_col FROM x AS t1 ORDER BY new_col;
 SELECT DISTINCT ON (new_col, t1.b + 1, new_col) t1.a AS new_col FROM x AS t1 ORDER BY new_col;
+
+# title: ORDER BY matches original JSON keys
+# dialect: duckdb
+# execute: false
+# schema: {"t": {"k": "INT", "j": "JSON"}}
+SELECT k, ANY_VALUE(j.Foo) AS v FROM t GROUP BY k ORDER BY ANY_VALUE(j.Foo), ANY_VALUE(j.foo);
+SELECT t.k AS k, ANY_VALUE(t.j.foo) AS v FROM t AS t GROUP BY t.k ORDER BY v, ANY_VALUE(t.j.foo);
+
+# title: ORDER BY preserves BigQuery JSON key case
+# dialect: bigquery
+# execute: false
+# schema: {"t": {"k": "INT", "j": "JSON"}}
+SELECT k, ANY_VALUE(j.Foo) AS v FROM t GROUP BY k ORDER BY ANY_VALUE(j.Foo), ANY_VALUE(j.foo);
+SELECT t.k AS k, ANY_VALUE(t.j.`Foo`) AS v FROM t AS t GROUP BY k ORDER BY v, ANY_VALUE(t.j.`foo`);
+
+# title: DISTINCT ON distinguishes swapped JSON keys
+# dialect: duckdb
+# execute: false
+# schema: {"t": {"k": "INT", "j": "JSON"}}
+SELECT DISTINCT ON (ANY_VALUE(j.Foo || j.foo), ANY_VALUE(j.foo || j.Foo)) k, ANY_VALUE(j.Foo || j.foo) AS v FROM t GROUP BY k;
+SELECT DISTINCT ON (v, ANY_VALUE(t.j.foo || t.j.foo)) t.k AS k, ANY_VALUE(t.j.foo || t.j.foo) AS v FROM t AS t GROUP BY t.k;
+
+# title: ORDER BY aggregate argument shares the projection alias
+SELECT a, SUM(b) AS b FROM x GROUP BY a ORDER BY SUM(b);
+SELECT x.a AS a, SUM(x.b) AS b FROM x AS x GROUP BY x.a ORDER BY b;
 
 # title: qualify columns for Aggregate Functions and DISTINCT
 SELECT COALESCE(COUNT(DISTINCT a)) AS a FROM x;
@@ -1465,3 +1521,15 @@ SELECT X.$2 AS _COL_0 FROM UNKNOWN AS X(ALIAS_NAME);
 # execute: false
 SELECT * FROM y JOIN z USING (c, b);
 SELECT COALESCE(y.b, z.b) AS b, COALESCE(y.c, z.c) AS c FROM y AS y JOIN z AS z ON y.c = z.c AND y.b = z.b;
+
+# title: BigQuery unpivot row alias takes precedence over a same-named input column
+# dialect: bigquery
+# execute: false
+SELECT unp FROM (SELECT 7 AS unp, 1 AS a, 2 AS b) UNPIVOT(v FOR k IN (a, b)) AS unp;
+SELECT unp AS unp FROM (SELECT 7 AS unp, 1 AS a, 2 AS b) AS _0 UNPIVOT(v FOR k IN (_0.a, _0.b)) AS unp;
+
+# title: BigQuery pivot row alias resolves without a source schema
+# dialect: bigquery
+# execute: false
+SELECT ARRAY_AGG(piv) AS arr FROM unknown_table AS u PIVOT(SUM(u.v) FOR u.k IN (82 AS a)) AS piv;
+SELECT ARRAY_AGG(piv) AS arr FROM unknown_table AS u PIVOT(SUM(u.v) FOR u.k IN (82 AS a)) AS piv;

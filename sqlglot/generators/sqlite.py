@@ -510,8 +510,8 @@ class SQLiteGenerator(generator.Generator):
                 ),
             )
         modifier = modifier.name if modifier.is_string else self.sql(modifier)
-        modifier = f"'{modifier} {unit.name}'" if unit else f"'{modifier}'"
-        return self.func("DATE", expression.this, modifier)
+        modifier = f"{modifier} {unit.name}" if unit else modifier
+        return self.func("DATE", expression.this, exp.Literal.string(modifier))
 
     def datesub_sql(self, expression: exp.DateSub) -> str:
         return self.dateadd_sql(
@@ -706,11 +706,10 @@ class SQLiteGenerator(generator.Generator):
     def cast_sql(self, expression: exp.Cast, safe_prefix: str | None = None) -> str:
         if expression.is_type("date"):
             return self.func("DATE", self._canonical_literal(expression.this))
-        if expression.is_type(exp.DType.TIMESTAMP, exp.DType.TIMESTAMPNTZ, exp.DType.DATETIME):
-            canonical = self._canonical_literal(expression.this, timestamp=True)
-            if canonical is not expression.this:
-                expression = expression.copy()
-                expression.set("this", canonical)
+        if expression.is_type("datetime", "timestamp", "timestampntz"):
+            return self.func("DATETIME", self._canonical_literal(expression.this, timestamp=True))
+        if expression.is_type("time"):
+            return self.func("TIME", expression.this)
 
         return super().cast_sql(expression)
 

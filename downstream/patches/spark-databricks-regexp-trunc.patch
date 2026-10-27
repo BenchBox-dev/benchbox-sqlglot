@@ -77,10 +77,10 @@ index ddfef971..da1c9ff9 100644
                  [
                      transforms.eliminate_qualify,
 diff --git a/tests/dialects/test_databricks.py b/tests/dialects/test_databricks.py
-index ac0b8fd8..cd5fea46 100644
+index 11a5396d..072fcee5 100644
 --- a/tests/dialects/test_databricks.py
 +++ b/tests/dialects/test_databricks.py
-@@ -630,3 +630,26 @@ class TestDatabricks(Validator):
+@@ -649,3 +649,26 @@ class TestDatabricks(Validator):
          self.validate_identity("DECLARE x, y, z INT DEFAULT 1", "DECLARE x, y, z INT = 1")
          self.validate_identity("DECLARE x INT = 1")
          self.validate_identity("DECLARE OR REPLACE x INT = 1")
@@ -108,10 +108,10 @@ index ac0b8fd8..cd5fea46 100644
 +                    read={"clickhouse": f"DATE_TRUNC('{unit.lower()}', x)"},
 +                )
 diff --git a/tests/dialects/test_exasol.py b/tests/dialects/test_exasol.py
-index 23799e31..5b8314f6 100644
+index f150de65..3969834b 100644
 --- a/tests/dialects/test_exasol.py
 +++ b/tests/dialects/test_exasol.py
-@@ -553,7 +553,11 @@ class TestExasol(Validator):
+@@ -554,7 +554,11 @@ class TestExasol(Validator):
                      write={
                          "exasol": f"SELECT DATE_TRUNC('{unit}', DATE '2006-12-31') AS TRUNC",
                          "presto": f"SELECT DATE_TRUNC('{unit}', CAST('2006-12-31' AS DATE)) AS TRUNC",
@@ -125,10 +125,10 @@ index 23799e31..5b8314f6 100644
                  )
  
 diff --git a/tests/dialects/test_oracle.py b/tests/dialects/test_oracle.py
-index 6e7d55a7..2df4a62c 100644
+index 1c39d5a1..b990087c 100644
 --- a/tests/dialects/test_oracle.py
 +++ b/tests/dialects/test_oracle.py
-@@ -1154,7 +1154,11 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""
+@@ -1186,7 +1186,11 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""
                          "bigquery": f"DATE_TRUNC(CAST(x AS DATE), {unit})",
                          "duckdb": f"DATE_TRUNC('{unit}', CAST(x AS DATE))",
                          "tsql": f"DATE_TRUNC('{unit}', CAST(x AS DATE))",
@@ -141,7 +141,7 @@ index 6e7d55a7..2df4a62c 100644
                      },
                  )
  
-@@ -1169,7 +1173,11 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""
+@@ -1201,7 +1205,11 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""
                          "postgres": f"DATE_TRUNC('{unit}', CAST(x AS TIMESTAMP))",
                          "duckdb": f"DATE_TRUNC('{unit}', CAST(x AS TIMESTAMP))",
                          "tsql": f"DATE_TRUNC('{unit}', CAST(x AS DATETIME2))",

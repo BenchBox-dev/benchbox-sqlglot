@@ -78,7 +78,7 @@ def candidate(root: Path, tag: str, destination: Path, branch: str, retired: set
             if not patch_path.is_file():
                 raise ValueError(f"Missing normalized patch: {patch_path}")
             command(destination, "apply", "--3way", "--index", str(patch_path))
-        command(destination, "commit", "-m", subject(entry))
+        command(destination, "commit", "--allow-empty", "-m", subject(entry))
     print(
         f"Candidate source ready at {destination}; resolve any conflicts explicitly and run source checks"
     )

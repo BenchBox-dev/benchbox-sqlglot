@@ -422,6 +422,7 @@ class SnowflakeGenerator(generator.Generator):
     SELECT_KINDS: tuple[str, ...] = ()
     PARAMETER_TOKEN = "$"
     MATCHED_BY_SOURCE = False
+    MERGE_ALL_BY_NAME = True
     SINGLE_STRING_INTERVAL = True
     CAST_TO_INT_ROUNDS = True
     JOIN_HINTS = False
@@ -443,6 +444,8 @@ class SnowflakeGenerator(generator.Generator):
     SUPPORTS_MEDIAN = True
     ARRAY_SIZE_NAME = "ARRAY_SIZE"
     SUPPORTS_DECODE_CASE = True
+    ALTER_TABLE_INCLUDE_COLUMN_KEYWORD = False
+    ALTER_TABLE_ADD_COLUMNS_WRAPPED = False
 
     AFTER_HAVING_MODIFIER_TRANSFORMS = generator.AFTER_HAVING_MODIFIER_TRANSFORMS
 

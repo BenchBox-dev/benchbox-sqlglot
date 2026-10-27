@@ -344,6 +344,9 @@ class Generator:
     # Whether MERGE ... WHEN MATCHED/NOT MATCHED THEN UPDATE/INSERT ... WHERE is supported
     SUPPORTS_MERGE_WHERE = False
 
+    # Whether MERGE uses ALL BY NAME instead of a star to update or insert all columns
+    MERGE_ALL_BY_NAME = False
+
     # Whether the INTERVAL expression works only with values like '1 day'
     SINGLE_STRING_INTERVAL = False
 
@@ -386,6 +389,9 @@ class Generator:
 
     # Whether directed joins are supported
     DIRECTED_JOINS = False
+
+    # Whether top-k distance/similarity joins are supported
+    SUPPORTS_NEAREST_JOIN = False
 
     # Whether table hints should be generated
     TABLE_HINTS = True
@@ -431,8 +437,11 @@ class Generator:
     # SELECT * VALUES into SELECT UNION
     VALUES_AS_TABLE = True
 
-    # Whether the word COLUMN is included when adding a column with ALTER TABLE
+    # Whether COLUMN/COLUMNS keywords are included when adding columns with ALTER TABLE.
     ALTER_TABLE_INCLUDE_COLUMN_KEYWORD = True
+
+    # Whether ALTER TABLE mutli-column additions are wrapped in parentheses.
+    ALTER_TABLE_ADD_COLUMNS_WRAPPED = True
 
     # UNNEST WITH ORDINALITY (presto) instead of UNNEST WITH OFFSET (bigquery)
     UNNEST_WITH_ORDINALITY = True
@@ -1339,7 +1348,8 @@ class Generator:
             return f"PRIMARY KEY{' DESC' if desc else ' ASC'}"
         options = self.expressions(expression, key="options", flat=True, sep=" ")
         options = f" {options}" if options else ""
-        return f"PRIMARY KEY{options}"
+        include = self.sql(expression, "include")
+        return f"PRIMARY KEY{include}{options}"
 
     def uniquecolumnconstraint_sql(self, expression: exp.UniqueColumnConstraint) -> str:
         this = self.sql(expression, "this")
@@ -1351,7 +1361,8 @@ class Generator:
         nulls_sql = " NULLS NOT DISTINCT" if expression.args.get("nulls") else ""
         options = self.expressions(expression, key="options", flat=True, sep=" ")
         options = f" {options}" if options else ""
-        return f"UNIQUE{nulls_sql}{this}{index_type}{on_conflict}{options}"
+        include = self.sql(expression, "include")
+        return f"UNIQUE{nulls_sql}{this}{index_type}{on_conflict}{include}{options}"
 
     def inoutcolumnconstraint_sql(self, expression: exp.InOutColumnConstraint) -> str:
         input_ = expression.args.get("input_")
@@ -2048,7 +2059,9 @@ class Generator:
         with_storage = self.expressions(expression, key="with_storage", flat=True)
         with_storage = f" WITH ({with_storage})" if with_storage else ""
         tablespace = self.sql(expression, "tablespace")
-        tablespace = f" USING INDEX TABLESPACE {tablespace}" if tablespace else ""
+        if tablespace:
+            prefix = "" if isinstance(expression.parent, exp.Index) else " USING INDEX"
+            tablespace = f"{prefix} TABLESPACE {tablespace}"
         on = self.sql(expression, "on")
         on = f" ON {on}" if on else ""
 
@@ -2192,7 +2205,7 @@ class Generator:
     def property_name(self, expression: exp.Property, string_key: bool = False) -> str:
         if isinstance(expression.this, exp.Dot):
             return self.sql(expression, "this")
-        return f"'{expression.name}'" if string_key else expression.name
+        return self.sql(exp.Literal.string(expression.name)) if string_key else expression.name
 
     def property_sql(self, expression: exp.Property) -> str:
         property_cls = expression.__class__
@@ -2959,6 +2972,12 @@ class Generator:
         this = self.indent(self.sql(expression, "this"))
         return f"{self.seg('HAVING')}{self.sep()}{this}"
 
+    def connectto_sql(self, expression: exp.ConnectTo) -> str:
+        return f"CONNECT {self.sql(expression, 'this')}"
+
+    def disconnect_sql(self, expression: exp.Disconnect) -> str:
+        return "DISCONNECT"
+
     def connect_sql(self, expression: exp.Connect) -> str:
         start = self.sql(expression, "start")
         start = self.seg(f"START WITH {start}") if start else ""
@@ -2970,7 +2989,7 @@ class Generator:
     def prior_sql(self, expression: exp.Prior) -> str:
         return f"PRIOR {self.sql(expression, 'this')}"
 
-    def join_sql(self, expression: exp.Join) -> str:
+    def join_sql(self, expression: exp.Join, join_op: str | None = None) -> str:
         if not self.SEMI_ANTI_JOIN_WITH_SIDE and expression.kind in ("SEMI", "ANTI"):
             side = None
         else:
@@ -2990,6 +3009,8 @@ class Generator:
         )
         match_cond = self.sql(expression, "match_condition")
         match_cond = f" MATCH_CONDITION ({match_cond})" if match_cond else ""
+        nearest = self.sql(expression, "nearest")
+        nearest = f" {nearest}" if nearest else ""
         on_sql = self.sql(expression, "on")
         using = expression.args.get("using")
 
@@ -3010,17 +3031,27 @@ class Generator:
                 on_sql = f"{space}USING ({on_sql})"
             else:
                 on_sql = f"{space}ON {on_sql}"
-        elif not op_sql:
+        elif not op_sql and not nearest:
             if isinstance(this, exp.Lateral) and this.args.get("cross_apply") is not None:
                 return f" {this_sql}"
 
             return f", {this_sql}"
 
-        if op_sql != "STRAIGHT_JOIN":
+        if join_op:
+            op_sql = join_op
+        elif op_sql != "STRAIGHT_JOIN":
             op_sql = f"{op_sql} JOIN" if op_sql else "JOIN"
 
         pivots = self.expressions(expression, key="pivots", sep="", flat=True)
-        return f"{self.seg(op_sql)} {this_sql}{match_cond}{on_sql}{pivots}"
+        return f"{self.seg(op_sql)} {this_sql}{match_cond}{nearest}{on_sql}{pivots}"
+
+    def nearest_sql(self, expression: exp.Nearest) -> str:
+        if not self.SUPPORTS_NEAREST_JOIN:
+            self.unsupported("NEAREST joins are not supported")
+
+        approximate = "APPROX " if expression.args.get("approximate") else ""
+        metric = "SIMILARITY" if expression.args.get("similarity") else "DISTANCE"
+        return f"{approximate}NEAREST {self.sql(expression, 'count')} BY {metric} {self.sql(expression, 'this')}"
 
     def lambda_sql(self, expression: exp.Lambda, arrow_sep: str = "->", wrap: bool = True) -> str:
         args = self.expressions(expression, flat=True)
@@ -3747,6 +3778,9 @@ class Generator:
             first = "FIRST" if first else "LAST"
 
         if not partition and not order and not spec and alias:
+            # WINDOW w2 AS w1 is unparseable in DuckDB/Postgres; parens are required.
+            if expression.arg_key == "windows":
+                return f"{this} ({alias})"
             return f"{this} {alias}"
 
         args = self.format_args(
@@ -4196,8 +4230,8 @@ class Generator:
             if this:
                 interval_keyword = f"{interval_keyword} " if interval_keyword else ""
                 if unit_expression and isinstance(unit_expression, exp.IntervalSpan):
-                    return f"{interval_keyword}'{this}'{unit}"
-                return f"{interval_keyword}'{this}{unit}'"
+                    return f"{interval_keyword}{self.sql(exp.Literal.string(this))}{unit}"
+                return f"{interval_keyword}{self.sql(exp.Literal.string(f'{this}{unit}'))}"
             return f"{interval_keyword}{unit}"
 
         this = self.sql(expression, "this")
@@ -4619,13 +4653,17 @@ class Generator:
         return f"{keyword} {items_sql}"
 
     def add_column_sql(self, expression: exp.Expr) -> str:
-        sql = self.sql(expression)
-        if isinstance(expression, exp.Schema):
-            column_text = " COLUMNS"
-        elif isinstance(expression, exp.ColumnDef) and self.ALTER_TABLE_INCLUDE_COLUMN_KEYWORD:
-            column_text = " COLUMN"
+        column_text = ""
+        if self.ALTER_TABLE_INCLUDE_COLUMN_KEYWORD:
+            if isinstance(expression, exp.ColumnDef):
+                column_text = " COLUMN"
+            elif isinstance(expression, exp.Schema):
+                column_text = " COLUMNS"
+
+        if isinstance(expression, exp.Schema) and not self.ALTER_TABLE_ADD_COLUMNS_WRAPPED:
+            sql = self.expressions(expression, flat=True)
         else:
-            column_text = ""
+            sql = self.sql(expression)
 
         return f"ADD{column_text} {sql}"
 
@@ -5094,13 +5132,27 @@ class Generator:
 
         then_expression = expression.args.get("then")
         if isinstance(then_expression, exp.Insert):
-            this = self.sql(then_expression, "this")
+            this = (
+                "ALL BY NAME"
+                if self.MERGE_ALL_BY_NAME and isinstance(then_expression.this, exp.Star)
+                else self.sql(then_expression, "this")
+            )
             this = f"INSERT {this}" if this else "INSERT"
             then = self.sql(then_expression, "expression")
             then = f"{this} VALUES {then}" if then else this
         elif isinstance(then_expression, exp.Update):
             if isinstance(then_expression.args.get("expressions"), exp.Star):
-                then = f"UPDATE {self.sql(then_expression, 'expressions')}"
+                then = (
+                    "UPDATE ALL BY NAME"
+                    if self.MERGE_ALL_BY_NAME
+                    else f"UPDATE {self.sql(then_expression, 'expressions')}"
+                )
+            elif (
+                self.MERGE_ALL_BY_NAME
+                and len(then_expression.expressions) == 1
+                and isinstance(then_expression.expressions[0], exp.Star)
+            ):
+                then = "UPDATE ALL BY NAME"
             else:
                 expressions_sql = self.expressions(then_expression)
                 then = f"UPDATE SET{self.sep()}{expressions_sql}" if expressions_sql else "UPDATE"
@@ -6061,7 +6113,8 @@ class Generator:
 
     def slice_sql(self, expression: exp.Slice) -> str:
         step = self.sql(expression, "step")
-        end = self.sql(expression.expression)
+        # An omitted end is written as `-` before a step, since `::` is the cast operator
+        end = self.sql(expression.expression) or ("-" if step else "")
         begin = self.sql(expression.this)
 
         sql = f"{end}:{step}" if step else end

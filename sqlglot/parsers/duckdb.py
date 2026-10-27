@@ -98,6 +98,10 @@ class DuckDBParser(parser.Parser):
     MAP_KEYS_ARE_ARBITRARY_EXPRESSIONS = True
     PIVOT_COLUMN_NAMING = "agg_name_if_aliased_or_multiple"
 
+    SUPPORTS_DIRECTED_JOIN = False
+
+    JOIN_KINDS = parser.Parser.JOIN_KINDS - {TokenType.STRAIGHT_JOIN}
+
     NO_PAREN_FUNCTIONS = {
         **parser.Parser.NO_PAREN_FUNCTIONS,
         TokenType.LOCALTIME: exp.Localtime,
@@ -255,7 +259,13 @@ class DuckDBParser(parser.Parser):
     PLACEHOLDER_PARSERS = {
         **parser.Parser.PLACEHOLDER_PARSERS,
         TokenType.PARAMETER: lambda self: (
-            self.expression(exp.Placeholder(this=self._prev.text))
+            self.expression(
+                exp.Placeholder(
+                    this=self._identifier_expression(quoted=True)
+                    if self._prev.token_type == TokenType.IDENTIFIER
+                    else self._prev.text
+                )
+            )
             if self._match(TokenType.NUMBER) or self._match_set(self.ID_VAR_TOKENS)
             else None
         ),
@@ -271,7 +281,11 @@ class DuckDBParser(parser.Parser):
     STATEMENT_PARSERS = {
         **parser.Parser.STATEMENT_PARSERS,
         TokenType.ATTACH: lambda self: self._parse_attach_detach(),
+        TokenType.CONNECT: lambda self: self.expression(
+            exp.ConnectTo(this=self._parse_string() or self._parse_id_var())
+        ),
         TokenType.DETACH: lambda self: self._parse_attach_detach(is_attach=False),
+        TokenType.DISCONNECT: lambda self: self.expression(exp.Disconnect()),
         TokenType.FORCE: lambda self: self._parse_force(),
         TokenType.INSTALL: lambda self: self._parse_install(),
         TokenType.SHOW: lambda self: self._parse_show(),
@@ -284,6 +298,10 @@ class DuckDBParser(parser.Parser):
 
     SHOW_TRIE = new_trie(key.split(" ") for key in SHOW_PARSERS)
     SET_TRIE = new_trie(key.split(" ") for key in SET_PARSERS)
+
+    def _parse_trigger_execute(self) -> exp.Expr | None:
+        body = self._try_parse(self._parse_statement)
+        return body if not self._curr else None
 
     def _parse_function_properties(self) -> exp.Properties | None:
         if self._match(TokenType.TABLE):
@@ -308,7 +326,7 @@ class DuckDBParser(parser.Parser):
             return None
 
         this = self._replace_lambda(self._parse_assignment(), expressions)
-        return self.expression(exp.Lambda(this=this, expressions=expressions, colon=True))
+        return self.expression(exp.Lambda(this=this, expressions=expressions))
 
     def _parse_expression(self) -> exp.Expr | None:
         # DuckDB supports prefix aliases, e.g. foo: 1
@@ -360,6 +378,67 @@ class DuckDBParser(parser.Parser):
             table.set("alias", alias)
 
         return table
+
+    def _parse_table_alias(
+        self, alias_tokens: Collection[TokenType] | None = None
+    ) -> exp.TableAlias | None:
+        if (
+            self._match_text_seq("NEAREST", advance=False)
+            and self._next.token_type == TokenType.NUMBER
+        ) or self._match_text_seq("APPROX", "NEAREST", advance=False):
+            return None
+
+        return super()._parse_table_alias(alias_tokens=alias_tokens)
+
+    def _parse_join(
+        self,
+        skip_join_token: bool = False,
+        parse_bracket: bool = False,
+        alias_tokens: Collection[TokenType] | None = None,
+    ) -> exp.Join | None:
+        join_type = None
+        if self._match_text_seq("JOIN", "BY", "(", "TYPE"):
+            join_type = self._parse_var(any_token=True)
+            self._match_r_paren()
+            skip_join_token = True
+
+        join = super()._parse_join(
+            skip_join_token=skip_join_token,
+            parse_bracket=parse_bracket,
+            alias_tokens=alias_tokens,
+        )
+        if not join:
+            return join
+
+        if join_type:
+            parts = join_type.name.upper().removesuffix("_JOIN").split("_")
+            if parts[0] in ("LEFT", "RIGHT", "FULL"):
+                join.set("side", parts.pop(0))
+            join.set("kind", " ".join(parts) or None)
+
+        approximate = self._match_text_seq("APPROX", "NEAREST")
+        if approximate or self._match_text_seq("NEAREST"):
+            count = self._parse_number()
+
+            if not self._match_text_seq("BY"):
+                self.raise_error("Expected BY after NEAREST count")
+            if not self._match_texts(("DISTANCE", "SIMILARITY")):
+                self.raise_error("Expected DISTANCE or SIMILARITY after BY")
+
+            similarity = self._prev.text.upper() == "SIMILARITY"
+            join.set(
+                "nearest",
+                self.expression(
+                    exp.Nearest(
+                        this=self._parse_disjunction(),
+                        count=count,
+                        approximate=approximate,
+                        similarity=similarity,
+                    )
+                ),
+            )
+
+        return join
 
     def _parse_table_sample(self, as_modifier: bool = False) -> exp.TableSample | None:
         # https://duckdb.org/docs/sql/samples.html

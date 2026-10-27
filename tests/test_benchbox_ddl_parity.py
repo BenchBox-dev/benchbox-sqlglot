@@ -457,9 +457,7 @@ class TestStripWithProperties(unittest.TestCase):
     PARQUET = "CREATE TABLE t (a INT) WITH (format = 'PARQUET')"
 
     def test_postgres_keeps_the_with_clause_unless_asked(self):
-        self.assertEqual(
-            ddl(self.PARQUET, "postgres"), ["CREATE TABLE t (a INT) WITH (FORMAT='PARQUET')"]
-        )
+        self.assertEqual(ddl(self.PARQUET, "postgres"), ["CREATE TABLE t (a INT) USING 'PARQUET'"])
         self.assertEqual(
             ddl(self.PARQUET, "postgres", strip_with_properties=True), ["CREATE TABLE t (a INT)"]
         )
@@ -486,14 +484,14 @@ class TestStripWithProperties(unittest.TestCase):
 
 @requires_engine("postgres")
 class TestStripWithPropertiesOnPostgres(unittest.TestCase):
-    def test_postgres_rejects_the_format_parameter_the_option_removes(self):
+    def test_postgres_rejects_the_format_clause_the_option_removes(self):
         name = "swp_" + uuid.uuid4().hex[:8]
         sql = f"CREATE TABLE {name} (a INT) WITH (format = 'PARQUET')"
         with engines.connect("postgres") as conn:
             [kept] = transpile_ddl(sql, read="postgres", write="postgres")
             with self.assertRaises(Exception) as raised:
                 conn.execute(kept)
-            self.assertIn("format", str(raised.exception))
+            self.assertIn("PARQUET", str(raised.exception))
             [stripped] = transpile_ddl(
                 sql,
                 read="postgres",

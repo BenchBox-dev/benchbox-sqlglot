@@ -99,6 +99,9 @@ class PostgresParser(parser.Parser):
     PROPERTY_PARSERS = {
         **{k: v for k, v in parser.Parser.PROPERTY_PARSERS.items() if k != "INPUT"},
         "SET": lambda self: self.expression(exp.SetConfigProperty(this=self._parse_set())),
+        "TABLESPACE": lambda self: self.expression(
+            exp.TableSpaceProperty(this=self._parse_id_var())
+        ),
     }
 
     PLACEHOLDER_PARSERS = {
@@ -134,9 +137,15 @@ class PostgresParser(parser.Parser):
         "TO_DATE": build_formatted_time(exp.StrToDate),
         "TO_TIMESTAMP": _build_to_timestamp,
         "UNNEST": exp.Explode.from_arg_list,
-        "SHA256": lambda args: exp.SHA2(this=seq_get(args, 0), length=exp.Literal.number(256)),
-        "SHA384": lambda args: exp.SHA2(this=seq_get(args, 0), length=exp.Literal.number(384)),
-        "SHA512": lambda args: exp.SHA2(this=seq_get(args, 0), length=exp.Literal.number(512)),
+        "SHA256": lambda args: exp.SHA2Digest(
+            this=seq_get(args, 0), length=exp.Literal.number(256)
+        ),
+        "SHA384": lambda args: exp.SHA2Digest(
+            this=seq_get(args, 0), length=exp.Literal.number(384)
+        ),
+        "SHA512": lambda args: exp.SHA2Digest(
+            this=seq_get(args, 0), length=exp.Literal.number(512)
+        ),
         "LEVENSHTEIN_LESS_EQUAL": _build_levenshtein_less_equal,
         "JSON_OBJECT_AGG": lambda args: exp.JSONObjectAgg(expressions=args),
         "JSONB_OBJECT_AGG": exp.JSONBObjectAgg.from_arg_list,
@@ -347,8 +356,27 @@ class PostgresParser(parser.Parser):
             )
         )
 
-    def _parse_unique_key(self) -> exp.Expr | None:
-        return None
+    def _parse_unique(self) -> exp.UniqueColumnConstraint:
+        return self.expression(
+            exp.UniqueColumnConstraint(
+                nulls=self._match_text_seq("NULLS", "NOT", "DISTINCT"),
+                this=self._parse_schema(),
+                include=self._parse_index_params(),
+                options=self._parse_key_constraint_options(),
+            )
+        )
+
+    def _parse_primary_key(
+        self,
+        wrapped_optional: bool = False,
+        in_props: bool = False,
+        named_primary_key: bool = False,
+    ) -> exp.PrimaryKeyColumnConstraint | exp.PrimaryKey:
+        this = super()._parse_primary_key(wrapped_optional, in_props, named_primary_key)
+        if isinstance(this, exp.PrimaryKeyColumnConstraint):
+            this.set("include", self._parse_index_params())
+            this.set("options", this.args["options"] + self._parse_key_constraint_options())
+        return this
 
     def _parse_jsonb_exists(self) -> exp.JSONBExists:
         return self.expression(
