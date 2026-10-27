@@ -772,6 +772,7 @@ class Parser:
         TokenType.COMMAND,
         TokenType.COMMENT,
         TokenType.COMMIT,
+        TokenType.CONNECT,
         TokenType.CONSTRAINT,
         TokenType.COPY,
         TokenType.CUBE,
@@ -783,6 +784,7 @@ class Parser:
         TokenType.DESCRIBE,
         TokenType.DETACH,
         TokenType.DICTIONARY,
+        TokenType.DISCONNECT,
         TokenType.DIV,
         TokenType.END,
         TokenType.EXECUTE,
@@ -1060,6 +1062,8 @@ class Parser:
     }
 
     JOIN_HINTS: t.ClassVar[set[str]] = set()
+
+    SUPPORTS_DIRECTED_JOIN = True
 
     # Tokens that unambiguously end a table reference on the fast path
     TABLE_TERMINATORS: t.ClassVar[frozenset] = frozenset(
@@ -2509,7 +2513,7 @@ class Parser:
 
         cluster: exp.Expr | None = None
         if self._match(TokenType.ON):
-            if kind == "INDEX":
+            if kind in ("INDEX", "TRIGGER"):
                 cluster = self.expression(exp.OnProperty(this=self._parse_table_parts()))
             else:
                 cluster = self._parse_on_property()
@@ -2944,7 +2948,7 @@ class Parser:
 
         return self._prev.text.upper() if self._match_texts(("ROW", "STATEMENT")) else None
 
-    def _parse_trigger_execute(self) -> exp.TriggerExecute | None:
+    def _parse_trigger_execute(self) -> exp.Expr | None:
         if not self._match(TokenType.EXECUTE):
             return None
 
@@ -3808,8 +3812,15 @@ class Parser:
 
     def _parse_insert_table(self) -> exp.Expr | None:
         this = self._parse_table(schema=True, parse_partition=True)
-        if isinstance(this, exp.Table) and self._match(TokenType.ALIAS, advance=False):
-            this.set("alias", self._parse_table_alias())
+        if isinstance(this, exp.Table) and self._match(TokenType.ALIAS):
+            # The column list after the alias belongs to the INSERT: INSERT INTO t AS s (a, b)
+            alias = self._parse_id_var()
+            if alias:
+                this.set(
+                    "alias",
+                    self.expression(exp.TableAlias(this=alias), comments=alias.pop_comments()),
+                )
+            return self._parse_schema(this=this)
         return this
 
     def _parse_kill(self) -> exp.Kill:
@@ -4818,7 +4829,7 @@ class Parser:
 
         index = self._index
         method, side, kind = self._parse_join_parts()
-        directed = self._match_text_seq("DIRECTED")
+        directed = self.SUPPORTS_DIRECTED_JOIN and self._match_text_seq("DIRECTED")
         hint = self._prev.text if self._match_texts(self.JOIN_HINTS) else None
         join = self._match(TokenType.JOIN) or (kind and kind.token_type == TokenType.STRAIGHT_JOIN)
         join_comments = self._prev_comments
@@ -4909,7 +4920,12 @@ class Parser:
         return this
 
     def _parse_index_params(self) -> exp.IndexParameters:
-        using = self._parse_var(any_token=True) if self._match(TokenType.USING) else None
+        using = (
+            self._parse_var(any_token=True)
+            if not self._match_text_seq("USING", "INDEX", "TABLESPACE", advance=False)
+            and self._match(TokenType.USING)
+            else None
+        )
 
         if self._match(TokenType.L_PAREN, advance=False):
             columns = self._parse_wrapped_csv(self._parse_with_operator)
@@ -4920,8 +4936,9 @@ class Parser:
         partition_by = self._parse_partition_by()
         with_storage = self._match(TokenType.WITH) and self._parse_wrapped_properties()
         tablespace = (
-            self._parse_var(any_token=True)
+            self._parse_id_var()
             if self._match_text_seq("USING", "INDEX", "TABLESPACE")
+            or self._match_text_seq("TABLESPACE")
             else None
         )
         where = self._parse_where()
@@ -6440,6 +6457,7 @@ class Parser:
         # handle day-time format interval span with omitted units:
         #   INTERVAL '<number days> hh[:][mm[:ss[.ff]]]' <maybe `unit TO unit`>
         interval_span_units_omitted = None
+        fraction_in_string = False
         if (
             this
             and this.is_string
@@ -6489,6 +6507,7 @@ class Parser:
             if len(parts) == 1:
                 this = exp.Literal.string(parts[0][0])
                 unit = self.expression(exp.Var(this=parts[0][1].upper()))
+                fraction_in_string = "." in parts[0][0]
 
         if self.INTERVAL_SPANS and self._match_text_seq("TO"):
             unit = self.expression(
@@ -6499,7 +6518,9 @@ class Parser:
                 )
             )
 
-        return self.expression(exp.Interval(this=this, unit=unit))
+        return self.expression(
+            exp.Interval(this=this, unit=unit, fraction_in_string=fraction_in_string or None)
+        )
 
     def _parse_interval(
         self, require_interval: bool = True, parse_function_unit: bool = True
@@ -8293,9 +8314,10 @@ class Parser:
         if not self._match(TokenType.COLON):
             return this
 
+        # DuckDB's `-` in `[a:-:step]` is the default end, which depends on the sign of step
         if self._match_pair(TokenType.DASH, TokenType.COLON, advance=False):
             self._advance()
-            end: exp.Expr | None = -exp.Literal.number("1")
+            end: exp.Expr | None = None
         else:
             end = self._parse_assignment()
         step = self._parse_unary() if self._match(TokenType.COLON) else None
@@ -9866,7 +9888,9 @@ class Parser:
             self._match(TokenType.THEN)
 
             if self._match(TokenType.INSERT):
-                this = self._parse_star()
+                this = (
+                    exp.Star() if self._match_text_seq("ALL", "BY", "NAME") else self._parse_star()
+                )
                 if this:
                     then: exp.Expr | None = self.expression(exp.Insert(this=this))
                 else:
@@ -9883,6 +9907,8 @@ class Parser:
                 expressions = self._parse_star()
                 if expressions:
                     then = self.expression(exp.Update(expressions=expressions))
+                elif self._match_text_seq("ALL", "BY", "NAME"):
+                    then = self.expression(exp.Update(expressions=[exp.Star()]))
                 else:
                     then = self.expression(
                         exp.Update(
@@ -10128,8 +10154,8 @@ class Parser:
             if typ is not None:
                 dot_or_id = column.to_dot() if column.table else column.this
 
-                if typ:
-                    dot_or_id = self.expression(exp.Cast(this=dot_or_id, to=typ))
+                if isinstance(typ, exp.DataType):
+                    dot_or_id = self.expression(exp.Cast(this=dot_or_id, to=typ.copy()))
 
                 parent = column.parent
 
@@ -10236,6 +10262,9 @@ class Parser:
         options = []
         while self._curr and not self._match(TokenType.R_PAREN, advance=False):
             option = self._parse_var(any_token=True)
+            if option is None:
+                break
+
             prev = self._prev.text.upper()
 
             # Different dialects might separate options and values by white space, "=" and "AS"

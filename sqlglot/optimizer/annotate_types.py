@@ -211,7 +211,7 @@ class TypeAnnotator:
         # Keep annotated nodes alive so their ids cannot be reused while cached
         self._visited: dict[int, exp.Expr] = {}
 
-        # Caches NULL-annotated expressions to set them to UNKNOWN after type inference is completed
+        # Candidates for replacing NULL types with the dialect's default after inference.
         self._null_expressions: dict[int, exp.Expr] = {}
 
         # Databricks and Spark ≥v3 actually support NULL (i.e., VOID) as a type
@@ -223,6 +223,7 @@ class TypeAnnotator:
         self._setop_column_types: dict[
             int, tuple[exp.SetOperation, dict[str, exp.DataType | exp.DType]]
         ] = {}
+        self._table_column_aliases: dict[int, tuple[exp.Table, dict[str, str]]] = {}
 
         # When set to False, this enables partial annotation by skipping already-annotated nodes
         self._overwrite_types = overwrite_types
@@ -236,19 +237,8 @@ class TypeAnnotator:
         self._visited.clear()
         self._null_expressions.clear()
         self._setop_column_types.clear()
+        self._table_column_aliases.clear()
         self._scope_source_selects.clear()
-
-    def uncache(self, expression: exp.Expr, deep: bool = True) -> None:
-        """
-        Evicts `expression` (or its subtree, if `deep`) from the annotation caches. Call this
-        before mutating an already-annotated tree so a subsequent pass recomputes its types.
-        """
-        nodes: t.Iterable[exp.Expr] = expression.walk() if deep else (expression,)
-        for node in nodes:
-            node_id = id(node)
-            self._visited.pop(node_id, None)
-            self._null_expressions.pop(node_id, None)
-            self._setop_column_types.pop(node_id, None)
 
     # TODO (mypyc): should be expression: E -> E but mypyc resolves the TypeVar
     # to the isinstance-narrowed type, causing runtime type check failures.
@@ -283,7 +273,7 @@ class TypeAnnotator:
                 self.annotate_scope(scope)
 
         # This takes care of non-traversable expressions
-        self._annotate_expression(expression)
+        self.annotate_expression(expression)
 
         # Replace NULL type with the default type of the targeted dialect, since the former is not an actual type;
         # it is mostly used to aid type coercion, e.g. in query set operations.
@@ -304,45 +294,51 @@ class TypeAnnotator:
             selects = {}
             source = scope.sources.get(source_name)
 
-            if isinstance(source, Scope):
+            pivots: list[exp.Pivot] = next(
+                (
+                    pivot.parent.args["pivots"]
+                    for pivot in scope.pivots
+                    if pivot.parent
+                    and pivot.parent.args["pivots"][-1] is pivot
+                    and pivot.alias_or_name == source_name
+                ),
+                [],
+            )
+
+            if pivots:
+                parent = pivots[-1].parent
+                parent_source = scope.sources.get(parent.alias_or_name) if parent else None
+
+                if (
+                    not isinstance(parent_source, Scope)
+                    and isinstance(parent, exp.Table)
+                    and not parent.db
+                ):
+                    # A chain aliased like the CTE it reads from shadows it in
+                    # `scope.sources`, so reach for the CTE's scope directly
+                    parent_source = scope.cte_sources.get(parent.name)
+
+                if isinstance(parent_source, Scope):
+                    src_types = self._get_source_scope_selects(parent_source)
+                elif isinstance(parent, exp.Table) and isinstance(self.schema, MappingSchema):
+                    src_types = (
+                        self.schema.find(parent, raise_on_missing=False, ensure_data_types=True)
+                        or {}
+                    )
+                else:
+                    src_types = {}
+
+                for pivot in pivots:
+                    src_types = (
+                        self._get_unpivot_column_types(pivot, src_types)
+                        if pivot.unpivot
+                        else self._get_pivot_column_types(pivot, src_types)
+                    )
+
+                selects = src_types
+
+            elif isinstance(source, Scope):
                 selects = self._get_source_scope_selects(source)
-            else:
-                pivots = (
-                    source.args.get("pivots", []) if isinstance(source, exp.Table) else scope.pivots
-                )
-                # Only the last operator in a chain carries the alias that names the
-                # resulting source, so match on it and fold the whole chain in order
-                if pivots and pivots[-1].alias_or_name == source_name:
-                    parent = pivots[-1].parent
-                    parent_source = scope.sources.get(parent.alias_or_name) if parent else None
-
-                    if (
-                        not isinstance(parent_source, Scope)
-                        and isinstance(parent, exp.Table)
-                        and not parent.db
-                    ):
-                        # A chain aliased like the CTE it reads from shadows it in
-                        # `scope.sources`, so reach for the CTE's scope directly
-                        parent_source = scope.cte_sources.get(parent.name)
-
-                    if isinstance(parent_source, Scope):
-                        src_types = self._get_source_scope_selects(parent_source)
-                    elif isinstance(parent, exp.Table) and isinstance(self.schema, MappingSchema):
-                        src_types = (
-                            self.schema.find(parent, raise_on_missing=False, ensure_data_types=True)
-                            or {}
-                        )
-                    else:
-                        src_types = {}
-
-                    for pivot in pivots:
-                        src_types = (
-                            self._get_unpivot_column_types(pivot, src_types)
-                            if pivot.unpivot
-                            else self._get_pivot_column_types(pivot, src_types)
-                        )
-
-                    selects = src_types
 
             self._scope_source_selects[key] = selects
 
@@ -350,7 +346,6 @@ class TypeAnnotator:
 
     def _get_source_scope_selects(self, source: Scope) -> dict[str, exp.DataType | exp.DType]:
         expression = source.expression
-
         if isinstance(expression, exp.UDTF):
             values = []
 
@@ -383,6 +378,17 @@ class TypeAnnotator:
                     if isinstance(col_def, exp.ColumnDef) and col_def.kind
                 }
 
+            if isinstance(expression, exp.Values):
+                # Like a set operation's, each VALUES column's type is coerced across all rows
+                column_types: list[exp.DataType | exp.DType] = [exp.DType.NULL] * len(values)
+                for row in expression.expressions:
+                    for i, value in enumerate(row.expressions[: len(column_types)]):
+                        column_types[i] = self._maybe_coerce(
+                            value.type or exp.DType.UNKNOWN, column_types[i]
+                        )
+
+                return dict(zip(alias_column_names, column_types))
+
             return {alias: column.type for alias, column in zip(alias_column_names, values)}
 
         if isinstance(expression, exp.SetOperation) and (
@@ -397,65 +403,43 @@ class TypeAnnotator:
         return {}
 
     def annotate_scope(self, scope: Scope) -> None:
-        if isinstance(self.schema, MappingSchema):
-            for table_column in scope.table_columns:
-                source = scope.sources.get(table_column.name)
-
-                if isinstance(source, exp.Table):
-                    schema = self.schema.find(
-                        source, raise_on_missing=False, ensure_data_types=True
-                    )
-                    if not isinstance(schema, dict):
-                        continue
-
-                    struct_type = exp.DataType(
-                        this=exp.DType.STRUCT,
-                        expressions=[
-                            exp.ColumnDef(this=exp.to_identifier(str(c)), kind=kind)
-                            for c, kind in schema.items()
-                        ],
-                        nested=True,
-                    )
-                    self._set_type(table_column, struct_type)
-                elif (
-                    isinstance(source, Scope)
-                    and isinstance(source.expression, exp.Query)
-                    and (
-                        source.expression.meta_get("query_type") or exp.DType.UNKNOWN.into_expr()
-                    ).is_type(exp.DType.STRUCT)
-                ):
-                    self._set_type(table_column, source.expression.meta["query_type"])
-
         # Iterate through all the expressions of the current scope in post-order, and annotate
-        self._annotate_expression(scope.expression, scope)
+        self.annotate_expression(scope.expression, scope)
         self._fixup_order_by_aliases(scope)
 
         if self.dialect.QUERY_RESULTS_ARE_STRUCTS and isinstance(scope.expression, exp.Query):
+            scope.expression.meta.pop("query_type", None)
+            column_types = (
+                self._get_setop_column_types(scope.expression).items()
+                if isinstance(scope.expression, exp.SetOperation)
+                else ((select.output_name, select.type) for select in scope.expression.selects)
+            )
             struct_type = exp.DataType(
                 this=exp.DType.STRUCT,
                 expressions=[
                     exp.ColumnDef(
-                        this=exp.to_identifier(select.output_name),
-                        kind=select.type.copy() if select.type else None,
+                        this=exp.to_identifier(name),
+                        kind=exp.DataType.build(kind) if kind else None,
                     )
-                    for select in scope.expression.selects
+                    for name, kind in column_types
                 ],
                 nested=True,
             )
 
             if not any(
-                cd.kind.is_type(exp.DType.UNKNOWN) for cd in struct_type.expressions if cd.kind
+                not cd.kind or cd.kind.is_type(exp.DType.UNKNOWN) for cd in struct_type.expressions
             ):
                 # We don't use `_set_type` on purpose here. If we annotated the query directly, then
                 # using it in other contexts (e.g., ARRAY(<query>)) could result in incorrect type
                 # annotations, i.e., it shouldn't be interpreted as a STRUCT value.
                 scope.expression.meta["query_type"] = struct_type
 
-    def _annotate_expression(
+    def annotate_expression(
         self,
         expression: exp.Expr,
         scope: Scope | None = None,
     ) -> None:
+        """Annotate an expression and its descendants using the supplied scope."""
         stack = [(expression, False)]
 
         while stack:
@@ -472,6 +456,10 @@ class TypeAnnotator:
                     stack.append((child_expr, False))
                 continue
 
+            if scope and isinstance(expr, exp.TableColumn):
+                self._annotate_table_column(expr, scope)
+                continue
+
             if scope and isinstance(expr, exp.Column) and expr.table and not expr.is_star:
                 source = None
                 source_scope: Scope | None = scope
@@ -481,8 +469,23 @@ class TypeAnnotator:
                         source_scope = source_scope.parent
 
                 if isinstance(source, exp.Table):
+                    source_id = id(source)
+                    if source_id not in self._table_column_aliases:
+                        column_aliases: dict[str, str] = {}
+                        if alias_columns := source.alias_column_names:
+                            for alias, name in zip(alias_columns, self.schema.column_names(source)):
+                                column_aliases.setdefault(alias, name)
+                        self._table_column_aliases[source_id] = (source, column_aliases)
+
+                    physical_name = self._table_column_aliases[source_id][1].get(expr.name)
+                    column_expr = (
+                        exp.column(physical_name, quoted=True)
+                        if physical_name is not None
+                        else expr
+                    )
+
                     table_col_type: exp.DataType | exp.DType | None = self.schema.get_column_type(
-                        source, expr
+                        source, column_expr
                     )
                     if (
                         isinstance(table_col_type, exp.DataType)
@@ -535,12 +538,57 @@ class TypeAnnotator:
 
             self._restore_dot_parts(expr)
 
+    def _annotate_table_column(self, expression: exp.TableColumn, scope: Scope) -> None:
+        source = scope.sources.get(expression.name)
+        column_types = None
+        if any(pivot.alias == expression.name for pivot in scope.pivots):
+            column_types = self._get_scope_source_selects(scope, expression.name)
+        elif isinstance(source, Scope):
+            if (query_type := source.expression.meta_get("query_type")) and query_type.is_type(
+                exp.DType.STRUCT
+            ):
+                self._set_type(expression, query_type)
+                return
+        elif isinstance(source, exp.Table) and isinstance(self.schema, MappingSchema):
+            column_types = self.schema.find(source, raise_on_missing=False, ensure_data_types=True)
+
+        if (
+            isinstance(column_types, dict)
+            and column_types
+            and all(
+                kind is not None
+                and not exp.DataType.build(kind, copy=False).is_type(exp.DType.UNKNOWN)
+                for kind in column_types.values()
+            )
+        ):
+            self._set_type(
+                expression,
+                exp.DataType(
+                    this=exp.DType.STRUCT,
+                    expressions=[
+                        exp.ColumnDef(
+                            this=exp.to_identifier(str(name)), kind=exp.DataType.build(kind)
+                        )
+                        for name, kind in column_types.items()
+                    ],
+                    nested=True,
+                ),
+            )
+        else:
+            self._set_type(expression, exp.DType.UNKNOWN)
+
     def _restore_dot_parts(self, expr: exp.Expr) -> None:
         # Dot access into semi-structured values is a case sensitive data lookup, i.e. the
         # engine doesn't resolve the keys as identifiers, so we undo their normalization.
         dot_parts = expr.meta_get("dot_parts")
         if not dot_parts or not expr.is_type(exp.DType.JSON, exp.DType.MAP, exp.DType.VARIANT):
             if dot_parts:
+                # A struct field can itself contain semi-structured data. Resolve each
+                # struct access before deciding whether the remaining keys are identifiers.
+                if expr.is_type(exp.DType.STRUCT) and isinstance(expr.parent, exp.Dot):
+                    expr.parent.meta["dot_parts"] = dot_parts[1:]
+                if expr.type is None or expr.is_type(exp.DType.UNKNOWN):
+                    return
                 expr.meta.pop("dot_parts", None)
             return
 
@@ -595,7 +643,7 @@ class TypeAnnotator:
                 for node in ordered.walk(prune=lambda n: isinstance(n, exp.Subquery)):
                     if not isinstance(node, (exp.Column, exp.Literal)):
                         self._visited.pop(id(node), None)
-                self._annotate_expression(ordered, scope)
+                self.annotate_expression(ordered, scope)
 
     def _maybe_coerce(
         self,
@@ -680,7 +728,7 @@ class TypeAnnotator:
                 r_type_by_select = {s.alias_or_name: s.type for s in set_op.expression.selects}
                 setop_cols = {
                     s.alias_or_name: self._maybe_coerce(
-                        t.cast(exp.DataType, s.type),
+                        s.type or exp.DType.UNKNOWN,
                         r_type_by_select.pop(s.alias_or_name, exp.DType.NULL) or exp.DType.UNKNOWN,
                     )
                     for s in set_op.this.selects
@@ -690,7 +738,7 @@ class TypeAnnotator:
             else:
                 setop_cols = {
                     ls.alias_or_name: self._maybe_coerce(
-                        t.cast(exp.DataType, ls.type), t.cast(exp.DataType, rs.type)
+                        ls.type or exp.DType.UNKNOWN, rs.type or exp.DType.UNKNOWN
                     )
                     for ls, rs in zip(set_op.this.selects, set_op.expression.selects)
                 }
@@ -758,9 +806,15 @@ class TypeAnnotator:
         # the rest are the aggregated columns, one per combination of IN value and aggregate function.
         output_to_src = pivot.output_columns(src_types)
 
-        agg_types = [
-            agg.this.type if isinstance(agg, exp.Alias) else agg.type for agg in pivot.expressions
-        ]
+        # Output types may be requested before the PIVOT itself has been annotated.
+        agg_types: list[exp.DataType | None] = []
+        for agg in pivot.expressions:
+            if not agg.type or agg.is_type(exp.DType.UNKNOWN):
+                agg = agg.copy()
+                for column in agg.find_all(exp.Column):
+                    self._set_type(column, src_types.get(column.name))
+                self.annotate_expression(agg)
+            agg_types.append(agg.this.type if isinstance(agg, exp.Alias) else agg.type)
         agg_cols_offset = len(output_to_src) - len(pivot_constants) * len(agg_types)
         if agg_cols_offset < 0:
             raise OptimizeError(f"Negative pivot column offset: {agg_cols_offset}")
@@ -1005,6 +1059,9 @@ class TypeAnnotator:
         query = expression.unnest()
 
         if isinstance(query, exp.Query):
+            if query.args.get("kind") == "STRUCT":
+                self._set_type(expression, query.meta_get("query_type"))
+                return expression
             selects = query.selects
             if len(selects) == 1:
                 self._set_type(expression, selects[0].type)

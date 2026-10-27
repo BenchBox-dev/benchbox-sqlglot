@@ -1,4 +1,6 @@
 import json
+import sys
+import tempfile
 import unittest
 from concurrent.futures import ProcessPoolExecutor, as_completed, wait
 from functools import partial
@@ -16,6 +18,7 @@ from sqlglot.optimizer.canonicalize_internal_names import canonicalize_internal_
 from sqlglot.optimizer.journal import record, revert
 from sqlglot.optimizer.normalize import normalization_distance
 from sqlglot.optimizer.qualify import qualify
+from sqlglot.optimizer.resolver import Resolver
 from sqlglot.optimizer.scope import build_scope, traverse_scope, walk_in_scope
 from sqlglot.schema import MappingSchema
 from tests.helpers import (
@@ -236,13 +239,19 @@ class TestOptimizer(unittest.TestCase):
                     canonicalize_table_aliases
                 )
 
+            fixture_execute = False if execute is False else meta.get("execute", execute)
+            if min_python := meta.get("execute_min_python"):
+                fixture_execute = string_to_bool(fixture_execute) and sys.version_info >= tuple(
+                    map(int, min_python.split("."))
+                )
+
             future = self.pool.submit(parse_and_optimize, func, sql, dialect, **func_kwargs)
             results[future] = (
                 sql,
                 title,
                 expected,
                 dialect,
-                False if execute is False else meta.get("execute", execute),
+                fixture_execute,
             )
 
         wait(results)
@@ -1001,6 +1010,99 @@ class TestOptimizer(unittest.TestCase):
             "IN ((`produce`.`q1`, `produce`.`q2`) AS 'h1', (`produce`.`q3`, `produce`.`q4`) AS 'h2')) AS `produce`",
         )
 
+    def test_resolver_column_context(self):
+        get_table = Resolver.get_table
+
+        def check_context(resolver, column):
+            self.assertIsInstance(column, (exp.Column, exp.Identifier))
+            self.assertIs(column.root(), expression)
+            node = column
+            while node.parent:
+                self.assertTrue(any(child is node for child in node.parent.iter_expressions()))
+                node = node.parent
+            return get_table(resolver, column)
+
+        for dialect, sql in (
+            ("duckdb", "SELECT payload.field AS payload FROM READ_PARQUET('f') AS r"),
+            ("duckdb", "SELECT a FROM x GROUP BY a HAVING SUM(b) > 0"),
+            ("duckdb", "SELECT SUM(a) AS a FROM x ORDER BY SUM(a)"),
+            (
+                "bigquery",
+                "WITH t AS (SELECT [STRUCT('a' AS email)] AS items) "
+                "SELECT (SELECT email FROM UNNEST(items)) FROM t",
+            ),
+            (
+                "clickhouse",
+                "WITH data AS (SELECT 1 AS id, 2 AS my_id, 'a' AS name, 'b' AS full_name) "
+                "SELECT id AS my_id, CONCAT(my_id, name) AS full_name FROM data "
+                "WHERE my_id = 1 GROUP BY my_id, full_name HAVING my_id = 1",
+            ),
+        ):
+            with self.subTest(dialect=dialect, sql=sql):
+                expression = parse_one(sql, dialect=dialect)
+                with patch.object(Resolver, "get_table", check_context):
+                    qualify(
+                        expression,
+                        dialect=dialect,
+                        schema={"x": {"a": "INT", "b": "INT", "c": "TEXT"}},
+                    )
+
+        expression = parse_one(
+            "SELECT * FROM (SELECT a, b, c FROM x) PIVOT(SUM(b) FOR c IN ('x', 'y'))"
+        )
+        with patch.object(Resolver, "get_table", check_context):
+            optimizer.qualify_columns.qualify_columns(
+                expression, schema={"x": {"a": "INT", "b": "INT", "c": "TEXT"}}
+            )
+
+    def test_qualify_unknown_tvf_table_reference(self):
+        for sql in (
+            "SELECT r FROM range(3) AS r",
+            "SELECT range + 1 FROM range(3) AS range",
+            "SELECT r FROM (SELECT * FROM READ_PARQUET('f')) AS r",
+        ):
+            with self.subTest(sql=sql):
+                expression = qualify(
+                    parse_one(sql, dialect="duckdb"),
+                    dialect="duckdb",
+                    validate_qualify_columns=False,
+                )
+                self.assertIsNone(expression.find(exp.TableColumn))
+
+    def test_qualify_parquet_alias_collision(self):
+        with tempfile.TemporaryDirectory() as directory, duckdb.connect() as conn:
+            for source, schema, expected in (
+                ("SELECT * FROM (VALUES (0), (1)) AS t(x)", {"x": "INT"}, [(2,)]),
+                (
+                    "SELECT * FROM (VALUES (0, 100), (1, -100)) AS t(x, y)",
+                    {"x": "INT", "y": "INT"},
+                    [(1,)],
+                ),
+            ):
+                with self.subTest(schema=schema):
+                    path = f"{directory}/{len(schema)}.parquet"
+                    conn.execute(f"COPY ({source}) TO ? (FORMAT PARQUET)", [path])
+                    expression = exp.replace_placeholders(
+                        parse_one(
+                            "SELECT x + 1 AS y FROM READ_PARQUET(:path) AS r WHERE y > 1",
+                            dialect="duckdb",
+                        ),
+                        path=exp.Literal.string(path),
+                    )
+                    self.assertEqual(conn.execute(expression.sql("duckdb")).fetchall(), expected)
+                    with self.assertRaisesRegex(OptimizeError, "due to missing source schemas"):
+                        qualify(expression.copy(), dialect="duckdb")
+
+                    conn.execute(
+                        "CREATE OR REPLACE TEMP TABLE t AS SELECT * FROM READ_PARQUET(?)", [path]
+                    )
+                    qualified = qualify(
+                        parse_one("SELECT x + 1 AS y FROM t WHERE y > 1", dialect="duckdb"),
+                        dialect="duckdb",
+                        schema={"t": schema},
+                    )
+                    self.assertEqual(conn.execute(qualified.sql("duckdb")).fetchall(), expected)
+
     def test_starrocks_pivot_columns(self):
         for aggregation, expected in (
             ("SUM(price) AS total", ["'prop'", "'rudder'"]),
@@ -1333,7 +1435,9 @@ class TestOptimizer(unittest.TestCase):
 
         # Resolving an unqualified lateral column whose table is missing from the schema must
         # raise instead of recursing infinitely
-        with self.assertRaisesRegex(OptimizeError, "Column 'ITEMS' could not be resolved"):
+        with self.assertRaisesRegex(
+            OptimizeError, "Cannot resolve 'ITEMS' due to missing source schemas"
+        ):
             optimizer.qualify.qualify(
                 parse_one(
                     "SELECT f.value AS v FROM my_db.raw.events, LATERAL FLATTEN(items) AS f",
@@ -1366,31 +1470,6 @@ class TestOptimizer(unittest.TestCase):
             ["INT64", "STRING"],
         )
         self.assertEqual(qualified.selects[0].type.sql("bigquery"), "INT64")
-
-    def test_qualify_positional_references_uncache(self):
-        schema = MappingSchema({"t": {"s": "STRUCT<x INT64>"}}, dialect="bigquery")
-
-        for modifier in ("ORDER BY 1", "GROUP BY 1", "GROUP BY 1 ORDER BY 1"):
-            with self.subTest(modifier=modifier):
-                tree = parse_one(
-                    f"WITH c AS (SELECT s.* FROM t {modifier}) SELECT _PARTITIONTIME FROM t, c",
-                    dialect="bigquery",
-                )
-                # Keep discarded ordinals alive so the check cannot depend on address reuse.
-                ordinals = list(tree.find_all(exp.Literal))
-                annotator = TypeAnnotator(schema)
-                with patch(
-                    "sqlglot.optimizer.qualify_columns.TypeAnnotator", return_value=annotator
-                ):
-                    qualified = qualify(tree, schema=schema, dialect="bigquery")
-
-                for ordinal in ordinals:
-                    self.assertIsNotNone(ordinal.type)
-                    self.assertNotIn(id(ordinal), annotator._visited)
-
-                pseudo = qualified.find(exp.Pseudocolumn)
-                assert pseudo is not None
-                self.assertTrue(pseudo.is_type(exp.DType.UNKNOWN))
 
     def test_qualify_order_by_alias_nodes(self):
         qualified = qualify(
@@ -1429,20 +1508,181 @@ class TestOptimizer(unittest.TestCase):
                     .this.sql("bigquery"),
                 )
 
-    def test_qualify_order_by_expression_uncache(self):
-        schema = MappingSchema({"t": {"s": "STRUCT<x INT64>", "a": "INT64"}}, dialect="bigquery")
-        tree = parse_one(
-            "SELECT s.*, a + 1 AS v FROM t GROUP BY 1, 2 ORDER BY a + 1", dialect="bigquery"
-        )
-        discarded = list(tree.args["order"].expressions[0].this.walk())
-        annotator = TypeAnnotator(schema)
-        with patch("sqlglot.optimizer.qualify_columns.TypeAnnotator", return_value=annotator):
-            qualified = qualify(tree, schema=schema, dialect="bigquery")
+    def test_qualify_positional_references_types(self):
+        schema = MappingSchema({"t": {"s": "STRUCT<x INT64>"}}, dialect="bigquery")
 
-        for node in discarded:
-            self.assertIsNotNone(node.type)
-            self.assertNotIn(id(node), annotator._visited)
-        self.assertEqual(qualified.args["order"].expressions[0].this.name, "v")
+        for modifier in ("ORDER BY 1", "GROUP BY 1", "GROUP BY 1 ORDER BY 1"):
+            with self.subTest(modifier=modifier):
+                qualified = qualify(
+                    parse_one(
+                        f"WITH c AS (SELECT s.* FROM t {modifier}) SELECT _PARTITIONTIME FROM t, c",
+                        dialect="bigquery",
+                    ),
+                    schema=schema,
+                    dialect="bigquery",
+                )
+
+                cte = qualified.find(exp.CTE)
+                assert cte is not None
+                for key in ("group", "order"):
+                    if modifier_node := cte.this.args.get(key):
+                        for node in modifier_node.expressions:
+                            node = node.this if isinstance(node, exp.Ordered) else node
+                            self.assertTrue(node.is_type(exp.DType.BIGINT))
+
+                pseudo = qualified.find(exp.Pseudocolumn)
+                assert pseudo is not None
+                self.assertTrue(pseudo.is_type(exp.DType.UNKNOWN))
+
+    def test_qualify_struct_star_source_types(self):
+        for sql, expected in (
+            ("WITH c AS (SELECT s FROM t) SELECT (s).* FROM c", [(1,)]),
+            ("SELECT (s).* FROM (SELECT s FROM t) AS c", [(1,)]),
+            (
+                "WITH c AS (SELECT CAST(NULL AS STRUCT<x INT>) AS s) SELECT (s).* FROM c",
+                [(None,)],
+            ),
+            (
+                "WITH c AS (SELECT s FROM t UNION ALL SELECT s FROM t) SELECT (s).* FROM c",
+                [(1,), (1,)],
+            ),
+            ("WITH c AS (SELECT (s).*, s AS whole FROM t) SELECT (whole).* FROM c", [(1,)]),
+            (
+                "WITH RECURSIVE c AS (SELECT s FROM t UNION ALL SELECT s FROM c WHERE FALSE) SELECT (s).* FROM c",
+                [(1,)],
+            ),
+        ):
+            with self.subTest(sql=sql):
+                qualified = qualify(
+                    parse_one(sql, dialect="risingwave"),
+                    schema={"t": {"s": "STRUCT<x INT>"}},
+                    dialect="risingwave",
+                )
+                self.assertEqual(qualified.named_selects, ["x"])
+                with duckdb.connect() as connection:
+                    connection.execute("CREATE TABLE t AS SELECT STRUCT_PACK(x := 1) AS s")
+                    self.assertEqual(
+                        connection.execute(qualified.sql("duckdb")).fetchall(),
+                        expected,
+                    )
+
+        qualified = qualify(
+            parse_one(
+                "SELECT r.nested.* FROM UNNEST([STRUCT(STRUCT(1 AS x) AS nested)]) AS r",
+                dialect="bigquery",
+            ),
+            dialect="bigquery",
+        )
+        self.assertEqual(qualified.named_selects, ["x"])
+        self.assertTrue(qualified.selects[0].is_type(exp.DType.INT))
+
+    def test_qualify_struct_star_long_cte_chain(self):
+        for join in ("", "JOIN", "SEMI JOIN", "CORRELATED"):
+            with self.subTest(join=join):
+                ctes = ["c0 AS (SELECT s FROM t)"]
+                for i in range(1, 250):
+                    source = "t AS l" if join == "SEMI JOIN" else f"c{i - 1} AS l"
+                    if join == "CORRELATED":
+                        projection = "(SELECT l.s) AS s"
+                    else:
+                        projection = "l.s"
+                        if join:
+                            source += f" {join} c{i - 1} AS r ON l.s = r.s"
+                    ctes.append(f"c{i} AS (SELECT {projection} FROM {source})")
+                qualified = qualify(
+                    parse_one(
+                        f"WITH {', '.join(ctes)} SELECT (s).* FROM c249", dialect="risingwave"
+                    ),
+                    schema={"t": {"s": "STRUCT<x INT>"}},
+                    dialect="risingwave",
+                )
+                self.assertEqual(qualified.named_selects, ["x"])
+                annotate_types(
+                    qualified, schema={"t": {"s": "STRUCT<x INT>"}}, dialect="risingwave"
+                )
+                self.assertTrue(qualified.selects[0].is_type(exp.DType.INT))
+
+    def test_qualify_skips_unneeded_annotation(self):
+        schema = MappingSchema({"t": {"s": "STRUCT<x INT>"}}, dialect="risingwave")
+        for sql in (
+            "SELECT s FROM t",
+            "SELECT * FROM t",
+            "SELECT t.* FROM t",
+            "WITH c AS (SELECT s FROM t) SELECT s FROM c",
+        ):
+            with self.subTest(sql=sql):
+                annotator = TypeAnnotator(schema)
+                with patch(
+                    "sqlglot.optimizer.qualify_columns.TypeAnnotator", return_value=annotator
+                ):
+                    qualify(
+                        parse_one(sql, dialect="risingwave"), schema=schema, dialect="risingwave"
+                    )
+                self.assertFalse(annotator._visited)
+
+    def test_qualify_star_replace_types(self):
+        schema = {"t": {"s": "STRUCT<x INT64>", "a": "INT64"}, "u": {"c": "FLOAT64"}}
+        for sql, expected in (
+            ("SELECT s.*, * REPLACE ((SELECT MAX(c) FROM u) AS a) FROM t", "FLOAT64"),
+            ("SELECT s.* REPLACE (t AS x) FROM t", "STRUCT<s STRUCT<x INT64>, a INT64>"),
+        ):
+            with self.subTest(sql=sql):
+                qualified = qualify(
+                    parse_one(sql, dialect="bigquery"), schema=schema, dialect="bigquery"
+                )
+                self.assertEqual(qualified.selects[-1].type.sql("bigquery"), expected)
+
+    def test_qualify_struct_star_json_ordering(self):
+        schema = {"t": {"s": "STRUCT<x INT64>", "j": "JSON"}}
+        for key in ("Foo", "foo"):
+            with self.subTest(key=key):
+                sql = (
+                    "SELECT s.*, ANY_VALUE(JSON_VALUE(j.Foo)) AS v FROM t "
+                    f"GROUP BY 1 ORDER BY ANY_VALUE(JSON_VALUE(j.{key}))"
+                )
+                original = parse_one(sql, dialect="bigquery")
+                qualified = qualify(original.copy(), schema=schema, dialect="bigquery")
+                with duckdb.connect() as connection:
+                    connection.execute(
+                        "CREATE TABLE t AS SELECT struct_pack(x := x) AS s, j FROM (VALUES "
+                        '(1, JSON \'{"Foo":"z","foo":"a"}\'), '
+                        '(2, JSON \'{"Foo":"a","foo":"z"}\')) AS d(x, j)'
+                    )
+                    expected = [(2, "a"), (1, "z")] if key == "Foo" else [(1, "z"), (2, "a")]
+                    self.assertEqual(
+                        connection.execute(original.sql("duckdb")).fetchall(), expected
+                    )
+                    self.assertEqual(
+                        connection.execute(qualified.sql("duckdb")).fetchall(), expected
+                    )
+
+    def test_qualify_order_by_expression_types(self):
+        schema = MappingSchema({"t": {"s": "STRUCT<x INT64>", "a": "INT64"}}, dialect="bigquery")
+
+        for sql, dtype in (
+            ("SELECT s.*, a + 1 AS v FROM t GROUP BY 1, 2 ORDER BY a + 1", exp.DType.BIGINT),
+            ("SELECT s.*, FOO(a) AS v FROM t GROUP BY 1, 2 ORDER BY FOO(a)", exp.DType.UNKNOWN),
+            ("SELECT s.*, FOO(a) AS v FROM t ORDER BY 2", exp.DType.UNKNOWN),
+        ):
+            with self.subTest(sql=sql):
+                qualified = qualify(
+                    parse_one(sql, dialect="bigquery"), schema=schema, dialect="bigquery"
+                )
+                order = qualified.args["order"].expressions[0].this
+                self.assertEqual(order.name, "v")
+                self.assertTrue(order.is_type(dtype))
+
+    def test_qualify_json_path_argument_order(self):
+        expression = "ANY_VALUE(JSON_VALUE(j.Foo, '$') || JSON_VALUE(j.foo, '$'))"
+        tree = parse_one(
+            f"SELECT {expression} AS v FROM t GROUP BY k ORDER BY {expression}",
+            dialect="duckdb",
+        )
+        # Equal ASTs can have different argument insertion orders.
+        for node in tree.args["order"].walk():
+            node.args = dict(reversed(node.args.items()))
+        qualified = qualify(tree, schema={"t": {"k": "INT", "j": "JSON"}}, dialect="duckdb")
+        self.assertEqual(qualified.args["order"].sql("duckdb"), 'ORDER BY "v"')
 
     def test_qualify_order_by_subquery_types(self):
         schema = {"t": {"x": "STRING", "s": "STRUCT<a INT64>"}, "u": {"x": "INT64"}}
@@ -1533,10 +1773,12 @@ class TestOptimizer(unittest.TestCase):
 
     def test_qualify_columns__invalid(self):
         for sql in load_sql_fixtures("optimizer/qualify_columns__invalid.sql"):
-            with self.subTest(sql):
+            sql, meta = _extract_meta(sql)
+            dialect = meta.get("dialect")
+            with self.subTest(sql=sql, dialect=dialect):
                 with self.assertRaises((OptimizeError, SchemaError)):
                     expression = optimizer.qualify_columns.qualify_columns(
-                        parse_one(sql), schema=self.schema
+                        parse_one(sql, dialect=dialect), schema=self.schema, dialect=dialect
                     )
                     optimizer.qualify_columns.validate_qualify_columns(expression)
 
@@ -1762,6 +2004,37 @@ SELECT :with_,WITH :expressions,CTE :this,UNION :this,SELECT :expressions,1,:exp
     def test_unnest_subqueries(self):
         self.check_file("unnest_subqueries", optimizer.unnest_subqueries.unnest_subqueries)
 
+    def test_optimize_subqueries_in_aggregates(self):
+        for projection in (
+            "SUM(CASE WHEN x.a = (SELECT LENGTH(w.d) FROM w WHERE w.e = 'b') THEN 1 ELSE 0 END)",
+            "SUM((SELECT LENGTH(w.d) FROM w WHERE w.e = 'b'))",
+        ):
+            for group_by in ("", " GROUP BY x.b"):
+                sql = f"SELECT {projection} FROM x{group_by}"
+                with self.subTest(sql=sql):
+                    optimized = optimizer.optimize(sql, schema=self.schema, dialect="duckdb")
+                    self.assertCountEqual(
+                        self.conn.execute(sql).fetchall(),
+                        self.conn.execute(optimized.sql("duckdb")).fetchall(),
+                    )
+
+    def test_optimize_subqueries_in_join_on(self):
+        for sql in (
+            "SELECT x.a, y.b FROM x LEFT JOIN y ON x.a = y.b "
+            "AND y.b IN (SELECT z.b FROM y AS z WHERE z.b = 2)",
+            "SELECT x.a, y.b FROM x JOIN y ON x.a = y.b "
+            "OR y.b IN (SELECT z.b FROM y AS z WHERE z.b > 100)",
+            "SELECT x.a, y.b FROM x LEFT JOIN y "
+            "ON y.b = (SELECT MAX(z.b) FROM y AS z WHERE z.b = x.a)",
+            "SELECT x.a, y.b FROM x LEFT JOIN y ON y.b = (SELECT MAX(z.b) FROM y AS z)",
+        ):
+            with self.subTest(sql=sql):
+                optimized = optimizer.optimize(sql, schema=self.schema, dialect="duckdb")
+                self.assertCountEqual(
+                    self.conn.execute(sql).fetchall(),
+                    self.conn.execute(optimized.sql("duckdb")).fetchall(),
+                )
+
     def test_pushdown_predicates(self):
         self.check_file("pushdown_predicates", optimizer.pushdown_predicates.pushdown_predicates)
 
@@ -1846,6 +2119,28 @@ SELECT :with_,WITH :expressions,CTE :this,UNION :this,SELECT :expressions,1,:exp
                 self.assertEqual(
                     optimizer.optimize_joins.reorder_joins(expression.copy()), expression
                 )
+
+    def test_nearest_joins(self):
+        for sql in (
+            "SELECT a.id, b.id FROM a JOIN b NEAREST 1 BY DISTANCE ABS(a.id - b.id)",
+            "SELECT a.id, b.id FROM a LEFT JOIN b NEAREST 1 BY DISTANCE ABS(a.id - b.id)",
+            "SELECT a.id, b.id FROM a JOIN b NEAREST 1 BY DISTANCE ABS(a.id - b.id) "
+            "JOIN c ON a.id = c.id AND b.id = c.id WHERE b.id > 1",
+            "SELECT a.id, b.id FROM a JOIN (SELECT id FROM b WHERE id > 1) AS b "
+            "NEAREST 1 BY DISTANCE ABS(a.id - b.id)",
+            "SELECT a.id FROM a JOIN (SELECT 1 AS id) AS b NEAREST 1 BY DISTANCE ABS(a.id)",
+            "SELECT a.id, b.id FROM (SELECT id FROM a WHERE id > 1) AS a "
+            "JOIN b APPROX NEAREST 2 BY SIMILARITY a.id * b.id WHERE b.id > 1",
+        ):
+            for rule in (
+                optimizer.optimize_joins.optimize_joins,
+                optimizer.pushdown_predicates.pushdown_predicates,
+                optimizer.eliminate_joins.eliminate_joins,
+                optimizer.merge_subqueries.merge_subqueries,
+            ):
+                with self.subTest(sql=sql, rule=rule.__name__):
+                    expression = parse_one(sql, dialect="duckdb")
+                    self.assertEqual(rule(expression.copy()), expression)
 
     def test_eliminate_joins(self):
         self.check_file(
@@ -2280,7 +2575,7 @@ SELECT :with_,WITH :expressions,CTE :this,UNION :this,SELECT :expressions,1,:exp
         )
         self.assertEqual(
             ast.sql("postgres"),
-            'SELECT "t"."a" || "t"."b" AS "_col_0" FROM "t" AS "t"',
+            'SELECT ("t"."a") || ("t"."b") AS "_col_0" FROM "t" AS "t"',
         )
 
         # DateDiff args without inferred types should not crash _coerce_datediff_args.
@@ -2601,6 +2896,73 @@ SELECT :with_,WITH :expressions,CTE :this,UNION :this,SELECT :expressions,1,:exp
         for _ in range(100):
             self.assertTrue(annotator.annotate(parse_one("1")).is_type(exp.DType.INT))
 
+    def test_annotate_struct_subquery_values(self):
+        for sql, expected in (
+            ("SELECT (SELECT AS STRUCT 1 AS x) AS value", "STRUCT<x INT64>"),
+            ("SELECT (SELECT AS STRUCT 1 AS x, 'a' AS y) AS value", "STRUCT<x INT64, y STRING>"),
+            ("SELECT (SELECT 1 AS x) AS value", "INT64"),
+            ("SELECT ARRAY(SELECT AS STRUCT 1 AS x) AS value", "ARRAY<STRUCT<x INT64>>"),
+            ("SELECT ARRAY(SELECT 1 AS x) AS value", "ARRAY<INT64>"),
+        ):
+            with self.subTest(sql=sql):
+                qualified = qualify(parse_one(sql, dialect="bigquery"), dialect="bigquery")
+                self.assertEqual(qualified.selects[0].type.sql("bigquery"), expected)
+
+        qualified = qualify(
+            parse_one("SELECT r FROM (SELECT 1 AS x) AS r", dialect="duckdb"), dialect="duckdb"
+        )
+        annotate_types(qualified, dialect="duckdb")
+        self.assertEqual(qualified.selects[0].type, exp.DataType.build("STRUCT<x INT>"))
+
+    def test_reannotate_struct_subquery_values(self):
+        tree = annotate_types(
+            parse_one("SELECT (SELECT AS STRUCT 1 AS x) AS value", dialect="bigquery"),
+            dialect="bigquery",
+        )
+        for expression in (tree, tree.copy()):
+            with self.subTest(copied=expression is not tree):
+                expression.find(exp.Literal).replace(exp.column("unknown"))
+                annotate_types(expression, dialect="bigquery", overwrite_types=True)
+                self.assertTrue(expression.selects[0].is_type(exp.DType.UNKNOWN))
+
+    def test_annotate_row_types(self):
+        for sql, expected in (
+            ("SELECT r FROM (SELECT 1 AS x, 'a' AS y) AS r", "STRUCT<x INT, y VARCHAR>"),
+            ("WITH r AS (SELECT 1 AS x) SELECT r FROM r", "STRUCT<x INT>"),
+            (
+                "SELECT r FROM (SELECT 1 AS x UNION ALL SELECT CAST(2 AS DOUBLE) AS x) AS r",
+                "STRUCT<x DOUBLE>",
+            ),
+            (
+                "SELECT r FROM (SELECT 1 AS x UNION ALL BY NAME SELECT 'a' AS y) AS r",
+                "STRUCT<x INT, y VARCHAR>",
+            ),
+            ("SELECT (SELECT 1 AS x)", "INT"),
+        ):
+            with self.subTest(sql=sql):
+                tree = qualify(parse_one(sql, dialect="duckdb"), dialect="duckdb")
+                annotate_types(tree, dialect="duckdb")
+                self.assertEqual(tree.selects[0].type, exp.DataType.build(expected))
+
+        for dialect in ("bigquery", "duckdb"):
+            for kind in ("INT", "UNKNOWN"):
+                for sql in (
+                    "SELECT IF(TRUE, t, NULL) FROM t",
+                    "SELECT r FROM (SELECT a, b FROM t) AS r",
+                ):
+                    with self.subTest(dialect=dialect, kind=kind, sql=sql):
+                        schema = {"t": {"a": "INT", "b": kind}}
+                        tree = qualify(
+                            parse_one(sql, dialect=dialect), schema=schema, dialect=dialect
+                        )
+                        annotate_types(tree, schema=schema, dialect=dialect)
+                        self.assertEqual(
+                            tree.selects[0].type,
+                            exp.DataType.build(
+                                "STRUCT<a INT, b INT>" if kind == "INT" else "UNKNOWN"
+                            ),
+                        )
+
     def test_annotate_untyped_binary_operands(self):
         # Operands that escaped annotation have type None; treat them as UNKNOWN instead
         # of crashing on `.type.this`
@@ -2638,7 +3000,13 @@ SELECT :with_,WITH :expressions,CTE :this,UNION :this,SELECT :expressions,1,:exp
         # Dot access into semi-structured values is a case sensitive data lookup, unlike
         # struct field access, which the engines resolve like any other identifier
         schema = {
-            "t": {"m": "MAP(VARCHAR, INT)", "v": "VARIANT", "j": "JSON", "s": "STRUCT(Foo INT)"}
+            "t": {
+                "m": "MAP(VARCHAR, INT)",
+                "v": "VARIANT",
+                "j": "JSON",
+                "s": "STRUCT(Foo INT)",
+                "nested": "STRUCT<child STRUCT<payload JSON>>",
+            }
         }
 
         for sql, expected in (
@@ -2646,6 +3014,10 @@ SELECT :with_,WITH :expressions,CTE :this,UNION :this,SELECT :expressions,1,:exp
             ("SELECT v.Foo FROM t", 'SELECT "t"."v"."Foo" AS "foo" FROM "t" AS "t"'),
             ("SELECT j.Foo.Bar FROM t", 'SELECT "t"."j"."Foo"."Bar" AS "bar" FROM "t" AS "t"'),
             ("SELECT s.Foo FROM t", 'SELECT "t"."s"."foo" AS "foo" FROM "t" AS "t"'),
+            (
+                "SELECT nested.child.payload.Foo FROM t",
+                'SELECT "t"."nested"."child"."payload"."Foo" AS "foo" FROM "t" AS "t"',
+            ),
             # Roots that are already qualified drop a different number of leading dot parts
             ("SELECT t.m.Foo FROM t", 'SELECT "t"."m"."Foo" AS "foo" FROM "t" AS "t"'),
             ("SELECT t.j.Foo.Bar FROM t", 'SELECT "t"."j"."Foo"."Bar" AS "bar" FROM "t" AS "t"'),
@@ -2655,6 +3027,8 @@ SELECT :with_,WITH :expressions,CTE :this,UNION :this,SELECT :expressions,1,:exp
                 qualified = qualify(
                     parse_one(sql, dialect="duckdb"), schema=schema, dialect="duckdb"
                 )
+                # An initial pass without schema must retain the original path spellings.
+                annotate_types(qualified, dialect="duckdb")
                 annotated = annotate_types(qualified, schema=schema, dialect="duckdb")
                 self.assertEqual(annotated.sql("duckdb"), expected)
 
@@ -2700,6 +3074,47 @@ SELECT :with_,WITH :expressions,CTE :this,UNION :this,SELECT :expressions,1,:exp
         pre = len(schema._find_cache)
         annotate_types(qualified, schema=schema)
         self.assertEqual(len(schema._find_cache) - pre, 1)
+
+    def test_annotate_types_caches_positional_aliases(self):
+        for width in (4, 64):
+            with self.subTest(width=width):
+                aliases = [f"a{i}" for i in range(width)]
+                schema = MappingSchema({"x": {f"c{i}": "INT" for i in range(width)}})
+                query = parse_one(
+                    f"SELECT {', '.join(f't.{name}' for name in aliases * 2)} "
+                    f"FROM x AS t({', '.join(aliases)})"
+                )
+                with patch.object(
+                    schema, "column_names", wraps=schema.column_names
+                ) as column_names:
+                    annotate_types(query, schema=schema)
+                    column_names.assert_called_once()
+
+                self.assertTrue(all(select.is_type(exp.DType.INT) for select in query.selects))
+
+    def test_annotate_types_positional_alias_sources(self):
+        schema = {"x": {"a": "INT", "b": "TEXT"}}
+        query = parse_one(
+            "SELECT t.p, t.q, u.p, u.q, (SELECT t.p) FROM x AS t(p, q) CROSS JOIN x AS u(q, p)"
+        )
+        annotate_types(query, schema=schema)
+        self.assertEqual(
+            [select.type.sql() for select in query.selects], ["INT", "TEXT", "TEXT", "INT", "INT"]
+        )
+
+    def test_annotate_types_positional_alias_invalidation(self):
+        annotator = TypeAnnotator(MappingSchema({"x": {"a": "INT", "b": "TEXT"}}))
+        query = parse_one("SELECT t.p, t.q FROM x AS t(p, q)")
+        table = query.find(exp.Table)
+        for columns, expected in (
+            (["p", "q"], ["INT", "TEXT"]),
+            (["q", "p"], ["TEXT", "INT"]),
+            (["p", "q"], ["INT", "TEXT"]),
+        ):
+            annotator.clear()
+            table.args["alias"].set("columns", [exp.to_identifier(name) for name in columns])
+            annotator.annotate(query)
+            self.assertEqual([select.type.sql() for select in query.selects], expected)
 
     def test_annotate_funcs(self):
         test_schema = {
@@ -3467,6 +3882,38 @@ SELECT :with_,WITH :expressions,CTE :this,UNION :this,SELECT :expressions,1,:exp
                     == exp.DataType.build(expected_type, dialect="bigquery")
                 )
 
+    def test_values_annotation(self):
+        for first, second, expected_type in (
+            ("1::INT", "2::BIGINT", "BIGINT"),
+            ("1", "NULL", "INT"),
+            ("1", "2.5", "DOUBLE"),
+            ("FOO()", "1", "UNKNOWN"),
+        ):
+            with self.subTest(f"first: {first}, second: {second}, expected: {expected_type}"):
+                fs = annotate_types(
+                    parse_one(f"SELECT t.c FROM (VALUES ({first}), ({second})) t(c)")
+                )
+                sf = annotate_types(
+                    parse_one(f"SELECT t.c FROM (VALUES ({second}), ({first})) t(c)")
+                )
+                assert fs.selects[0].type == sf.selects[0].type == exp.DataType.build(expected_type)
+
+        values = annotate_types(
+            parse_one("SELECT t.a, t.b FROM (VALUES (NULL, 1), (7, 2.5), (8, NULL)) AS t(a, b)")
+        )
+        self.assertEqual(values.selects[0].type.this, exp.DataType.Type.INT)
+        self.assertEqual(values.selects[1].type.this, exp.DataType.Type.DOUBLE)
+
+        # Typed division must not truncate when a later row makes the column fractional
+        optimized = optimizer.optimize(
+            parse_one(
+                "WITH t(a, b) AS (VALUES (7, 2), (7.5, 2)) SELECT a / b AS q FROM t",
+                read="postgres",
+            ),
+            dialect="postgres",
+        )
+        self.assertNotIn("TRUNC", optimized.sql("duckdb"))
+
     def test_udtf_annotation(self):
         table_udtf = parse_one(
             "SELECT * FROM TABLE(GENERATOR(ROWCOUNT => 100000))",
@@ -3676,6 +4123,11 @@ SELECT :with_,WITH :expressions,CTE :this,UNION :this,SELECT :expressions,1,:exp
     def test_gen(self):
         for func in exp.ALL_FUNCTIONS:
             self.assertIsInstance(optimizer.simplify.gen(func()), str)
+
+        self.assertEqual(
+            optimizer.simplify.gen(parse_one("SELECT a.$1 FROM t AS a", dialect="snowflake")),
+            "SELECT :expressions,a.PARAMETER :this,1,:from_,FROM t AS a",
+        )
 
     def test_gen_bracket(self):
         for sql, expected in (

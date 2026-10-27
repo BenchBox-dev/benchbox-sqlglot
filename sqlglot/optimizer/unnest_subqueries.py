@@ -62,6 +62,17 @@ def unnest(select, parent_select, next_alias_name):
     ):
         return
 
+    clause = predicate.find_ancestor(exp.Having, exp.Where, exp.Join, exp.Select)
+    if isinstance(clause, exp.Join) and (
+        clause.parent is not parent_select
+        or clause.side
+        or clause.kind not in ("", "INNER")
+        or clause.method
+        or clause.args.get("match_condition")
+        or not isinstance(predicate, (exp.In, exp.Any))
+    ):
+        return
+
     if isinstance(select, exp.SetOperation):
         inner_alias = next_alias_name()
         select = exp.select(
@@ -72,7 +83,6 @@ def unnest(select, parent_select, next_alias_name):
         ).from_(select.subquery(inner_alias))
 
     alias = next_alias_name()
-    clause = predicate.find_ancestor(exp.Having, exp.Where, exp.Join)
 
     # This subquery returns a scalar and can just be converted to a cross join
     if not isinstance(predicate, (exp.In, exp.Any)):
@@ -87,7 +97,19 @@ def unnest(select, parent_select, next_alias_name):
                 or any(find_in_scope(select, exp.AggFunc) for select in parent_select.selects)
             )
         ):
-            column = exp.Max(this=column)
+            ancestor = select.parent.find_ancestor(exp.AggFunc, exp.Select)
+            # A window aggregate can still need a grouped MAX in its argument.
+            while (
+                not isinstance(ancestor, exp.Query)
+                and ancestor.parent
+                and ancestor.arg_key == "this"
+                and not isinstance(ancestor.parent, (exp.Func, exp.Window))
+            ):
+                ancestor = ancestor.parent
+            if isinstance(ancestor, exp.Select) or (
+                ancestor.arg_key == "this" and isinstance(ancestor.parent, exp.Window)
+            ):
+                column = exp.Max(this=column)
         elif not isinstance(select.parent, exp.Subquery):
             return
 
@@ -115,6 +137,19 @@ def unnest(select, parent_select, next_alias_name):
         if not predicate or parent_select is not predicate.parent_select:
             return
 
+    if isinstance(clause, exp.Join):
+        # Moving a predicate from ON to WHERE is only safe for an inner-join conjunct.
+        ancestor = predicate.parent
+        while isinstance(ancestor, (exp.And, exp.Paren)):
+            ancestor = ancestor.parent
+        if ancestor is not clause:
+            return
+
+        # A later RIGHT/FULL join can preserve rows that the hoisted WHERE would discard.
+        joins = parent_select.args.get("joins") or []
+        if any(join.side in ("RIGHT", "FULL") for join in joins[joins.index(clause) + 1 :]):
+            return
+
     column = _other_operand(predicate)
     value = select.selects[0]
 
@@ -137,7 +172,10 @@ def unnest(select, parent_select, next_alias_name):
                 .group_by(exp.column(value.alias, "_q"), copy=False)
             )
     elif not find_in_scope(value.this, exp.AggFunc):
-        select = select.group_by(value.this, copy=False)
+        group_key = value.this
+        if isinstance(group_key, exp.Expression) and group_key.is_int:
+            group_key = group_key + exp.Literal.number(0)
+        select = select.group_by(group_key, copy=False)
 
     parent_select.join(
         select,
@@ -183,6 +221,9 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
                 break
             if not join.is_semi_or_anti_join:
                 available_source_aliases.add(join.alias_or_name)
+
+    if isinstance(on_clause_ancestor, exp.Join) and on_clause_join_index is None:
+        return
 
     if isinstance(parent_predicate, exp.Exists):
         if select.args.get("having") or select.args.get("qualify"):

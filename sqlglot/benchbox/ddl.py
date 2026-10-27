@@ -325,8 +325,19 @@ def _strip_with_properties(create: exp.Create, target: Dialect) -> None:
     post_with = exp.Properties.Location.POST_WITH
     if not isinstance(properties, exp.Properties):
         return
-    locations = target.generator_class.PROPERTIES_LOCATION
-    kept = [p for p in properties.expressions if locations.get(type(p)) != post_with]
+    generator = target.generator_class
+    locations = generator.PROPERTIES_LOCATION
+    postgres_format = Postgres.generator_class.TRANSFORMS[exp.FileFormatProperty]
+
+    def written_with(prop: exp.Expression) -> bool:
+        if locations.get(type(prop)) == post_with:
+            return True
+        return (
+            isinstance(prop, exp.FileFormatProperty)
+            and generator.TRANSFORMS.get(exp.FileFormatProperty) is postgres_format
+        )
+
+    kept = [p for p in properties.expressions if not written_with(p)]
     properties.set("expressions", kept)
     if not kept:
         create.set("properties", None)

@@ -457,9 +457,7 @@ class TestStripWithProperties(unittest.TestCase):
     PARQUET = "CREATE TABLE t (a INT) WITH (format = 'PARQUET')"
 
     def test_postgres_keeps_the_with_clause_unless_asked(self):
-        self.assertEqual(
-            ddl(self.PARQUET, "postgres"), ["CREATE TABLE t (a INT) WITH (FORMAT='PARQUET')"]
-        )
+        self.assertEqual(ddl(self.PARQUET, "postgres"), ["CREATE TABLE t (a INT) USING 'PARQUET'"])
         self.assertEqual(
             ddl(self.PARQUET, "postgres", strip_with_properties=True), ["CREATE TABLE t (a INT)"]
         )

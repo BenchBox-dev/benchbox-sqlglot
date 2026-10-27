@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generator.py b/sqlglot/generator.py
-index 0660e848..6547663a 100644
+index df3063aa..324e34c2 100644
 --- a/sqlglot/generator.py
 +++ b/sqlglot/generator.py
 @@ -8,6 +8,7 @@ from decimal import Decimal
@@ -10,7 +10,7 @@ index 0660e848..6547663a 100644
  from sqlglot.errors import ErrorLevel, UnsupportedError, concat_messages
  from sqlglot.expressions import apply_index_offset
  from sqlglot.expressions.core import maybe_parse
-@@ -361,6 +362,9 @@ class Generator:
+@@ -364,6 +365,9 @@ class Generator:
      # Whether GROUP BY () is accepted
      SUPPORTS_EMPTY_GROUP_BY = True
  
@@ -20,7 +20,7 @@ index 0660e848..6547663a 100644
      # The string used for creating an index on a table
      INDEX_ON = "ON"
  
-@@ -4608,6 +4612,9 @@ class Generator:
+@@ -4646,6 +4650,9 @@ class Generator:
          return self.binary(expression, "||")
  
      def div_sql(self, expression: exp.Div) -> str:
@@ -31,7 +31,7 @@ index 0660e848..6547663a 100644
  
          if not self.dialect.SAFE_DIVISION and expression.args.get("safe"):
 diff --git a/sqlglot/generators/postgres.py b/sqlglot/generators/postgres.py
-index 7d9c661a..03f9551c 100644
+index f4743e4b..da76807d 100644
 --- a/sqlglot/generators/postgres.py
 +++ b/sqlglot/generators/postgres.py
 @@ -257,6 +257,7 @@ class PostgresGenerator(generator.Generator):

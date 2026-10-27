@@ -12,6 +12,20 @@ from tests.dialects.test_dialect import Validator
 class TestSQLite(Validator):
     dialect = "sqlite"
 
+    def test_cast(self):
+        for dtype, func in (
+            ("DATETIME", "DATETIME"),
+            ("TIMESTAMP", "DATETIME"),
+            ("TIMESTAMPNTZ", "DATETIME"),
+            ("TIME", "TIME"),
+        ):
+            for value in ("'2014-09-01 12:34:56'", "x", "NULL"):
+                with self.subTest(dtype=dtype, value=value):
+                    self.validate_all(
+                        f"SELECT {func}({value})",
+                        read={"": f"SELECT CAST({value} AS {dtype})"},
+                    )
+
     def test_is_precedence(self):
         self.validate_identity("SELECT 'x' LIKE 'x' NOT LIKE '1'")
         for suffix in ("IN (0)", "BETWEEN 0 AND 0", "LIKE '0'", "GLOB '0'"):
@@ -608,6 +622,10 @@ class TestSQLite(Validator):
             },
         )
         self.validate_all(
+            "SELECT DATE_ADD(d, '1'') ; SELECT 1; --')",
+            write={"sqlite": "SELECT DATE(d, '1'') ; SELECT 1; --')"},
+        )
+        self.validate_all(
             "SELECT DATE(d, '-1 DAY') FROM t",
             read={
                 "duckdb": "SELECT DATE_ADD(d, INTERVAL (-1) DAY) FROM t",
@@ -652,8 +670,12 @@ class TestSQLite(Validator):
         self.validate_identity(
             "SELECT a, SUM(b) OVER (ORDER BY a ROWS BETWEEN -1 PRECEDING AND 1 FOLLOWING) FROM t1 ORDER BY 1"
         )
-        self.validate_identity(
+        self.validate_all(
             "SELECT JSON_EXTRACT('[10, 20, [30, 40]]', '$[2]', '$[0]', '$[1]')",
+            write={
+                "sqlite": "SELECT JSON_EXTRACT('[10, 20, [30, 40]]', '$[2]', '$[0]', '$[1]')",
+                "duckdb": "SELECT TO_JSON(JSON_EXTRACT('[10, 20, [30, 40]]', ['$[2]', '$[0]', '$[1]']))",
+            },
         )
         # Single-path json_extract() returns an SQL value like ->>, except that
         # object/array results keep the JSON subtype (json_subtype variant);
@@ -723,11 +745,23 @@ class TestSQLite(Validator):
             read={
                 "sqlite": "SELECT MIN(a, b) FROM t",
             },
+            write={
+                "sqlite": "SELECT MIN(a, b) FROM t",
+                "duckdb": "SELECT CASE WHEN a IS NULL OR b IS NULL THEN NULL ELSE LEAST(a, b) END FROM t",
+                "trino": "SELECT LEAST(a, b) FROM t",
+                "oracle": "SELECT LEAST(a, b) FROM t",
+            },
         )
         self.validate_all(
             "SELECT MAX(a, b) FROM t",
             read={
                 "sqlite": "SELECT MAX(a, b) FROM t",
+            },
+            write={
+                "sqlite": "SELECT MAX(a, b) FROM t",
+                "duckdb": "SELECT CASE WHEN a IS NULL OR b IS NULL THEN NULL ELSE GREATEST(a, b) END FROM t",
+                "trino": "SELECT GREATEST(a, b) FROM t",
+                "oracle": "SELECT GREATEST(a, b) FROM t",
             },
         )
         # GREATEST/LEAST ignore NULL args in Postgres/DuckDB, but SQLite's
@@ -953,6 +987,14 @@ class TestSQLite(Validator):
         self.validate_identity("SELECT a -> b ->> c -> d FROM t")
         self.validate_identity("SELECT a || b ->> c", "SELECT (a || b) ->> c")
         self.validate_identity("SELECT a ->> b || c FROM t")
+        self.validate_all(
+            "SELECT a ->> ('$.' || f)",
+            read={"spark": "SELECT GET_JSON_OBJECT(a, CONCAT('$.', f))"},
+        )
+        self.validate_all(
+            "SELECT a -> ('$.' || f)",
+            read={"mysql": "SELECT JSON_EXTRACT(a, CONCAT('$.', f))"},
+        )
         self.validate_identity("SELECT 2 * 3 || 4", "SELECT 2 * (3 || 4)")
         self.validate_identity("SELECT 1 + 2 || 3", "SELECT 1 + (2 || 3)")
         self.validate_identity("SELECT a || b * c FROM t", "SELECT (a || b) * c FROM t")
@@ -1027,19 +1069,64 @@ class TestSQLite(Validator):
         )
 
     def test_hexadecimal_literal(self):
+        for sql, expected in (
+            ("0XCC", "204"),
+            ("0xcc", "204"),
+            ("0x0", "0"),
+            ("0x1F + 1", "31 + 1"),
+            ("-0x10", "-16"),
+            ("0x7FFFFFFFFFFFFFFF", "9223372036854775807"),
+            ("0x8000000000000000", "-9223372036854775808"),
+            ("0xFFFFFFFFFFFFFFFF", "-1"),
+            ("-0xFFFFFFFFFFFFFFFF", "- -1"),
+        ):
+            with self.subTest(sql=sql):
+                self.validate_all(
+                    f"SELECT {sql}",
+                    write={
+                        "sqlite": f"SELECT {expected}",
+                        "duckdb": f"SELECT {expected}",
+                        "mysql": f"SELECT {expected}",
+                    },
+                )
+
         self.validate_all(
-            "SELECT 0XCC",
+            "SELECT x'CC'",
             write={
                 "sqlite": "SELECT x'CC'",
+                "duckdb": "SELECT UNHEX('CC')",
                 "mysql": "SELECT x'CC'",
             },
         )
+        self.validate_identity("SELECT X'0a', 0x0a", "SELECT x'0a', 10")
 
     def test_window_null_treatment(self):
         self.validate_all(
             "SELECT FIRST_VALUE(Name) OVER (PARTITION BY AlbumId ORDER BY Bytes DESC) AS LargestTrack FROM tracks",
             write={
                 "sqlite": "SELECT FIRST_VALUE(Name) OVER (PARTITION BY AlbumId ORDER BY Bytes DESC) AS LargestTrack FROM tracks"
+            },
+        )
+
+    def test_floating_point_types(self):
+        # REAL, FLOAT and DOUBLE are all 8-byte floats in SQLite, so they transpile to
+        # DOUBLE rather than to the 4-byte REAL/FLOAT of other dialects
+        for dtype in ("REAL", "FLOAT", "DOUBLE"):
+            self.validate_all(
+                f"SELECT CAST(x AS {dtype}) FROM t",
+                write={
+                    "sqlite": "SELECT CAST(x AS REAL) FROM t",
+                    "duckdb": "SELECT CAST(x AS DOUBLE) FROM t",
+                    "postgres": "SELECT CAST(x AS DOUBLE PRECISION) FROM t",
+                },
+            )
+
+        self.validate_all(
+            "CREATE TABLE t (x REAL, y FLOAT)",
+            write={
+                "sqlite": "CREATE TABLE t (x REAL, y REAL)",
+                "duckdb": "CREATE TABLE t (x DOUBLE, y DOUBLE)",
+                "postgres": "CREATE TABLE t (x DOUBLE PRECISION, y DOUBLE PRECISION)",
             },
         )
 
@@ -1160,6 +1247,10 @@ class TestSQLite(Validator):
         self.validate_identity("INSERT OR IGNORE INTO foo (x, y) VALUES (1, 2)")
         self.validate_identity("INSERT OR REPLACE INTO foo (x, y) VALUES (1, 2)")
         self.validate_identity("INSERT OR ROLLBACK INTO foo (x, y) VALUES (1, 2)")
+        self.validate_identity("INSERT INTO foo AS f (x, y) VALUES (1, 2)")
+        self.validate_identity(
+            "INSERT INTO foo AS f (x, y) VALUES (1, 2) ON CONFLICT(x) DO UPDATE SET y = f.y + 1"
+        )
         self.validate_identity(
             "INSERT INTO tbl (x, y) SELECT 1, 'a' WHERE TRUE ON CONFLICT(x, LOWER(y)) DO UPDATE SET y = excluded.y"
         )
@@ -1548,12 +1639,12 @@ class TestSQLite(Validator):
             ("CAST(' 1999-5-1 ' AS DATE)", "DATE('1999-05-01')"),
             ("CAST('1999-5-01' AS DATE) + INTERVAL '60' DAY", "DATE(DATE('1999-05-01'), '60 DAY')"),
             ("CAST('1999-5-01' AS DATE) - INTERVAL '2' MONTH", "DATE('1999-05-01', '-2 month')"),
-            ("CAST('1999-5-1 3:04' AS TIMESTAMP)", "CAST('1999-05-01 03:04:00' AS TIMESTAMPNTZ)"),
+            ("CAST('1999-5-1 3:04' AS TIMESTAMP)", "DATETIME('1999-05-01 03:04:00')"),
             (
                 "CAST('1999-5-1 3:04:05.25' AS TIMESTAMP)",
-                "CAST('1999-05-01 03:04:05.25' AS TIMESTAMPNTZ)",
+                "DATETIME('1999-05-01 03:04:05.25')",
             ),
-            ("CAST('1999-5-1' AS TIMESTAMP)", "CAST('1999-05-01' AS TIMESTAMPNTZ)"),
+            ("CAST('1999-5-1' AS TIMESTAMP)", "DATETIME('1999-05-01')"),
         ):
             with self.subTest(source=source):
                 self.assertEqual(

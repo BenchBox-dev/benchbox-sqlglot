@@ -4,7 +4,7 @@ import typing as t
 
 from sqlglot import exp, parser
 from sqlglot.parser import IsPredicatePrecedence, binary_range_parser
-from sqlglot.tokens import TokenType
+from sqlglot.tokens import Token, TokenType
 
 
 def _build_strftime(args: list) -> exp.Anonymous | exp.TimeToStr:
@@ -13,6 +13,20 @@ def _build_strftime(args: list) -> exp.Anonymous | exp.TimeToStr:
     if len(args) == 2:
         return exp.TimeToStr(this=exp.TsOrDsToTimestamp(this=args[1]), format=args[0])
     return exp.Anonymous(this="STRFTIME", expressions=args)
+
+
+def _build_max(args: list) -> exp.Max | exp.Greatest:
+    # The multi-argument max() is a scalar that returns NULL if any argument is NULL
+    if len(args) > 1:
+        return exp.Greatest(this=args[0], expressions=args[1:], ignore_nulls=False)
+    return exp.Max.from_arg_list(args)
+
+
+def _build_min(args: list) -> exp.Min | exp.Least:
+    # The multi-argument min() is a scalar that returns NULL if any argument is NULL
+    if len(args) > 1:
+        return exp.Least(this=args[0], expressions=args[1:], ignore_nulls=False)
+    return exp.Min.from_arg_list(args)
 
 
 def _build_dpipe(
@@ -36,6 +50,11 @@ def _build_json_extract(args: list, dialect: t.Any) -> exp.JSONExtract | exp.JSO
 
 class SQLiteParser(parser.Parser):
     IS_PREDICATE_PRECEDENCE = IsPredicatePrecedence.EQUALITY
+
+    PRIMARY_PARSERS = {
+        **parser.Parser.PRIMARY_PARSERS,
+        TokenType.HEX_STRING: lambda self, token: self._parse_hex_string(token),
+    }
 
     STRING_ALIASES = True
     ALTER_RENAME_REQUIRES_COLUMN = False
@@ -75,6 +94,8 @@ class SQLiteParser(parser.Parser):
         "JSON_EXTRACT": _build_json_extract,
         "JSON_GROUP_ARRAY": exp.JSONArrayAgg.from_arg_list,
         "JSON_GROUP_OBJECT": lambda args: exp.JSONObjectAgg(expressions=args),
+        "MAX": _build_max,
+        "MIN": _build_min,
         "STRFTIME": _build_strftime,
         "SQLITE_VERSION": exp.CurrentVersion.from_arg_list,
         "TIME": lambda args: exp.Anonymous(this="TIME", expressions=args),
@@ -114,6 +135,16 @@ class SQLiteParser(parser.Parser):
                 comments=comments,
             )
         return this
+
+    def _parse_hex_string(self, token: Token) -> exp.Expr:
+        if self.sql.startswith(("0x", "0X"), token.start):
+            value = int(token.text, 16)
+            # SQLite interprets hex integers as signed 64-bit two's-complement values.
+            if value >= 1 << 63:
+                value -= 1 << 64
+            return self.expression(exp.Literal.number(value), token)
+
+        return self.expression(exp.HexString(this=token.text), token)
 
     def _parse_factor_operand(self) -> exp.Expr | None:
         in_arithmetic_operand = self._prev.token_type in self.ARITHMETIC_TOKENS

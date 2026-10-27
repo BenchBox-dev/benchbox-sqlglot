@@ -372,7 +372,6 @@ class PostgresGenerator(generator.Generator):
         exp.PercentileDisc: transforms.preprocess([transforms.add_within_group_for_percentiles]),
         exp.Pivot: no_pivot_sql,
         exp.Rand: rename_func("RANDOM"),
-        exp.RegexpLike: lambda self, e: self.binary(e, "~"),
         exp.RegexpILike: lambda self, e: self.binary(e, "~*"),
         exp.RegexpReplace: lambda self, e: self.func(
             "REGEXP_REPLACE",
@@ -390,7 +389,9 @@ class PostgresGenerator(generator.Generator):
                 transforms.eliminate_qualify,
             ]
         ),
-        exp.SHA2: sha256_sql,
+        exp.SHA2: lambda self, e: self.func(
+            "ENCODE", sha256_sql(self, e), exp.Literal.string("hex")
+        ),
         exp.SHA2Digest: sha2_digest_sql,
         exp.StrPosition: lambda self, e: strposition_sql(self, e, func_name="POSITION"),
         exp.StrToDate: lambda self, e: self.func("TO_DATE", e.this, self.format_time(e)),
@@ -422,14 +423,33 @@ class PostgresGenerator(generator.Generator):
         exp.JSONObjectAgg: rename_func("JSON_OBJECT_AGG"),
         exp.JSONBObjectAgg: rename_func("JSONB_OBJECT_AGG"),
         exp.CountIf: count_if_to_sum,
+        exp.FileFormatProperty: lambda self, e: f"USING {self.sql(e, 'this')}",
+        exp.TableSpaceProperty: lambda self, e: f"TABLESPACE {self.sql(e, 'this')}",
     }
 
     PROPERTIES_LOCATION = {
         **generator.Generator.PROPERTIES_LOCATION,
+        exp.FileFormatProperty: exp.Properties.Location.POST_SCHEMA,
+        exp.OnCommitProperty: exp.Properties.Location.POST_WITH,
         exp.PartitionedByProperty: exp.Properties.Location.POST_SCHEMA,
+        exp.TableSpaceProperty: exp.Properties.Location.POST_WITH,
         exp.TransientProperty: exp.Properties.Location.UNSUPPORTED,
         exp.VolatileProperty: exp.Properties.Location.UNSUPPORTED,
     }
+
+    def with_properties(self, properties: exp.Properties) -> str:
+        with_properties = []
+        post_with = []
+        for prop in properties.expressions:
+            if isinstance(prop, (exp.OnCommitProperty, exp.TableSpaceProperty)):
+                post_with.append(prop)
+            else:
+                with_properties.append(prop)
+
+        post_with.sort(key=lambda prop: isinstance(prop, exp.TableSpaceProperty))
+        sql = super().with_properties(exp.Properties(expressions=with_properties))
+        post_sql = self.expressions(sqls=post_with, sep=" ", indent=False)
+        return sql + self.seg(post_sql, sep=" " if sql else "") if post_sql else sql
 
     def bytestring_sql(self, expression: exp.ByteString) -> str:
         if not expression.args.get("is_bytes"):
@@ -579,6 +599,19 @@ class PostgresGenerator(generator.Generator):
         # https://www.postgresql.org/docs/current/functions-window.html
         self.unsupported("PostgreSQL does not support RESPECT NULLS.")
         return self.sql(expression.this)
+
+    def regexplike_sql(self, expression: exp.RegexpLike) -> str:
+        flag = expression.args.get("flag")
+        if not flag:
+            return self.binary(expression, "~")
+
+        # Postgres has no flags argument for ~, only the case-insensitive ~* operator. Of the
+        # case flags, the last one wins, e.g. 'ic' is case-sensitive and 'ci' is not
+        flags = flag.name if flag.is_string else ""
+        if not flag.is_string or set(flags) - {"i", "c"}:
+            self.unsupported("Only the case flags 'i' and 'c' are supported for ~ in Postgres")
+
+        return self.binary(expression, "~*" if flags.rfind("i") > flags.rfind("c") else "~")
 
     @unsupported_args("this")
     def currentschema_sql(self, expression: exp.CurrentSchema) -> str:

@@ -13,8 +13,10 @@ class TestOracle(Validator):
         self.assertIsInstance(create.this, exp.Schema)
         self.assertIsInstance(create.this.expressions[0], exp.ColumnDef)
         self.validate_identity('CREATE TABLE t (id NUMBER) TABLESPACE "Mixed Ts"')
-        with self.assertRaises(UnsupportedError):
-            create.sql("postgres", unsupported_level=ErrorLevel.RAISE)
+        self.assertEqual(
+            create.sql("postgres", unsupported_level=ErrorLevel.RAISE),
+            "CREATE TABLE t (id DECIMAL) TABLESPACE ts",
+        )
 
     def test_create_table_physical_properties(self):
         for clause in (
@@ -838,6 +840,26 @@ MATCH_RECOGNIZE (
             pretty=True,
         )
 
+    def test_nonreserved_keywords_as_identifiers(self):
+        for keyword in ("SAMPLE", "TABLESAMPLE", "MATCH_RECOGNIZE"):
+            with self.subTest(keyword):
+                self.validate_identity(
+                    f"SELECT 1 {keyword} FROM DUAL", f"SELECT 1 AS {keyword} FROM DUAL"
+                )
+                self.validate_identity(f"SELECT {keyword} FROM t WHERE {keyword} > 0")
+                self.validate_identity(
+                    f"SELECT {keyword}, COUNT(*) FROM t GROUP BY {keyword} ORDER BY {keyword}"
+                )
+                self.validate_identity(
+                    f"WITH {keyword} AS (SELECT 1 FROM DUAL) SELECT * FROM {keyword}"
+                )
+
+        self.validate_identity(
+            "SELECT SUBSTR(MIN(SQL_ID || SQL_TEXT), 14, 120) SAMPLE FROM V$SQLAREA",
+            "SELECT SUBSTR(MIN(SQL_ID || SQL_TEXT), 14, 120) AS SAMPLE FROM V$SQLAREA",
+        )
+        self.validate_identity("SELECT 1 FETCH FIRST 1 ROWS ONLY")
+
     def test_json_table(self):
         self.validate_identity(
             "SELECT * FROM JSON_TABLE(foo FORMAT JSON, 'bla' ERROR ON ERROR NULL ON EMPTY COLUMNS(foo PATH 'bar'))"
@@ -1033,6 +1055,16 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""
                         self.validate_identity(
                             f"SELECT * FROM t WHERE JSON_EXISTS(name{format_json}, '$[1].middle'{passing}{on_cond})"
                         )
+
+        self.validate_identity("SELECT JSON_VALUE(doc, '$.a') FROM t")
+        self.validate_identity("SELECT JSON_VALUE(doc, '$.a' RETURNING NUMBER) FROM t")
+        self.validate_identity("SELECT JSON_VALUE(doc, '$.a' RETURNING VARCHAR2(10)) FROM t")
+        self.validate_identity(
+            "SELECT JSON_VALUE(doc, '$.a' RETURNING NUMBER NULL ON ERROR) FROM t"
+        )
+        self.validate_identity(
+            "SELECT JSON_VALUE(doc, '$.a' RETURNING NUMBER DEFAULT 0 ON ERROR NULL ON EMPTY) FROM t"
+        )
 
     def test_grant(self):
         grant_cmds = [

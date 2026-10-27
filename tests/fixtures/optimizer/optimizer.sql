@@ -1364,15 +1364,6 @@ LEFT JOIN CONTACTS AS C
     WHERE
       TYPE = 'education'
   );
-WITH "_u_0" AS (
-  SELECT
-    "D"."DOMAIN" AS "DOMAIN"
-  FROM "DOMAINS" AS "D"
-  WHERE
-    "D"."TYPE" = 'education'
-  GROUP BY
-    "D"."DOMAIN"
-)
 SELECT
   "A"."ACCOUNT_ID" AS "ACCOUNT_ID",
   "A"."NAME" AS "NAME",
@@ -1380,10 +1371,13 @@ SELECT
 FROM "ACCOUNTS" AS "A"
 LEFT JOIN "CONTACTS" AS "C"
   ON "A"."ACCOUNT_ID" = "C"."ACCOUNT_ID"
-LEFT JOIN "_u_0" AS "_u_0"
-  ON "C"."EMAIL_DOMAIN" = "_u_0"."DOMAIN"
-WHERE
-  NOT "_u_0"."DOMAIN" IS NULL;
+  AND "C"."EMAIL_DOMAIN" IN (
+    SELECT
+      "D"."DOMAIN" AS "DOMAIN"
+    FROM "DOMAINS" AS "D"
+    WHERE
+      "D"."TYPE" = 'education'
+  );
 
 # title: decorrelate subquery and transpile ArrayAny correctly when generating spark
 # execute: false
@@ -1648,3 +1642,53 @@ SELECT
     SELECT
       1 AS "1"
   ) AS "result";
+
+# title: redundant cast preserves arithmetic grouping
+SELECT CAST(x.a - x.b AS INT) * 2 AS c FROM x AS x;
+SELECT
+  (
+    "x"."a" - "x"."b"
+  ) * 2 AS "c"
+FROM "x" AS "x";
+
+# title: redundant cast preserves unary operand grouping
+SELECT -CAST(x.a - x.b AS INT) AS c FROM x AS x;
+SELECT
+  -(
+    "x"."a" - "x"."b"
+  ) AS "c"
+FROM "x" AS "x";
+
+# title: redundant cast allows unnecessary parentheses to simplify
+SELECT CAST(x.a * x.b AS INT) + 2 AS c FROM x AS x;
+SELECT
+  "x"."a" * "x"."b" + 2 AS "c"
+FROM "x" AS "x";
+
+# title: redundant cast preserves IN operand grouping
+SELECT CAST(x.a > 0 OR x.b > 0 AS BOOLEAN) IN (FALSE) AS c FROM x AS x;
+SELECT
+  (
+    "x"."a" > 0 OR "x"."b" > 0
+  ) IN (FALSE) AS "c"
+FROM "x" AS "x";
+
+# title: redundant cast preserves BETWEEN operand grouping
+SELECT CAST(x.a BETWEEN 1 AND 3 AS BOOLEAN) = (x.b > 0) AS c FROM x AS x;
+SELECT
+  (
+    "x"."a" <= 3 AND "x"."a" >= 1
+  ) = (
+    "x"."b" > 0
+  ) AS "c"
+FROM "x" AS "x";
+
+# title: redundant cast preserves NOT operand grouping
+SELECT CAST(NOT x.a > 0 AS BOOLEAN) = (x.b > 0) AS c FROM x AS x;
+SELECT
+  (
+    "x"."a" <= 0
+  ) = (
+    "x"."b" > 0
+  ) AS "c"
+FROM "x" AS "x";

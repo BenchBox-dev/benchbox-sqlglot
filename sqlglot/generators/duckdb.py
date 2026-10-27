@@ -672,6 +672,15 @@ def _struct_sql(self: DuckDBGenerator, expression: exp.Struct) -> str:
     return f"ROW({csv_args})" if is_bq_inline_struct else f"{{{csv_args}}}"
 
 
+@unsupported_args("unique_keys", "return_type", "encoding", "strict")
+def _json_constructor_sql(self: DuckDBGenerator, expression: exp.JSONArray | exp.JSONObject) -> str:
+    if expression.args.get("null_handling") == "ABSENT ON NULL":
+        self.unsupported("ABSENT ON NULL is not supported in DuckDB")
+
+    name = "JSON_ARRAY" if isinstance(expression, exp.JSONArray) else "JSON_OBJECT"
+    return self.func(name, *expression.expressions)
+
+
 def _json_format_sql(self: DuckDBGenerator, expression: exp.JSONFormat) -> str:
     sql = self.func("TO_JSON", expression.this, expression.args.get("options"))
     return f"CAST({sql} AS TEXT)"
@@ -889,6 +898,19 @@ WRAPPED_JSON_EXTRACT_EXPRESSIONS = (exp.Binary, exp.Bracket, exp.In, exp.Not)
 
 
 def _arrow_json_extract_sql(self: DuckDBGenerator, expression: JSON_EXTRACT_TYPE) -> str:
+    paths = expression.expressions
+    if isinstance(expression, exp.JSONExtract) and paths:
+        # JSON_EXTRACT with several paths (SQLite, MySQL) returns a JSON array of the results,
+        # which DuckDB builds from a list of paths
+        return self.func(
+            "TO_JSON",
+            self.func(
+                "JSON_EXTRACT",
+                expression.this,
+                exp.Array(expressions=[expression.expression, *paths]),
+            ),
+        )
+
     arrow_sql = arrow_json_extract_sql(self, expression)
     if not expression.same_parent and isinstance(
         expression.parent, WRAPPED_JSON_EXTRACT_EXPRESSIONS
@@ -1567,6 +1589,7 @@ class DuckDBGenerator(generator.Generator):
     TABLE_HINTS = False
     QUERY_HINTS = False
     LIMIT_FETCH = "LIMIT"
+    SUPPORTS_NEAREST_JOIN = True
     STRUCT_DELIMITER = ("(", ")")
     RENAME_TABLE_WITH_DB = False
     NVL2_SUPPORTED = False
@@ -1794,7 +1817,7 @@ class DuckDBGenerator(generator.Generator):
         exp.TsOrDsAdd: _date_delta_to_binary_interval_op(),
         exp.TsOrDsDiff: lambda self, e: self.func(
             "DATE_DIFF",
-            f"'{e.args.get('unit') or 'DAY'}'",
+            exp.Literal.string(e.unit or "DAY"),
             exp.cast(e.expression, exp.DType.TIMESTAMP),
             exp.cast(e.this, exp.DType.TIMESTAMP),
         ),
@@ -1824,6 +1847,8 @@ class DuckDBGenerator(generator.Generator):
         ),
         exp.Xor: _xor_sql,
         exp.JSONObjectAgg: rename_func("JSON_GROUP_OBJECT"),
+        exp.JSONArray: _json_constructor_sql,
+        exp.JSONObject: _json_constructor_sql,
         exp.JSONBObjectAgg: rename_func("JSON_GROUP_OBJECT"),
         exp.DateBin: rename_func("TIME_BUCKET"),
         exp.LastDay: _last_day_sql,
@@ -1970,6 +1995,7 @@ class DuckDBGenerator(generator.Generator):
         exp.TemporaryProperty: exp.Properties.Location.POST_CREATE,
         exp.ReturnsProperty: exp.Properties.Location.POST_ALIAS,
         exp.SequenceProperties: exp.Properties.Location.POST_EXPRESSION,
+        exp.TriggerProperties: exp.Properties.Location.POST_EXPRESSION,
         exp.IcebergProperty: exp.Properties.Location.POST_CREATE,
     }
 
@@ -2387,6 +2413,27 @@ class DuckDBGenerator(generator.Generator):
 
         return self.sql(add_expr)
 
+    def unicodestring_sql(self, expression: exp.UnicodeString) -> str:
+        # DuckDB has no Unicode escape strings and doesn't read \u in a string, so the escapes
+        # are decoded into the characters, e.g. U&'d\0061t\0061' and U&'d!+000061ta' UESCAPE '!'
+        # are both 'data'
+        escape = expression.args.get("escape")
+        escape_char = re.escape(escape.name if isinstance(escape, exp.Expr) else "\\")
+        pattern = re.compile(
+            rf"{escape_char}(?:\+([0-9a-fA-F]{{6}})|([0-9a-fA-F]{{4}})|({escape_char}))"
+        )
+
+        def decode(match: re.Match[str]) -> str:
+            if match.group(3):
+                return match.group(3)
+            return chr(int(match.group(1) or match.group(2), 16))
+
+        # A character outside the BMP can be written as a UTF-16 surrogate pair
+        text = (
+            pattern.sub(decode, expression.name).encode("utf-16", "surrogatepass").decode("utf-16")
+        )
+        return self.sql(exp.Literal.string(text))
+
     def bytestring_sql(self, expression: exp.ByteString) -> str:
         if not expression.args.get("is_bytes"):
             return super().bytestring_sql(expression)
@@ -2551,9 +2598,6 @@ class DuckDBGenerator(generator.Generator):
         initial_value = expression.args.get("initial")
         merge_lambda = expression.args.get("merge")
 
-        if merge_lambda:
-            merge_lambda.set("colon", True)
-
         return self.func("list_reduce", array_arg, merge_lambda, initial_value)
 
     def zipf_sql(self, expression: exp.Zipf) -> str:
@@ -2678,7 +2722,7 @@ class DuckDBGenerator(generator.Generator):
         return self._greatest_least_sql(expression)
 
     def lambda_sql(self, expression: exp.Lambda, arrow_sep: str = "->", wrap: bool = True) -> str:
-        if expression.args.get("colon"):
+        if self.dialect.version >= (1, 3):
             prefix = "LAMBDA "
             arrow_sep = ":"
             wrap = False
@@ -2696,6 +2740,11 @@ class DuckDBGenerator(generator.Generator):
     def soundex_sql(self, expression: exp.Soundex) -> str:
         self.unsupported("SOUNDEX is not supported in DuckDB")
         return self.func("SOUNDEX", expression.this)
+
+    def placeholder_sql(self, expression: exp.Placeholder) -> str:
+        if isinstance(expression.this, exp.Identifier):
+            return f"${self.sql(expression, 'this')}"
+        return super().placeholder_sql(expression)
 
     def install_sql(self, expression: exp.Install) -> str:
         force = "FORCE " if expression.args.get("force") else ""
@@ -3163,10 +3212,26 @@ class DuckDBGenerator(generator.Generator):
             )
         return super().in_sql(expression)
 
-    def join_sql(self, expression: exp.Join) -> str:
+    def interval_sql(self, expression: exp.Interval) -> str:
+        # DuckDB truncates INTERVAL '1.5' DAY to 1 day, but keeps the fraction in INTERVAL '1.5 DAY'
+        this = expression.this
+        unit = expression.unit
+        if expression.args.get("fraction_in_string") and this and isinstance(unit, exp.Var):
+            return f"INTERVAL '{this.name} {self.sql(unit)}'"
+
+        return super().interval_sql(expression)
+
+    def join_sql(self, expression: exp.Join, join_op: str | None = None) -> str:
+        if expression.kind in ("MARK", "SINGLE") or (
+            expression.side == "RIGHT" and expression.is_semi_or_anti_join
+        ):
+            kind = "_".join(part for part in (expression.side, expression.kind) if part)
+            return super().join_sql(expression, join_op=f"JOIN BY (TYPE {kind})")
+
         if (
             not expression.args.get("using")
             and not expression.args.get("on")
+            and not expression.args.get("nearest")
             and not expression.method
             and (expression.kind in ("", "INNER", "OUTER"))
         ):
@@ -3178,7 +3243,7 @@ class DuckDBGenerator(generator.Generator):
             expression.set("side", None)
             expression.set("kind", None)
 
-        return super().join_sql(expression)
+        return super().join_sql(expression, join_op=join_op)
 
     def countif_sql(self, expression: exp.CountIf) -> str:
         if self.dialect.version >= (1, 2):

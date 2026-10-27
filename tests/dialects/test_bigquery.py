@@ -330,6 +330,13 @@ class TestBigQuery(Validator):
             check_command_warning=True,
         )
         self.validate_identity("SELECT MAKE_INTERVAL(100, 11, 1, 12, 30, 10)")
+        self.validate_all(
+            "SELECT MAKE_INTERVAL(1, day => '2\\'; SELECT 1; --')",
+            write={
+                "duckdb": "SELECT INTERVAL '1 year 2''; SELECT 1; -- day'",
+                "snowflake": "SELECT INTERVAL '1 year, 2\\'; SELECT 1; -- day'",
+            },
+        )
         self.validate_identity(
             "WHILE i < ARRAY_LENGTH(batches) DO SET x = batches[OFFSET(i)]",
             check_command_warning=True,
@@ -1950,7 +1957,7 @@ WHERE
             "SELECT ARRAY_TO_STRING(['cake', 'pie', NULL], '--', 'MISSING') AS text",
             write={
                 "bigquery": "SELECT ARRAY_TO_STRING(['cake', 'pie', NULL], '--', 'MISSING') AS text",
-                "duckdb": "SELECT ARRAY_TO_STRING(LIST_TRANSFORM(['cake', 'pie', NULL], x -> COALESCE(CAST(x AS TEXT), 'MISSING')), '--') AS text",
+                "duckdb": "SELECT ARRAY_TO_STRING(LIST_TRANSFORM(['cake', 'pie', NULL], LAMBDA x : COALESCE(CAST(x AS TEXT), 'MISSING')), '--') AS text",
             },
         )
         self.validate_all(

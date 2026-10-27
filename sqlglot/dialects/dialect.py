@@ -59,6 +59,10 @@ DATETIME_DELTA = t.Union[
 ]
 DATETIME_ADD = (exp.DateAdd, exp.TimeAdd, exp.DatetimeAdd, exp.TsOrDsAdd, exp.TimestampAdd)
 
+# JSON paths that need parentheses when used as the right operand of -> / ->>.
+# CONCAT may be generated as a chain of || operators, which would bind looser than the arrow
+WRAPPED_JSON_PATH_EXPRESSIONS = (exp.Binary, exp.Predicate, exp.Not, exp.Concat)
+
 if t.TYPE_CHECKING:
     from sqlglot._typing import B, E, F, GeneratorArgs, ParserArgs, BuilderArgs
     from typing_extensions import Unpack
@@ -638,6 +642,11 @@ class Dialect(metaclass=_Dialect):
 
     The "custom_fields" source is shadowed by the projection alias, so we cannot qualify "id"
     with "custom_fields" in GROUP BY/HAVING.
+    """
+
+    TABLE_ALIASES_SHADOW_COLUMN_NAMES = False
+    """
+    Whether a whole-row reference to a table alias takes precedence over a same-named column.
     """
 
     TABLES_REFERENCEABLE_AS_COLUMNS = False
@@ -1362,7 +1371,7 @@ def arrow_json_extract_sql(
     if self.JSON_TYPE_REQUIRED_FOR_EXTRACTION and isinstance(this, exp.Literal) and this.is_string:
         this.replace(exp.cast(this, exp.DType.JSON))
 
-    if isinstance(expression.expression, (exp.Binary, exp.Predicate, exp.Not)):
+    if isinstance(expression.expression, WRAPPED_JSON_PATH_EXPRESSIONS):
         expression.set("expression", exp.paren(expression.expression, copy=False))
 
     op = op or ("->" if isinstance(expression, exp.JSONExtract) else "->>")
@@ -1613,7 +1622,11 @@ def generate_series_sql(
         if expression.args.get("is_end_exclusive"):
             if exclusive_func_name:
                 return self.func(exclusive_func_name, start, end, step)
-            adjusted_end = exp.Sub(this=end, expression=exp.Literal.number(1))
+            # The last value is one before the end in the direction of the step
+            if step and step.is_int and t.cast(int, step.to_py()) < 0:
+                adjusted_end: exp.Expr = exp.Add(this=end, expression=exp.Literal.number(1))
+            else:
+                adjusted_end = exp.Sub(this=end, expression=exp.Literal.number(1))
             return self.func(func_name, start, adjusted_end, step)
 
         return self.func(func_name, start, end, step)
@@ -2709,9 +2722,13 @@ def no_make_interval_sql(self: Generator, expression: exp.MakeInterval, sep: str
         if isinstance(value, exp.Kwarg):
             value = value.expression
 
-        args.append(f"{value} {unit}")
+        if value is None:
+            continue
 
-    return f"INTERVAL '{self.format_args(*args, sep=sep)}'"
+        value_sql = value.name if value.is_string else self.sql(value)
+        args.append(f"{value_sql} {unit}")
+
+    return f"INTERVAL {self.sql(exp.Literal.string(self.format_args(*args, sep=sep)))}"
 
 
 def length_or_char_length_sql(self: Generator, expression: exp.Length) -> str:

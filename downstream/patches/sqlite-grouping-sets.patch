@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index e006f4b1..8b25799b 100644
+index b9dde8b7..e4a62cc3 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
 @@ -16,6 +16,8 @@ from sqlglot.dialects.dialect import (
@@ -35,7 +35,7 @@ index e006f4b1..8b25799b 100644
          exp.Select: transforms.preprocess(
              [
                  _offset_to_limit,
-@@ -674,6 +686,9 @@ class SQLiteGenerator(generator.Generator):
+@@ -678,6 +690,9 @@ class SQLiteGenerator(generator.Generator):
  
          return self.func(name, *coalesces)
  
