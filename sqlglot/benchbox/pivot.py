@@ -85,9 +85,13 @@ def expand_order_by_all(expression: E, copy: bool = True) -> E:
             continue
         query = order.parent
         if len(keys) != 1 or not isinstance(query, (exp.Select, exp.SetOperation)):
-            raise UnsupportedError("ORDER BY ALL is only rewritten as the single ORDER BY key of a query")
+            raise UnsupportedError(
+                "ORDER BY ALL is only rewritten as the single ORDER BY key of a query"
+            )
         projections = query.selects
-        if not projections or any(isinstance(item.unnest(), exp.Star) or item.is_star for item in projections):
+        if not projections or any(
+            isinstance(item.unnest(), exp.Star) or item.is_star for item in projections
+        ):
             raise UnsupportedError("ORDER BY ALL needs a select list without * to expand")
         template = keys[0]
         expanded = []
@@ -211,7 +215,11 @@ def _lower_unpivot(source: exp.Subquery, pivot: exp.Pivot) -> exp.Subquery | Non
     value = pivot.expressions[0]
     field = pivot.fields[0]
     label = field.this if isinstance(field, exp.In) else None
-    if not isinstance(value, exp.Identifier) or not isinstance(label, exp.Identifier) or field.args.get("query"):
+    if (
+        not isinstance(value, exp.Identifier)
+        or not isinstance(label, exp.Identifier)
+        or field.args.get("query")
+    ):
         return None
 
     names = {identifier.name for identifier in identifiers}
@@ -230,11 +238,13 @@ def _lower_unpivot(source: exp.Subquery, pivot: exp.Pivot) -> exp.Subquery | Non
     if len(consumed) != len(listed):
         return None
     keys = [identifier for identifier in identifiers if identifier.name not in consumed]
-    if {label.name, value.name} & {identifier.name for identifier in keys} or label.name == value.name:
+    if {label.name, value.name} & {
+        identifier.name for identifier in keys
+    } or label.name == value.name:
         return None
 
     keep_nulls = pivot.args.get("include_nulls") is True
-    branches: list[exp.Expr] = []
+    branches: list[exp.Select] = []
     for member, text in listed:
         branch = exp.select(
             *[exp.column(identifier.copy()) for identifier in keys],
@@ -244,7 +254,7 @@ def _lower_unpivot(source: exp.Subquery, pivot: exp.Pivot) -> exp.Subquery | Non
         if not keep_nulls:
             branch = branch.where(exp.Not(this=exp.Is(this=member.copy(), expression=exp.Null())))
         branches.append(branch)
-    union = branches[0]
+    union: exp.Query = branches[0]
     for branch in branches[1:]:
         union = exp.union(union, branch, distinct=False)
     return exp.Subquery(this=union)

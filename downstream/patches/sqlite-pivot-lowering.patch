@@ -1,0 +1,40 @@
+diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
+index e987ec0d..1aaa51e5 100644
+--- a/sqlglot/generators/sqlite.py
++++ b/sqlglot/generators/sqlite.py
+@@ -11,7 +11,6 @@ from sqlglot.dialects.dialect import (
+     count_if_to_sum,
+     groupconcat_sql,
+     no_ilike_sql,
+-    no_pivot_sql,
+     no_tablesample_sql,
+     no_trycast_sql,
+     rename_func,
+@@ -19,6 +18,7 @@ from sqlglot.dialects.dialect import (
+ )
+ from sqlglot.benchbox.grouping_sets import expand_grouping_sets
+ from sqlglot.benchbox.moments import SUPPORTED as MOMENT_AGGREGATES, expand_moments, is_expandable
++from sqlglot.benchbox.pivot import expand_order_by_all, lower_pivots, reject_pivot_sql
+ from sqlglot.generator import unsupported_args
+ from sqlglot.helper import is_int
+ from sqlglot.tokens import TokenType
+@@ -287,7 +287,7 @@ class SQLiteGenerator(generator.Generator):
+         ),
+         exp.LogicalOr: rename_func("MAX"),
+         exp.LogicalAnd: rename_func("MIN"),
+-        exp.Pivot: no_pivot_sql,
++        exp.Pivot: reject_pivot_sql,
+         exp.Rand: rename_func("RANDOM"),
+         exp.RegexpLike: lambda self, e: self.binary(e, "REGEXP"),
+         **{kind: _moments_sql for kind in MOMENT_AGGREGATES},
+@@ -817,7 +817,9 @@ class SQLiteGenerator(generator.Generator):
+         return self.func(name, *coalesces)
+ 
+     def preprocess(self, expression: exp.Expr) -> exp.Expr:
+-        return super().preprocess(expand_grouping_sets(expression, copy=False))
++        expression = expand_grouping_sets(expression, copy=False)
++        expression = lower_pivots(expression, copy=False)
++        return super().preprocess(expand_order_by_all(expression, copy=False))
+ 
+     def greatest_sql(self, expression: exp.Greatest) -> str:
+         return self._greatest_least_sql(expression)

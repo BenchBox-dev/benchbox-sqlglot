@@ -82,9 +82,7 @@ class TestPivotLowering(unittest.TestCase):
 
     def test_pivot_is_conditional_aggregation(self):
         self.assertEqual(
-            self.sqlite(
-                "SELECT * FROM (SELECT a, m, q FROM t) PIVOT (SUM(q) FOR m IN ('x', 'y'))"
-            ),
+            self.sqlite("SELECT * FROM (SELECT a, m, q FROM t) PIVOT (SUM(q) FOR m IN ('x', 'y'))"),
             "SELECT * FROM (SELECT a, SUM(CASE WHEN m = 'x' THEN q END) AS x, "
             "SUM(CASE WHEN m = 'y' THEN q END) AS y FROM (SELECT a, m, q FROM t) AS _pivot_src GROUP BY a)",
         )
@@ -154,16 +152,22 @@ class TestOrderByAll(unittest.TestCase):
     def test_every_selected_column_is_a_key_with_the_direction(self):
         for dialect, expected in (
             ("sqlite", "ORDER BY 1 DESC, 2 DESC, 3 DESC LIMIT 100"),
-            ("datafusion", "ORDER BY 1 DESC NULLS LAST, 2 DESC NULLS LAST, 3 DESC NULLS LAST LIMIT 100"),
+            (
+                "datafusion",
+                "ORDER BY 1 DESC NULLS LAST, 2 DESC NULLS LAST, 3 DESC NULLS LAST LIMIT 100",
+            ),
         ):
             with self.subTest(dialect=dialect):
                 sql = parse_one(
-                    "SELECT a, b, SUM(c) AS s FROM t GROUP BY a, b ORDER BY ALL DESC LIMIT 100", read="duckdb"
+                    "SELECT a, b, SUM(c) AS s FROM t GROUP BY a, b ORDER BY ALL DESC LIMIT 100",
+                    read="duckdb",
                 ).sql(dialect)
                 self.assertTrue(sql.endswith(expected), sql)
 
     def test_null_placement_is_kept(self):
-        sql = parse_one("SELECT a, b FROM t ORDER BY ALL ASC NULLS FIRST", read="duckdb").sql("sqlite")
+        sql = parse_one("SELECT a, b FROM t ORDER BY ALL ASC NULLS FIRST", read="duckdb").sql(
+            "sqlite"
+        )
         self.assertTrue(sql.endswith("ORDER BY 1 ASC, 2 ASC"), sql)
 
     def test_netezza_reads_all_as_the_keyword(self):
@@ -244,7 +248,9 @@ class TestSqliteExecution(_ExecutionCase):
         self.run_group(PIVOT_QUERIES[:3] + UNPIVOT_QUERIES[:2], read="netezza")
 
     def test_order_by_all_desc_is_descending(self):
-        rows = _rows("sqlite", "SELECT mode, SUM(qty) AS total FROM sales GROUP BY mode ORDER BY ALL DESC")
+        rows = _rows(
+            "sqlite", "SELECT mode, SUM(qty) AS total FROM sales GROUP BY mode ORDER BY ALL DESC"
+        )
         self.assertEqual([row[0] for row in rows], ["TRUCK", "SHIP", "RAIL", "MAIL", "AIR", None])
 
     def test_netezza_order_by_all_desc_is_descending(self):
