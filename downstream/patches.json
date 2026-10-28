@@ -2,7 +2,7 @@
   "schema": 1,
   "distribution": "benchbox-sqlglot",
   "import_package": "benchbox._vendor.sqlglot",
-  "version": "30.25.0.1",
+  "version": "30.25.0.2",
   "upstream": {
     "repository": "https://github.com/tobymao/sqlglot",
     "tag": "v30.25.0",
@@ -551,13 +551,32 @@
       "patch": "downstream/patches/empty-group-by-generator.patch"
     },
     {
+      "id": "pivot-lowering",
+      "source": "97a288cd10483a1e61a93cf5a73918436b8d32da",
+      "status": "original",
+      "depends": [
+        "real-engine-ci",
+        "benchbox-rewrites",
+        "platform-dialect-modules"
+      ],
+      "paths": [
+        "sqlglot/benchbox/pivot.py",
+        "tests/test_benchbox_pivot.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_pivot"
+      ],
+      "reason": "lower_pivots writes a PIVOT (one aggregate over literal IN values) or UNPIVOT over a derived table with a known, star-free select list as conditional aggregation or a UNION ALL, expand_order_by_all writes ORDER BY ALL as one ordinal key per selected column with the query's direction and null placement, and reject_pivot_sql makes the generator raise UnsupportedError for any pivot that is left, so no query is written without its PIVOT (SQLite and DataFusion wrote none and returned the unpivoted rows). Execution tests compare SQLite and DataFusion rows with DuckDB's over PIVOT, UNPIVOT (aliases, INCLUDE NULLS, NULL inputs, groups with no listed value) and ORDER BY ALL from DuckDB and Netezza sources."
+    },
+    {
       "id": "engine-compat-rewrites",
       "source": "427bfc5df7ea81e089fb67abf4cfd94b5964edd5",
       "status": "original",
       "depends": [
         "real-engine-ci",
         "platform-dialect-modules",
-        "empty-group-by-generator"
+        "empty-group-by-generator",
+        "pivot-lowering"
       ],
       "paths": [
         "sqlglot/benchbox/compat.py",
@@ -571,7 +590,7 @@
         "tests.test_benchbox_generators",
         "tests.test_benchbox_compat_engines"
       ],
-      "reason": "Engine-compatibility rewrites in sqlglot.benchbox.compat (alias inlining, column qualification by name, one-row sources for FROM-less selects, FILTER removal for BigQuery, ClickHouse and others, literal-subquery naming and VALUES, grouped scalar subqueries, ordered list aggregates) with every gate an argument, the DataFusion generator that drops an unsupported GROUP BY () (SQLite drops it through sqlite-empty-group-by), and execution tests on Postgres, DuckDB, DataFusion, PySpark and chDB."
+      "reason": "Engine-compatibility rewrites in sqlglot.benchbox.compat (alias inlining, column qualification by name, one-row sources for FROM-less selects, FILTER removal for BigQuery, ClickHouse and others, literal-subquery naming and VALUES, grouped scalar subqueries, ordered list aggregates) with every gate an argument, the DataFusion generator that drops an unsupported GROUP BY () and lowers PIVOT, UNPIVOT and ORDER BY ALL (pivot-lowering) (SQLite drops it through sqlite-empty-group-by), and execution tests on Postgres, DuckDB, DataFusion, PySpark and chDB."
     },
     {
       "id": "netezza-exact-division",
@@ -1109,6 +1128,27 @@
         "tests.test_benchbox_obt_postgres_engines"
       ],
       "reason": "The TPC-DS one-big-table Q36 and Q2 shapes, written in DuckDB over DOUBLE columns, on PostgreSQL against DuckDB: the engine rejects an output alias inside an ORDER BY expression and ROUND(double precision, integer), and inline_order_by_aliases and round_inputs_to_decimal give DuckDB's rows."
+    },
+    {
+      "id": "sqlite-pivot-lowering",
+      "source": "97a288cd10483a1e61a93cf5a73918436b8d32da",
+      "status": "carried",
+      "upstream_state": "declined",
+      "upstream_reason": "Wires the fork's sqlglot.benchbox.pivot module into the SQLite generator; upstream would first need that module.",
+      "depends": [
+        "pivot-lowering",
+        "sqlite-grouping-sets",
+        "sqlite-index-null-ordering"
+      ],
+      "paths": [
+        "sqlglot/generators/sqlite.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_pivot",
+        "tests.dialects.test_sqlite"
+      ],
+      "reason": "The SQLite generator lowers PIVOT and UNPIVOT and expands ORDER BY ALL before writing SQL, and raises UnsupportedError for a pivot it cannot lower instead of writing the query without it (Read Primitives pivot_basic and unpivot_basic returned the unpivoted rows and orderby_all_desc lost its ordering).",
+      "patch": "downstream/patches/sqlite-pivot-lowering.patch"
     }
   ]
 }

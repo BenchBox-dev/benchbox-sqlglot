@@ -287,6 +287,21 @@ the carried patch `sqlite-grouping-sets`; the modules and `tests/test_benchbox_g
 executes the Q27, Q36 and Q67 shapes and the variances on SQLite against DuckDB, are the `original` entry
 `sqlite-grouping-sets-modules`.
 
+SQLite and DataFusion have no `PIVOT`, `UNPIVOT` or `ORDER BY ALL`, and the upstream generator wrote a query
+with the pivot dropped (a `PIVOT` returned its unpivoted rows, an `UNPIVOT` returned the literal column names) and
+`ORDER BY ALL DESC` read from a Netezza source as a sort on the constant `"ALL"`. `sqlglot.benchbox.pivot.lower_pivots`
+now writes a `PIVOT` with one `SUM`, `MIN`, `MAX`, `AVG` or `COUNT` over literal `IN` values as conditional aggregation,
+and an `UNPIVOT` of plain columns as a `UNION ALL` (`NULL` inputs excluded unless `INCLUDE NULLS`), both only over a
+derived table whose select list has no `*` so the grouping columns are known; `expand_order_by_all` writes
+`ORDER BY ALL` (the DuckDB keyword, or the unquoted column `ALL` that Netezza and PostgreSQL read) as one ordinal key
+per selected column with the same direction and null placement. Any other pivot (a table or CTE source, several
+aggregates, `GROUP BY`, `DISTINCT`, a subquery `IN` list, multi-column `UNPIVOT`) raises `UnsupportedError` from the
+generator at every `unsupported_level`, so BenchBox records a failed query instead of a wrong result. The SQLite hook
+is the carried patch `sqlite-pivot-lowering`; the module, the DataFusion generator hook and
+`tests/test_benchbox_pivot.py`, which executes each shape on SQLite and DataFusion against DuckDB, are the `original`
+entry `pivot-lowering`. PostgreSQL and the other generators that map `Pivot` to `no_pivot_sql` still drop it with a
+warning.
+
 `ansi` and `standard` are not dialects the fork provides, and the fork has no alias
 dialects. The caller resolves them before calling SQLGlot: BenchBox's platform
 registry maps `ansi` and `standard` (and every platform name) to a dialect that
