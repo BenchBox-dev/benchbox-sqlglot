@@ -13,10 +13,10 @@ index 62b5bc07..0b5da196 100644
  
  class GetExtract(Expression, Func):
 diff --git a/sqlglot/generators/postgres.py b/sqlglot/generators/postgres.py
-index aae5153f..f4743e4b 100644
+index 88ca1a73..8664d8a4 100644
 --- a/sqlglot/generators/postgres.py
 +++ b/sqlglot/generators/postgres.py
-@@ -460,6 +460,15 @@ class PostgresGenerator(generator.Generator):
+@@ -483,6 +483,15 @@ class PostgresGenerator(generator.Generator):
              exp.Literal.string("hex"),
          )
  
@@ -33,10 +33,10 @@ index aae5153f..f4743e4b 100644
          self.unsupported("Table comments are not supported in the CREATE statement")
          return ""
 diff --git a/sqlglot/optimizer/annotate_types.py b/sqlglot/optimizer/annotate_types.py
-index b0e402ce..cbd763b2 100644
+index 4612efb9..a2f83325 100644
 --- a/sqlglot/optimizer/annotate_types.py
 +++ b/sqlglot/optimizer/annotate_types.py
-@@ -1147,7 +1147,9 @@ class TypeAnnotator:
+@@ -1153,7 +1153,9 @@ class TypeAnnotator:
  
      def _annotate_extract(self, expression: exp.Extract) -> exp.Extract:
          part = expression.name
@@ -48,10 +48,10 @@ index b0e402ce..cbd763b2 100644
          elif part == "DATE":
              self._set_type(expression, exp.DType.DATE)
 diff --git a/sqlglot/parsers/postgres.py b/sqlglot/parsers/postgres.py
-index 008a1865..8295def1 100644
+index 7580942c..ace4d528 100644
 --- a/sqlglot/parsers/postgres.py
 +++ b/sqlglot/parsers/postgres.py
-@@ -90,6 +90,7 @@ class PostgresParser(parser.Parser):
+@@ -112,6 +112,7 @@ class PostgresParser(parser.Parser):
      ALTER_TABLE_MIXED_ACTIONS = True
      ALTER_COLUMN_TYPE_REQUIRES_KEYWORD = True
      SUPPORTS_OMITTED_INTERVAL_SPAN_UNIT = True
@@ -59,7 +59,7 @@ index 008a1865..8295def1 100644
  
      # The one-byte "char" type is distinct from CHAR, and it can only be referenced by
      # quoting it: https://www.postgresql.org/docs/current/datatype-character.html
-@@ -335,6 +336,12 @@ class PostgresParser(parser.Parser):
+@@ -358,6 +359,12 @@ class PostgresParser(parser.Parser):
          self._match_text_seq("S")
          return self.expression(exp.Placeholder(this=this))
  
@@ -72,7 +72,7 @@ index 008a1865..8295def1 100644
      def _parse_date_part(self) -> exp.Expr:
          part = self._parse_type()
          self._match(TokenType.COMMA)
-@@ -343,7 +350,11 @@ class PostgresParser(parser.Parser):
+@@ -366,7 +373,11 @@ class PostgresParser(parser.Parser):
          if part and isinstance(part, (exp.Column, exp.Literal)):
              part = exp.var(part.name.upper())
  
@@ -99,10 +99,10 @@ index 5faade46..ad115971 100644
  
      FUNCTIONS = {
 diff --git a/tests/dialects/test_postgres.py b/tests/dialects/test_postgres.py
-index 3f4d60ea..2b70e569 100644
+index 5b7acd00..bfc86ea9 100644
 --- a/tests/dialects/test_postgres.py
 +++ b/tests/dialects/test_postgres.py
-@@ -145,6 +145,27 @@ class TestPostgres(Validator):
+@@ -153,6 +153,27 @@ class TestPostgres(Validator):
              if expression.args.get("returning"):
                  self.assertIsInstance(expression.args["returning"], exp.DataType)
  
@@ -130,7 +130,7 @@ index 3f4d60ea..2b70e569 100644
      def test_postgres(self):
          expr = self.parse_one("SELECT * FROM r CROSS JOIN LATERAL UNNEST(ARRAY[1]) AS s(location)")
          unnest = expr.args["joins"][0].this.this
-@@ -387,11 +408,11 @@ class TestPostgres(Validator):
+@@ -395,11 +416,11 @@ class TestPostgres(Validator):
          )
          self.validate_identity(
              "SELECT DATE_PART('isodow'::varchar(6), current_date)",
@@ -144,7 +144,7 @@ index 3f4d60ea..2b70e569 100644
          )
          self.validate_identity(
              "END WORK AND NO CHAIN",
-@@ -863,16 +884,16 @@ FROM json_data, field_ids""",
+@@ -908,16 +929,16 @@ FROM json_data, field_ids""",
          self.validate_all(
              "SELECT DATE_PART('minute', timestamp '2023-01-04 04:05:06.789')",
              write={
@@ -200,10 +200,10 @@ index 926486b3..43c6fe9a 100644
          self.validate_identity(
              "SELECT CONCAT('abc', 'def')",
 diff --git a/tests/fixtures/optimizer/annotate_types.sql b/tests/fixtures/optimizer/annotate_types.sql
-index 5bb23aec..9220e5ec 100644
+index 5266c521..ce8854fd 100644
 --- a/tests/fixtures/optimizer/annotate_types.sql
 +++ b/tests/fixtures/optimizer/annotate_types.sql
-@@ -126,6 +126,34 @@ TIME;
+@@ -237,6 +237,34 @@ TIME;
  EXTRACT(day from x);
  INT;
  

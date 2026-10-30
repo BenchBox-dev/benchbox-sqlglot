@@ -36,10 +36,10 @@ index 16bcf6c9..f31f6b9e 100644
  
  MODULE_BY_DIALECT = {name: name.lower() for name in DIALECTS}
 diff --git a/sqlglot/dialects/dialect.py b/sqlglot/dialects/dialect.py
-index 9a9ade50..10afb788 100644
+index a0d08413..81289ed5 100644
 --- a/sqlglot/dialects/dialect.py
 +++ b/sqlglot/dialects/dialect.py
-@@ -95,6 +95,7 @@ class Dialects(str, Enum):
+@@ -103,6 +103,7 @@ class Dialects(str, Enum):
      BIGQUERY = "bigquery"
      CLICKHOUSE = "clickhouse"
      DATABRICKS = "databricks"
@@ -47,7 +47,7 @@ index 9a9ade50..10afb788 100644
      DAX = "dax"
      DORIS = "doris"
      DREMIO = "dremio"
-@@ -103,13 +104,16 @@ class Dialects(str, Enum):
+@@ -111,13 +112,16 @@ class Dialects(str, Enum):
      DUCKDB = "duckdb"
      DUNE = "dune"
      FABRIC = "fabric"
@@ -64,7 +64,7 @@ index 9a9ade50..10afb788 100644
      REDSHIFT = "redshift"
      RISINGWAVE = "risingwave"
      SNOWFLAKE = "snowflake"
-@@ -122,6 +126,7 @@ class Dialects(str, Enum):
+@@ -130,6 +134,7 @@ class Dialects(str, Enum):
      TERADATA = "teradata"
      TRINO = "trino"
      TSQL = "tsql"

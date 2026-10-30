@@ -102,10 +102,10 @@ index 21290f7c..97d8f50f 100644
          # Snowflake's MODE doesn't support the ordered-set syntax, i.e. it only
          # accepts the value to aggregate as an argument: MODE(<expr>)
 diff --git a/tests/dialects/test_snowflake.py b/tests/dialects/test_snowflake.py
-index ee787742..e7427ec5 100644
+index 983ca90c..daad9d3a 100644
 --- a/tests/dialects/test_snowflake.py
 +++ b/tests/dialects/test_snowflake.py
-@@ -7113,3 +7113,51 @@ FROM SEMANTIC_VIEW(
+@@ -7299,3 +7299,51 @@ FROM SEMANTIC_VIEW(
          self.validate_identity("UNDROP TABLE db.schema.my_table")
          self.validate_identity("UNDROP SNAPSHOT IDENTIFIER('my_snap')")
          self.validate_identity("UNDROP SNAPSHOT my_snap RENAME TO new_snap")

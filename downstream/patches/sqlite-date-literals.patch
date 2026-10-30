@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index e4a62cc3..20723966 100644
+index b12a0792..4feefea0 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
 @@ -1,5 +1,6 @@
@@ -53,7 +53,7 @@ index e4a62cc3..20723966 100644
  def _moments_sql(self: SQLiteGenerator, expression: exp.Expr) -> str:
      if is_expandable(expression):
          return self.sql(expand_moments(expression))
-@@ -187,7 +225,6 @@ class SQLiteGenerator(generator.Generator):
+@@ -174,7 +212,6 @@ class SQLiteGenerator(generator.Generator):
          exp.CurrentTimestamp: lambda *_: "CURRENT_TIMESTAMP",
          exp.CurrentVersion: lambda *_: "SQLITE_VERSION()",
          exp.ColumnDef: transforms.preprocess([_generated_to_auto_increment]),
@@ -61,7 +61,7 @@ index e4a62cc3..20723966 100644
          exp.If: rename_func("IIF"),
          exp.ILike: no_ilike_sql,
          exp.JSONArrayAgg: unsupported_args("order", "null_handling", "return_type", "strict")(
-@@ -213,7 +250,6 @@ class SQLiteGenerator(generator.Generator):
+@@ -199,7 +236,6 @@ class SQLiteGenerator(generator.Generator):
          ),
          exp.StrPosition: lambda self, e: strposition_sql(self, e, func_name="INSTR"),
          exp.TableSample: no_tablesample_sql,
@@ -69,7 +69,7 @@ index e4a62cc3..20723966 100644
          exp.TimeToStr: lambda self, e: self.func("STRFTIME", e.args.get("format"), e.this),
          exp.TryCast: no_trycast_sql,
          exp.TsOrDsToTimestamp: lambda self, e: self.sql(e, "this"),
-@@ -459,7 +495,7 @@ class SQLiteGenerator(generator.Generator):
+@@ -468,7 +504,7 @@ class SQLiteGenerator(generator.Generator):
              # SQLite carries an overflowing month end into the next month, while the
              # source engines clamp it, so only inputs that cannot overflow are lowered:
              # a NULL, or a literal whose day of month is at most 28.
@@ -78,7 +78,7 @@ index e4a62cc3..20723966 100644
              if isinstance(literal, exp.Null) or (
                  isinstance(literal, exp.Literal)
                  and literal.is_string
-@@ -542,33 +578,31 @@ class SQLiteGenerator(generator.Generator):
+@@ -551,33 +587,31 @@ class SQLiteGenerator(generator.Generator):
                  node.replace(exp.Anonymous(this="DATETIME", expressions=[node.copy()]))
  
      def eq_sql(self, expression: exp.EQ) -> str:
@@ -119,7 +119,7 @@ index e4a62cc3..20723966 100644
          return super().between_sql(expression)
  
      def datetrunc_sql(self, expression: exp.DateTrunc) -> str:
-@@ -577,11 +611,51 @@ class SQLiteGenerator(generator.Generator):
+@@ -586,11 +620,51 @@ class SQLiteGenerator(generator.Generator):
      def timestamptrunc_sql(self, expression: exp.TimestampTrunc) -> str:
          return self._truncate_sql(expression)
  
@@ -174,10 +174,10 @@ index e4a62cc3..20723966 100644
              return self.func("TIME", expression.this)
  
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index 781166c5..a7aa0b40 100644
+index 97548110..267a5ca2 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
-@@ -1629,3 +1629,97 @@ class TestSQLite(Validator):
+@@ -1717,3 +1717,97 @@ class TestSQLite(Validator):
                          ]
                  with self.subTest(dialect=dialect, query=query):
                      self.assertEqual(outputs["sqlite"], outputs["duckdb"])

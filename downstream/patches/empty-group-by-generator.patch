@@ -1,8 +1,8 @@
 diff --git a/sqlglot/generator.py b/sqlglot/generator.py
-index 54ae4130..df3063aa 100644
+index 54877b43..1081f67a 100644
 --- a/sqlglot/generator.py
 +++ b/sqlglot/generator.py
-@@ -361,6 +361,9 @@ class Generator:
+@@ -362,6 +362,9 @@ class Generator:
      # Whether GROUPING SETS can follow GROUP BY expressions without a comma
      SUPPORTS_GROUPING_SETS_AS_SUFFIX = False
  
@@ -12,7 +12,7 @@ index 54ae4130..df3063aa 100644
      # The string used for creating an index on a table
      INDEX_ON = "ON"
  
-@@ -2877,7 +2880,31 @@ class Generator:
+@@ -2933,7 +2936,31 @@ class Generator:
          expressions = self.expressions(expression, indent=False)
          return f"CUBE {self.wrap(expressions)}" if expressions else "WITH CUBE"
  

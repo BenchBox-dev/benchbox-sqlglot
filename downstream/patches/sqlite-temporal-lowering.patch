@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index f5288e30..29fa7b47 100644
+index cb7e1b6d..152f4ebf 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
 @@ -1,5 +1,6 @@
@@ -34,7 +34,7 @@ index f5288e30..29fa7b47 100644
  
  def _transform_create(expression: exp.Expr) -> exp.Expr:
      """Move primary key to a column and place auto_increment after it."""
-@@ -281,31 +300,47 @@ class SQLiteGenerator(generator.Generator):
+@@ -290,31 +309,47 @@ class SQLiteGenerator(generator.Generator):
                      self.unsupported("SQLite extraction division requires known operand types")
          return super().div_sql(expression)
  
@@ -92,7 +92,7 @@ index f5288e30..29fa7b47 100644
          )
          return super().extract_sql(expression)
  
-@@ -371,19 +406,33 @@ class SQLiteGenerator(generator.Generator):
+@@ -380,19 +415,33 @@ class SQLiteGenerator(generator.Generator):
          date, interval = expression.this, expression.expression
          if isinstance(expression, exp.Add) and isinstance(date, exp.Interval):
              date, interval = interval, date
@@ -134,7 +134,7 @@ index f5288e30..29fa7b47 100644
          return None
  
      def add_sql(self, expression: exp.Add) -> str:
-@@ -396,6 +445,27 @@ class SQLiteGenerator(generator.Generator):
+@@ -405,6 +454,27 @@ class SQLiteGenerator(generator.Generator):
          self.unsupported("SQLite does not support this INTERVAL expression")
          return super().interval_sql(expression)
  
@@ -163,7 +163,7 @@ index f5288e30..29fa7b47 100644
          if expression.is_type("date"):
              return self.func("DATE", expression.this)
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index 851164cd..70bb581a 100644
+index 3a018a5c..2a28c294 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
 @@ -2,6 +2,8 @@ import sqlite3
@@ -175,7 +175,7 @@ index 851164cd..70bb581a 100644
  from sqlglot.generator import logger as generator_logger
  from sqlglot.helper import logger as helper_logger
  from tests.dialects.test_dialect import Validator
-@@ -84,7 +86,7 @@ class TestSQLite(Validator):
+@@ -172,7 +174,7 @@ class TestSQLite(Validator):
              "EXTRACT(YEAR FROM TIMESTAMP '2020-06-01 12:00:00')",
              "EXTRACT(HOUR FROM DATE '2020-06-01')",
              "EXTRACT(YEAR FROM INTERVAL '1' YEAR)",
@@ -184,7 +184,7 @@ index 851164cd..70bb581a 100644
              "DATE_PART('year', DATE '2020-06-01')",
          ):
              with self.subTest(source=source), self.assertRaises(UnsupportedError):
-@@ -168,6 +170,223 @@ class TestSQLite(Validator):
+@@ -256,6 +258,223 @@ class TestSQLite(Validator):
                      "sqlite", unsupported_level=ErrorLevel.RAISE
                  )
          self.validate_identity("SELECT a + 1, b - 2 FROM t")
