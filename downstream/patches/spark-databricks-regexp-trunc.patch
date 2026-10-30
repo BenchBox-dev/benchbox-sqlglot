@@ -125,10 +125,10 @@ index f150de65..3969834b 100644
                  )
  
 diff --git a/tests/dialects/test_oracle.py b/tests/dialects/test_oracle.py
-index 1c39d5a1..b990087c 100644
+index 652055da..32a490fd 100644
 --- a/tests/dialects/test_oracle.py
 +++ b/tests/dialects/test_oracle.py
-@@ -1186,7 +1186,11 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""
+@@ -1196,7 +1196,11 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""
                          "bigquery": f"DATE_TRUNC(CAST(x AS DATE), {unit})",
                          "duckdb": f"DATE_TRUNC('{unit}', CAST(x AS DATE))",
                          "tsql": f"DATE_TRUNC('{unit}', CAST(x AS DATE))",
@@ -141,7 +141,7 @@ index 1c39d5a1..b990087c 100644
                      },
                  )
  
-@@ -1201,7 +1205,11 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""
+@@ -1211,7 +1215,11 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""
                          "postgres": f"DATE_TRUNC('{unit}', CAST(x AS TIMESTAMP))",
                          "duckdb": f"DATE_TRUNC('{unit}', CAST(x AS TIMESTAMP))",
                          "tsql": f"DATE_TRUNC('{unit}', CAST(x AS DATETIME2))",

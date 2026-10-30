@@ -13,6 +13,54 @@ class TestSnowflake(Validator):
     maxDiff = None
     dialect = "snowflake"
 
+    def test_time_format_case(self):
+        self.validate_all(
+            "SELECT TO_TIMESTAMP('2024-5-9', 'yyyy-mm-DD')",
+            read={
+                "duckdb": "SELECT STRPTIME('2024-5-9', '%Y-%m-%-d')",
+            },
+        )
+        for fmt, duckdb_fmt, snowflake_fmt in (
+            ("Mon", "%b", "mon"),
+            ("mOn", "%b", "mon"),
+            ("Dy", "%a", "DY"),
+            ("dY", "%a", "DY"),
+            ("dy", "%a", "DY"),
+            ("Dd", "%d", "DD"),
+            ("dD", "%d", "DD"),
+            ("dd", "%d", "DD"),
+            ("Mmmm", "%B", "mmmm"),
+            ("mMmM", "%B", "mmmm"),
+            ("DD Mon YYYY", "%d %b %Y", "DD mon yyyy"),
+            ("dDyYyYmM", "%d%Y%m", "DDyyyymm"),
+            ("Yy", "%y", "yy"),
+            ("Mon xZz", "%b xZz", "mon xZz"),
+        ):
+            with self.subTest(fmt=fmt):
+                for func in ("TO_CHAR", "TO_VARCHAR"):
+                    self.validate_all(
+                        f"{func}(DATE '2024-05-09', '{fmt}')",
+                        write={
+                            "duckdb": f"STRFTIME(CAST('2024-05-09' AS DATE), '{duckdb_fmt}')",
+                            "snowflake": f"TO_CHAR(CAST('2024-05-09' AS DATE), '{snowflake_fmt}')",
+                        },
+                    )
+
+        self.validate_all(
+            """TO_CHAR(TIMESTAMP '2024-05-09 13:02:03.123', 'YyYy-Mm-dD"T"Hh24:mI:sS.fF3')""",
+            write={
+                "duckdb": "STRFTIME(CAST('2024-05-09 13:02:03.123' AS TIMESTAMP), '%Y-%m-%dT%H:%M:%S.%g')",
+                "snowflake": "TO_CHAR(CAST('2024-05-09 13:02:03.123' AS TIMESTAMP), 'yyyy-mm-DDThh24:mi:ss.ff3')",
+            },
+        )
+        self.validate_all(
+            "TO_TIMESTAMP('2024-05-09 01:02:03 PM', 'YyYy-Mm-dD Hh12:mI:sS pM')",
+            write={
+                "duckdb": "STRPTIME('2024-05-09 01:02:03 PM', '%Y-%m-%d %I:%M:%S %p')",
+                "snowflake": "TO_TIMESTAMP('2024-05-09 01:02:03 PM', 'yyyy-mm-DD hh12:mi:ss pm')",
+            },
+        )
+
     def test_set_operation_top(self):
         for op in ("UNION", "UNION ALL", "INTERSECT", "EXCEPT"):
             with self.subTest(op=op):
@@ -3374,9 +3422,21 @@ class TestSnowflake(Validator):
         )
         self.validate_identity("SYSTIMESTAMP()", "CURRENT_TIMESTAMP()")
         self.validate_identity("GETDATE()", "CURRENT_TIMESTAMP()")
-        self.validate_identity("LOCALTIMESTAMP", "CURRENT_TIMESTAMP")
+        self.validate_identity("LOCALTIMESTAMP", "CURRENT_TIMESTAMP()")
         self.validate_identity("LOCALTIMESTAMP()", "CURRENT_TIMESTAMP()")
         self.validate_identity("LOCALTIMESTAMP(3)", "CURRENT_TIMESTAMP(3)")
+        self.parse_one("SELECT LOCALTIMESTAMP").selects[0].assert_is(exp.CurrentTimestamp)
+        # Snowflake's LOCALTIMESTAMP is an alias of CURRENT_TIMESTAMP, but other dialects read it
+        # as a timezone-naive timestamp, so it must never pass through as the literal keyword.
+        self.validate_all(
+            "LOCALTIMESTAMP",
+            write={
+                "snowflake": "CURRENT_TIMESTAMP()",
+                "duckdb": "CURRENT_TIMESTAMP",
+                "postgres": "CURRENT_TIMESTAMP",
+                "spark": "CURRENT_TIMESTAMP()",
+            },
+        )
 
         self.validate_all(
             "SELECT CURRENT_TIME(4)",
@@ -3932,6 +3992,26 @@ class TestSnowflake(Validator):
             },
         )
 
+        # Postgres counts complete units, so the operands are truncated to count boundary crossings
+        self.validate_all(
+            "DATEDIFF(MONTH, '2026-01-31', '2026-03-01')",
+            write={
+                "postgres": "CAST(EXTRACT(year FROM AGE(DATE_TRUNC('MONTH', CAST('2026-03-01' AS TIMESTAMP)), DATE_TRUNC('MONTH', CAST('2026-01-31' AS TIMESTAMP)))) * 12 + EXTRACT(month FROM AGE(DATE_TRUNC('MONTH', CAST('2026-03-01' AS TIMESTAMP)), DATE_TRUNC('MONTH', CAST('2026-01-31' AS TIMESTAMP)))) AS BIGINT)",
+            },
+        )
+        self.validate_all(
+            "DATEDIFF(YEAR, '2025-12-31', '2026-01-01')",
+            write={
+                "postgres": "CAST(EXTRACT(year FROM AGE(DATE_TRUNC('YEAR', CAST('2026-01-01' AS TIMESTAMP)), DATE_TRUNC('YEAR', CAST('2025-12-31' AS TIMESTAMP)))) AS BIGINT)",
+            },
+        )
+        self.validate_all(
+            "DATEDIFF(HOUR, '2026-01-01 10:59:00', '2026-01-01 11:01:00')",
+            write={
+                "postgres": "CAST(EXTRACT(epoch FROM DATE_TRUNC('HOUR', CAST('2026-01-01 11:01:00' AS TIMESTAMP)) - DATE_TRUNC('HOUR', CAST('2026-01-01 10:59:00' AS TIMESTAMP))) / 3600 AS BIGINT)",
+            },
+        )
+
         # Test DATEDIFF with NANOSECOND - DuckDB uses EPOCH_NS since DATE_DIFF doesn't support NANOSECOND
         self.validate_all(
             "DATEDIFF(NANOSECOND, '2023-01-01 10:00:00.000000000', '2023-01-01 10:00:00.123456789')",
@@ -3999,23 +4079,23 @@ class TestSnowflake(Validator):
         self.validate_identity("DATEADD(y, 5, x)", "DATEADD(YEAR, 5, x)")
         self.validate_identity("DATE_PART(yyy, x)", "DATE_PART(YEAR, x)")
         self.validate_identity("DATE_TRUNC(yr, x)", "DATE_TRUNC('YEAR', x)")
+        # DuckDB used to return DATE for date units, but now returns TIMESTAMP:
+        # https://github.com/duckdb/duckdb/pull/20120
+        # Cast to preserve Snowflake's input type with either behavior.
         self.validate_all(
             "DATE_TRUNC('YEAR', CAST('2024-06-15' AS DATE))",
             write={
                 "snowflake": "DATE_TRUNC('YEAR', CAST('2024-06-15' AS DATE))",
-                "duckdb": "DATE_TRUNC('YEAR', CAST('2024-06-15' AS DATE))",
+                "duckdb": "CAST(DATE_TRUNC('YEAR', CAST('2024-06-15' AS DATE)) AS DATE)",
             },
         )
         self.validate_all(
             "DATE_TRUNC('HOUR', CAST('2026-01-01 00:00:00' AS TIMESTAMP))",
             write={
                 "snowflake": "DATE_TRUNC('HOUR', CAST('2026-01-01 00:00:00' AS TIMESTAMP))",
-                "duckdb": "DATE_TRUNC('HOUR', CAST('2026-01-01 00:00:00' AS TIMESTAMP))",
+                "duckdb": "CAST(DATE_TRUNC('HOUR', CAST('2026-01-01 00:00:00' AS TIMESTAMP)) AS TIMESTAMP)",
             },
         )
-        # Snowflake's DATE_TRUNC return type matches type of the expresison
-        # DuckDB's DATE_TRUNC return type matches type of granularity part.
-        # In Snowflake --> DuckDB, DATE_TRUNC(date_part, timestamp) should be cast to timestamp to preserve Snowflake behavior.
         self.validate_all(
             "DATE_TRUNC(YEAR, TIMESTAMP '2026-01-01 00:00:00')",
             write={
@@ -4131,6 +4211,52 @@ class TestSnowflake(Validator):
                 "snowflake": "SELECT TRY_TO_TIME('11.15.00', 'hh24.mi.ss')",
                 "duckdb": "SELECT TRY_CAST(TRY_STRPTIME('11.15.00', '%H.%M.%S') AS TIME)",
             },
+        )
+
+    def test_date_trunc_preserves_date(self):
+        for unit in ("MONTH", "HOUR"):
+            for value in ("'2024-05-09'", "NULL"):
+                date = f"CAST({value} AS DATE)"
+                for sql in (
+                    f"DATE_TRUNC('{unit}', {date})",
+                    f"TRUNC({date}, '{unit}')",
+                    f"TRUNCATE({date}, '{unit}')",
+                ):
+                    self.validate_all(
+                        sql,
+                        write={
+                            "duckdb": f"CAST(DATE_TRUNC('{unit}', {date}) AS DATE)",
+                        },
+                    )
+
+            for sql in (f"DATE_TRUNC('{unit}', t.d)", f"TRUNC(t.d, '{unit}')"):
+                expression = annotate_types(
+                    self.parse_one(f"SELECT {sql} FROM t"),
+                    schema={"t": {"d": "DATE"}},
+                    dialect="snowflake",
+                )
+                self.assertEqual(
+                    expression.sql("duckdb"),
+                    f"SELECT CAST(DATE_TRUNC('{unit}', t.d) AS DATE) FROM t",
+                )
+
+        for sql, expected in (
+            (
+                "DATE_TRUNC('WEEK', CURRENT_DATE)",
+                "CAST(DATE_TRUNC('WEEK', CURRENT_DATE) AS DATE)",
+            ),
+            (
+                "DATE_TRUNC('MONTH', DATE_TRUNC('HOUR', CAST('2024-05-09' AS DATE)))",
+                "CAST(DATE_TRUNC('MONTH', CAST(DATE_TRUNC('HOUR', CAST('2024-05-09' AS DATE)) AS DATE)) AS DATE)",
+            ),
+        ):
+            expression = self.parse_one(sql)
+            self.assertIsNone(expression.this.type)
+            annotate_types(expression, dialect="snowflake")
+            self.assertEqual(expression.sql("duckdb"), expected)
+        self.validate_all(
+            "DATE_TRUNC('MONTH', d)",
+            write={"duckdb": "DATE_TRUNC('MONTH', d)"},
         )
 
     def test_to_date(self):
@@ -4495,6 +4621,8 @@ class TestSnowflake(Validator):
                 )
 
         self.validate_identity("CREATE OR REPLACE TABLE foo COPY GRANTS USING TEMPLATE (SELECT 1)")
+        self.validate_identity("CREATE OR REPLACE TABLE foo (a INT) COPY TAGS")
+        self.validate_identity("CREATE OR REPLACE TABLE foo (a INT) COPY GRANTS COPY TAGS")
         self.validate_identity("USE SECONDARY ROLES ALL")
         self.validate_identity("USE SECONDARY ROLES NONE")
         self.validate_identity("USE SECONDARY ROLES a, b, c")
@@ -4552,7 +4680,8 @@ class TestSnowflake(Validator):
             "DROP FUNCTION my_udf (OBJECT(city VARCHAR, zipcode DECIMAL(38, 0), val ARRAY(BOOLEAN)))"
         )
         self.validate_identity(
-            "CREATE TABLE orders_clone_restore CLONE orders AT (TIMESTAMP => TO_TIMESTAMP_TZ('04/05/2013 01:02:03', 'mm/dd/yyyy hh24:mi:ss'))"
+            "CREATE TABLE orders_clone_restore CLONE orders AT (TIMESTAMP => TO_TIMESTAMP_TZ('04/05/2013 01:02:03', 'mm/dd/yyyy hh24:mi:ss'))",
+            "CREATE TABLE orders_clone_restore CLONE orders AT (TIMESTAMP => TO_TIMESTAMP_TZ('04/05/2013 01:02:03', 'mm/DD/yyyy hh24:mi:ss'))",
         )
         self.validate_identity(
             "CREATE TABLE orders_clone_restore CLONE orders BEFORE (STATEMENT => '8e5d0ca9-005e-44e6-b858-a8f5b37c5726')"
@@ -4682,6 +4811,30 @@ class TestSnowflake(Validator):
         self.validate_identity(
             "CREATE OR REPLACE FUNCTION repro_fn() RETURNS INT LANGUAGE PYTHON HANDLER = 'fn' RUNTIME_VERSION='3.11' PACKAGES=() AS '\\ndef fn():\\n    return 1\\n'"
         )
+
+    def test_unreserved_keywords_as_identifiers(self):
+        for name in ("returning", "glob", "using", "lateral", "exclude"):
+            with self.subTest(name=name):
+                expression = self.validate_identity(f"SELECT {name} FROM t")
+                self.assertIsInstance(expression.expressions[0], exp.Column)
+                self.assertEqual(expression.expressions[0].name, name)
+                self.validate_identity(f"SELECT 1 AS {name}")
+                self.validate_identity(f"CREATE TABLE t ({name} INT)")
+
+        for name in ("returning", "glob", "using", "lateral"):
+            with self.subTest(alias=name):
+                self.validate_identity(f"SELECT 1 {name}", f"SELECT 1 AS {name}")
+
+        for name in ("returning", "glob", "exclude", "concurrently"):
+            with self.subTest(table=name):
+                self.validate_identity(f"CREATE TABLE {name} (x INT)")
+                self.validate_identity(f"SELECT x FROM {name}")
+
+        for name in ("pivot", "unpivot"):
+            with self.subTest(describe=name):
+                expression = self.validate_identity(f"DESCRIBE TABLE {name}")
+                self.assertIsInstance(expression.this, exp.Table)
+                self.assertEqual(expression.this.name, name)
 
     def test_rollback_as_identifier(self):
         self.validate_identity("SELECT rollback FROM t")
@@ -6156,6 +6309,39 @@ SINGLE = TRUE""",
 
     def test_listagg(self):
         self.validate_identity("LISTAGG(data['some_field'], ',')")
+
+        for distinct in ("", "DISTINCT "):
+            for order in ("", " WITHIN GROUP (ORDER BY col)"):
+                source = f"SELECT LISTAGG({distinct}col){order} FROM t"
+                duckdb_order = " ORDER BY col" if order else ""
+                self.validate_all(
+                    source,
+                    write={
+                        "duckdb": f"SELECT LISTAGG({distinct}col, ''{duckdb_order}) FROM t",
+                        "postgres": f"SELECT STRING_AGG({distinct}col, ''{duckdb_order}) FROM t",
+                    },
+                )
+                expression = self.parse_one(source)
+                self.assertEqual(
+                    expression.find(exp.GroupConcat).args["separator"],
+                    exp.Literal.string(""),
+                )
+                self.assertEqual(self.parse_one(expression.sql("snowflake")), expression)
+
+        source = "SELECT LISTAGG(col) OVER (PARTITION BY k) FROM t"
+        self.validate_all(
+            source,
+            write={
+                "duckdb": "SELECT LISTAGG(col, '') OVER (PARTITION BY k) FROM t",
+            },
+        )
+        expression = self.parse_one(source)
+        self.assertEqual(self.parse_one(expression.sql("snowflake")), expression)
+
+        self.assertEqual(
+            parse_one("SELECT LISTAGG(col ORDER BY col) FROM t", read="duckdb").sql("duckdb"),
+            "SELECT LISTAGG(col, ',' ORDER BY col) FROM t",
+        )
 
         for distinct in ("", "DISTINCT "):
             self.validate_all(

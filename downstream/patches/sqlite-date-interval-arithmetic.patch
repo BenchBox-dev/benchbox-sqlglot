@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index fbbb2e26..f5288e30 100644
+index d5bd4e5b..cb7e1b6d 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
 @@ -17,6 +17,7 @@ from sqlglot.dialects.dialect import (
@@ -10,7 +10,7 @@ index fbbb2e26..f5288e30 100644
  from sqlglot.tokens import TokenType
  
  
-@@ -366,9 +367,34 @@ class SQLiteGenerator(generator.Generator):
+@@ -375,9 +376,34 @@ class SQLiteGenerator(generator.Generator):
          modifier = f"{modifier} {unit.name}" if unit else modifier
          return self.func("DATE", expression.this, exp.Literal.string(modifier))
  
@@ -49,7 +49,7 @@ index fbbb2e26..f5288e30 100644
      def cast_sql(self, expression: exp.Cast, safe_prefix: str | None = None) -> str:
          if expression.is_type("date"):
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index 0bac844c..851164cd 100644
+index 922b660e..3a018a5c 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
 @@ -1,4 +1,5 @@
@@ -58,7 +58,7 @@ index 0bac844c..851164cd 100644
  
  from sqlglot import ErrorLevel, UnsupportedError, exp, parse_one
  from sqlglot.generator import logger as generator_logger
-@@ -136,6 +137,61 @@ class TestSQLite(Validator):
+@@ -224,6 +225,61 @@ class TestSQLite(Validator):
          finally:
              connection.close()
  

@@ -15,7 +15,7 @@ from sqlglot.dialects.dialect import (
     date_trunc_to_time,
     map_date_part,
 )
-from sqlglot.helper import is_date_unit, is_int, seq_get
+from sqlglot.helper import is_int, seq_get
 from sqlglot.tokens import TokenType
 from sqlglot.trie import new_trie
 
@@ -219,12 +219,14 @@ def _build_regexp_like(args: list) -> exp.RegexpLike:
 
 def _date_trunc_to_time(args: list) -> exp.DateTrunc | exp.TimestampTrunc:
     trunc = date_trunc_to_time(args)
-    unit = map_date_part(trunc.args["unit"])
-    trunc.set("unit", unit)
-    is_time_input = trunc.this.is_type(exp.DType.TIME, exp.DType.TIMETZ)
-    if (isinstance(trunc, exp.TimestampTrunc) and is_date_unit(unit) or is_time_input) or (
-        isinstance(trunc, exp.DateTrunc) and not is_date_unit(unit)
-    ):
+    trunc.set("unit", map_date_part(trunc.args["unit"]))
+    trunc.set("input_type_preserved", True)
+    return trunc
+
+
+def _build_trunc(args: list, dialect: Dialect) -> exp.DateTrunc | exp.Trunc | exp.Anonymous:
+    trunc = build_trunc(args, dialect, date_trunc_requires_part=False, fractions_supported=True)
+    if isinstance(trunc, exp.DateTrunc):
         trunc.set("input_type_preserved", True)
     return trunc
 
@@ -343,6 +345,7 @@ class SnowflakeParser(parser.Parser):
         *parser.Parser.ID_VAR_TOKENS,
         TokenType.EXCEPT,
         TokenType.INTEGRATION,
+        TokenType.LATERAL,
         TokenType.MATCH_CONDITION,
         TokenType.PACKAGE,
         TokenType.POLICY,
@@ -350,6 +353,7 @@ class SnowflakeParser(parser.Parser):
         TokenType.ROLE,
         TokenType.ROLLBACK,
         TokenType.RULE,
+        TokenType.USING,
         TokenType.VOLUME,
     }
 
@@ -357,12 +361,14 @@ class SnowflakeParser(parser.Parser):
 
     ALIAS_TOKENS = parser.Parser.ALIAS_TOKENS | {
         TokenType.INTEGRATION,
+        TokenType.LATERAL,
         TokenType.PACKAGE,
         TokenType.POLICY,
         TokenType.POOL,
         TokenType.ROLE,
         TokenType.ROLLBACK,
         TokenType.RULE,
+        TokenType.USING,
         TokenType.VOLUME,
     }
 
@@ -388,7 +394,9 @@ class SnowflakeParser(parser.Parser):
     NO_PAREN_FUNCTIONS = {
         **parser.Parser.NO_PAREN_FUNCTIONS,
         TokenType.LOCALTIME: exp.Localtime,
-        TokenType.LOCALTIMESTAMP: exp.Localtimestamp,
+        # LOCALTIMESTAMP is a Snowflake alias of CURRENT_TIMESTAMP, like the parenthesised form in
+        # FUNCTION_PARSERS. Only Snowflake treats it as such, so it must not map to Localtimestamp.
+        TokenType.LOCALTIMESTAMP: exp.CurrentTimestamp,
         TokenType.CURRENT_TIME: exp.Localtime,
     }
 
@@ -633,12 +641,8 @@ class SnowflakeParser(parser.Parser):
         "TIMESTAMP_FROM_PARTS": _build_timestamp_from_parts,
         "TIMESTAMPNTZFROMPARTS": _build_timestamp_from_parts,
         "TIMESTAMP_NTZ_FROM_PARTS": _build_timestamp_from_parts,
-        "TRUNC": lambda args, dialect: build_trunc(
-            args, dialect, date_trunc_requires_part=False, fractions_supported=True
-        ),
-        "TRUNCATE": lambda args, dialect: build_trunc(
-            args, dialect, date_trunc_requires_part=False, fractions_supported=True
-        ),
+        "TRUNC": _build_trunc,
+        "TRUNCATE": _build_trunc,
         "TRY_DECRYPT": lambda args: exp.Decrypt(
             this=seq_get(args, 0),
             passphrase=seq_get(args, 1),
@@ -743,7 +747,7 @@ class SnowflakeParser(parser.Parser):
         "DATE_PART": lambda self: self._parse_date_part(),
         "DIRECTORY": lambda self: self._parse_directory(),
         "OBJECT_CONSTRUCT_KEEP_NULL": lambda self: self._parse_object_construct_keep_null(),
-        "LISTAGG": lambda self: self._parse_string_agg(),
+        "LISTAGG": lambda self: self._parse_listagg(),
         "SEMANTIC_VIEW": lambda self: self._parse_semantic_view(),
         "SUBSTR": lambda self: self._parse_substring(),
     }
@@ -765,7 +769,11 @@ class SnowflakeParser(parser.Parser):
     }
 
     STATEMENT_PARSERS = {
-        **parser.Parser.STATEMENT_PARSERS,
+        **{
+            k: v
+            for k, v in parser.Parser.STATEMENT_PARSERS.items()
+            if k not in (TokenType.PIVOT, TokenType.UNPIVOT)
+        },
         TokenType.GET: lambda self: self._parse_get(),
         TokenType.LIST: lambda self: self._parse_list_stage(),
         TokenType.PUT: lambda self: self._parse_put(),
@@ -855,6 +863,8 @@ class SnowflakeParser(parser.Parser):
     }
 
     SHOW_TRIE = new_trie(key.split(" ") for key in SHOW_PARSERS)
+
+    SCHEMA_UNNAMED_CONSTRAINTS = parser.Parser.SCHEMA_UNNAMED_CONSTRAINTS - {"EXCLUDE"}
 
     CONSTRAINT_PARSERS = {
         **parser.Parser.CONSTRAINT_PARSERS,
@@ -989,6 +999,11 @@ class SnowflakeParser(parser.Parser):
 
         return self.expression(exp.Not(this=this))
 
+    def _parse_copy_property(self) -> exp.Property | None:
+        if self._match_text_seq("TAGS"):
+            return self.expression(exp.CopyTagsProperty())
+        return super()._parse_copy_property()
+
     def _parse_tag(self) -> exp.Tags:
         return self.expression(exp.Tags(expressions=self._parse_wrapped_csv(self._parse_property)))
 
@@ -1061,6 +1076,12 @@ class SnowflakeParser(parser.Parser):
             # Replace the Table node with the enclosed Identifier
             expression.this.replace(expression.this.this)
 
+        return expression
+
+    def _parse_listagg(self) -> exp.GroupConcat:
+        expression = self._parse_string_agg()
+        if expression.args.get("separator") is None:
+            expression.set("separator", exp.Literal.string(""))
         return expression
 
     def _parse_object_construct_keep_null(self) -> exp.JSONObject:

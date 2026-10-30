@@ -1,26 +1,24 @@
 diff --git a/sqlglot/generator.py b/sqlglot/generator.py
-index 324e34c2..41945db6 100644
+index 917398d1..1bea1ad1 100644
 --- a/sqlglot/generator.py
 +++ b/sqlglot/generator.py
-@@ -1993,6 +1993,13 @@ class Generator:
-                     node = node.subquery(copy=False)
-                     if not self.SET_OP_PARENTHESIZED_OPERANDS:
-                         node = exp.select("*").from_(node, copy=False)
-+                elif (
-+                    not self.SET_OP_PARENTHESIZED_OPERANDS
-+                    and isinstance(node, exp.Subquery)
-+                    and not node.alias
-+                    and isinstance(node.this, exp.Query)
-+                ):
-+                    node = exp.select("*").from_(node, copy=False)
-                 sqls.append(self.sql(node))
- 
-         this = self.sep().join(sqls)
+@@ -2042,7 +2042,10 @@ class Generator:
+                 elif (
+                     not self.SET_OP_PARENTHESIZED_OPERANDS
+                     and isinstance(node, exp.Subquery)
+-                    and isinstance(node.unnest(), exp.SetOperation)
++                    and (
++                        isinstance(node.unnest(), exp.SetOperation)
++                        or (not node.alias and isinstance(node.this, exp.Query))
++                    )
+                 ):
+                     node = exp.select("*").from_(node, copy=False)
+                 sqls.append(open_parens + self.indent(self.sql(node), level=depth, pad=0))
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index b9cbae06..781166c5 100644
+index c3638fcf..97548110 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
-@@ -232,6 +232,58 @@ class TestSQLite(Validator):
+@@ -320,6 +320,58 @@ class TestSQLite(Validator):
                              literals = (93.6, 3.5) if source == "duckdb" else (93, 3)
                              self.assertEqual(sqlite_row[4:6], literals)
  

@@ -59,10 +59,10 @@ index c10f245c..be14b1af 100644
          if expression.this:
              self.unsupported(f"Unsupported CLUSTER BY {self.sql(expression, 'this')}")
 diff --git a/tests/dialects/test_bigquery.py b/tests/dialects/test_bigquery.py
-index 6a57ac3f..77dae830 100644
+index 2bc1d40e..ab24292f 100644
 --- a/tests/dialects/test_bigquery.py
 +++ b/tests/dialects/test_bigquery.py
-@@ -3055,6 +3055,46 @@ OPTIONS (
+@@ -3074,6 +3074,46 @@ OPTIONS (
                          f"WITH t AS (SELECT 1 AS id, 2 AS col1) SELECT {func_call} OVER (PARTITION BY id ORDER BY col1 {sort_order} {null_order}) FROM t"
                      )
  

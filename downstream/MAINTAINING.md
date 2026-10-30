@@ -321,10 +321,10 @@ permissions. It never creates a release, changes refs or submits upstream PRs.
 2. Create a disposable rebased source candidate. For example:
 
    ```sh
-   git fetch upstream tag v30.25.0
+   git fetch upstream tag v30.27.0
    uv run --no-project -- python -m downstream.refresh candidate \
-     --tag v30.25.0 --path ../sqlglot.refresh-candidate \
-     --branch refresh/candidate-30.25.0
+     --tag v30.27.0 --path ../sqlglot.refresh-candidate \
+     --branch refresh/candidate-30.27.0
    ```
 
    Repeat `--retire PATCH_ID` for reviewed retirements (carried patches only).
@@ -338,8 +338,8 @@ permissions. It never creates a release, changes refs or submits upstream PRs.
 
    ```sh
    uv run --no-project -- python -m downstream.refresh integrate \
-     --tag v30.25.0 --candidate refresh/candidate-30.25.0 \
-     --path ../sqlglot.refresh-integration --branch refresh/upstream-30.25.0
+     --tag v30.27.0 --candidate refresh/candidate-30.27.0 \
+     --path ../sqlglot.refresh-integration --branch refresh/upstream-30.27.0
    ```
 
    For each retired patch, repeat `--retire 'PATCH_ID=reviewed upstream evidence

@@ -1,8 +1,8 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index 20723966..18f23e9b 100644
+index 4feefea0..b4a78b3d 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
-@@ -163,7 +163,55 @@ def _offset_to_limit(expression: exp.Expr) -> exp.Expr:
+@@ -150,7 +150,55 @@ def _generated_to_auto_increment(expression: exp.Expr) -> exp.Expr:
      return expression
  
  
@@ -58,11 +58,11 @@ index 20723966..18f23e9b 100644
      SELECT_KINDS: tuple[str, ...] = ()
      TRY_SUPPORTED = False
      SUPPORTS_UESCAPE = False
-@@ -242,6 +290,7 @@ class SQLiteGenerator(generator.Generator):
+@@ -229,6 +277,7 @@ class SQLiteGenerator(generator.Generator):
          **{kind: _moments_sql for kind in MOMENT_AGGREGATES},
          exp.Select: transforms.preprocess(
              [
 +                _global_having_to_subquery,
-                 _offset_to_limit,
                  transforms.eliminate_distinct_on,
                  transforms.eliminate_qualify,
+                 transforms.eliminate_semi_and_anti_joins,

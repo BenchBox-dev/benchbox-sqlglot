@@ -78,6 +78,7 @@ def qualify_derived_table_outputs(expression: exp.Expr) -> exp.Expr:
         isinstance(expression, (exp.CTE, exp.Subquery))
         and isinstance(alias, exp.TableAlias)
         and not alias.columns
+        and isinstance(expression.this, exp.Query)
     ):
         from sqlglot.dialects.tsql import TSQL
         from sqlglot.optimizer.qualify_columns import qualify_outputs

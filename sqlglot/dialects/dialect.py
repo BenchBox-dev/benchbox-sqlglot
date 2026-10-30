@@ -42,7 +42,15 @@ DATE_ADD_OR_DIFF = t.Union[
     exp.TsOrDsAdd,
     exp.TsOrDsDiff,
 ]
-DATE_ADD_OR_SUB = t.Union[exp.DateAdd, exp.TsOrDsAdd, exp.DateSub]
+DATE_ADD_OR_SUB = t.Union[
+    exp.DateAdd,
+    exp.DateSub,
+    exp.DatetimeAdd,
+    exp.DatetimeSub,
+    exp.TimestampAdd,
+    exp.TimestampSub,
+    exp.TsOrDsAdd,
+]
 JSON_EXTRACT_TYPE = t.Union[
     exp.JSONExtract, exp.JSONExtractScalar, exp.JSONBExtract, exp.JSONBExtractScalar
 ]
@@ -807,6 +815,12 @@ class Dialect(metaclass=_Dialect):
     """
     Whether a set operation uses DISTINCT by default. This is `None` when either `DISTINCT` or `ALL`
     must be explicitly specified.
+    """
+
+    INTERSECT_BINDS_TIGHTER_THAN_UNION_AND_EXCEPT = True
+    """
+    Whether INTERSECT binds more tightly than UNION and EXCEPT when a set operation chain isn't
+    parenthesized. If False, all set operations have equal precedence and associate left to right.
     """
 
     CREATABLE_KIND_MAPPING: dict[str, str] = {}
@@ -2225,13 +2239,23 @@ def date_delta_sql(name: str, cast: bool = False) -> t.Callable[[Generator, DATE
     return _delta_sql
 
 
+def date_delta_to_binary_sql(self: Generator, expression: exp.Expr, binary: exp.Binary) -> str:
+    parent = expression.parent
+    if isinstance(parent, (exp.Binary, exp.Unary, exp.AtTimeZone)) and not (
+        isinstance(parent, exp.Paren)
+        or isinstance(parent, (exp.Add, exp.Sub))
+        and parent.this is expression
+    ):
+        return self.sql(exp.paren(binary, copy=False))
+    return self.sql(binary)
+
+
 def date_delta_to_binary_interval_op(
     cast: bool = True,
 ) -> t.Callable[[Generator, DATETIME_DELTA], str]:
     def date_delta_to_binary_interval_op_sql(self: Generator, expression: DATETIME_DELTA) -> str:
         this = expression.this
         unit = unit_to_var(expression)
-        op = "+" if isinstance(expression, DATETIME_ADD) else "-"
 
         to_type: exp.DATA_TYPE | None = None
         if cast:
@@ -2241,7 +2265,15 @@ def date_delta_to_binary_interval_op(
                 # Cast string literals (i.e function parameters) to the appropriate type for +/- interval to work
                 to_type = (
                     exp.DType.DATETIME
-                    if isinstance(expression, (exp.DatetimeAdd, exp.DatetimeSub))
+                    if isinstance(
+                        expression,
+                        (
+                            exp.DatetimeAdd,
+                            exp.DatetimeSub,
+                            exp.TimestampAdd,
+                            exp.TimestampSub,
+                        ),
+                    )
                     else exp.DType.DATE
                 )
 
@@ -2250,7 +2282,11 @@ def date_delta_to_binary_interval_op(
         expr = expression.expression
         interval = expr if isinstance(expr, exp.Interval) else exp.Interval(this=expr, unit=unit)
 
-        return f"{self.sql(this)} {op} {self.sql(interval)}"
+        return date_delta_to_binary_sql(
+            self,
+            expression,
+            this + interval if isinstance(expression, DATETIME_ADD) else this - interval,
+        )
 
     return date_delta_to_binary_interval_op_sql
 

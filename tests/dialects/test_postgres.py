@@ -9,6 +9,14 @@ class TestPostgres(Validator):
     maxDiff = None
     dialect = "postgres"
 
+    def test_datetime_arithmetic(self):
+        self.validate_all(
+            "SELECT CAST('2024-01-01 12:00:00' AS TIMESTAMP) + INTERVAL '30 SECOND' - (CAST('2024-01-01 12:00:00' AS TIMESTAMP) + INTERVAL '30 SECOND')",
+            read={
+                "duckdb": "SELECT DATE_ADD(TIMESTAMP '2024-01-01 12:00:00', INTERVAL 30 SECOND) - DATE_ADD(TIMESTAMP '2024-01-01 12:00:00', INTERVAL 30 SECOND)",
+            },
+        )
+
     def test_create_tablespace(self):
         for sql in (
             "CREATE TABLE t (a INT PRIMARY KEY) TABLESPACE pg_default",
@@ -681,6 +689,43 @@ FROM json_data, field_ids""",
             write={
                 "mysql": "SELECT CURRENT_TIMESTAMP() - INTERVAL 1 YEAR - INTERVAL 2 MONTH - INTERVAL 3 DAY",
                 "postgres": "SELECT CURRENT_TIMESTAMP - MAKE_INTERVAL(years => 1, months => 2, days => 3)",
+            },
+        )
+        self.validate_all(
+            "SELECT MAKE_INTERVAL(days => 3)",
+            write={
+                "duckdb": "SELECT INTERVAL '3 day'",
+                "mysql": "SELECT INTERVAL 3 DAY",
+                "postgres": "SELECT MAKE_INTERVAL(days => 3)",
+                "snowflake": "SELECT INTERVAL '3 day'",
+            },
+        )
+        self.validate_all(
+            "SELECT MAKE_INTERVAL(1, hours => 2, mins => 30)",
+            write={
+                "duckdb": "SELECT INTERVAL '1 year 2 hour 30 minute'",
+                "postgres": "SELECT MAKE_INTERVAL(1, hours => 2, mins => 30)",
+            },
+        )
+        self.validate_all(
+            "SELECT MAKE_INTERVAL(secs => 7.5, mins => 6, hours => 5, DAYS => 4, weeks => 3, months => 2, years => 1)",
+            write={
+                "duckdb": "SELECT INTERVAL '7.5 second 6 minute 5 hour 4 day 3 week 2 month 1 year'",
+                "postgres": "SELECT MAKE_INTERVAL(years => 1, months => 2, weeks => 3, DAYS => 4, hours => 5, mins => 6, secs => 7.5)",
+            },
+        )
+        self.validate_all(
+            "SELECT MAKE_INTERVAL(1, 2, 3, 4, 5, 6, 7.5)",
+            write={
+                "duckdb": "SELECT INTERVAL '1 year 2 month 3 week 4 day 5 hour 6 minute 7.5 second'",
+                "postgres": "SELECT MAKE_INTERVAL(1, 2, 3, 4, 5, 6, 7.5)",
+            },
+        )
+        self.validate_all(
+            "SELECT MAKE_INTERVAL(days => 3) /* sqlglot.anonymous */",
+            write={
+                "duckdb": "SELECT MAKE_INTERVAL(days => 3) /* sqlglot.anonymous */",
+                "postgres": "SELECT MAKE_INTERVAL(days => 3) /* sqlglot.anonymous */",
             },
         )
         interval = parse_one("INTERVAL '1' QUARTER")

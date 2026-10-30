@@ -18,6 +18,28 @@ if t.TYPE_CHECKING:
     from sqlglot.dialects.dialect import Dialect
 
 
+MAKE_INTERVAL_KWARGS = {
+    "years": "year",
+    "months": "month",
+    "weeks": "week",
+    "days": "day",
+    "hours": "hour",
+    "mins": "minute",
+    "secs": "second",
+}
+
+
+def _build_make_interval(args: list) -> exp.MakeInterval:
+    return exp.MakeInterval(
+        **{
+            MAKE_INTERVAL_KWARGS.get(value.this.name.lower(), key)
+            if isinstance(value, exp.Kwarg)
+            else key: value
+            for key, value in zip(exp.MakeInterval.arg_types, args)
+        }
+    )
+
+
 def _build_generate_series(args: list) -> exp.ExplodingGenerateSeries:
     # The goal is to convert step values like '1 day' or INTERVAL '1 day' into INTERVAL '1' day
     # Note: postgres allows calls with just two arguments -- the "step" argument defaults to 1
@@ -129,6 +151,7 @@ class PostgresParser(parser.Parser):
         "JSON_EXTRACT_PATH": build_json_extract_path(exp.JSONExtract),
         "JSON_EXTRACT_PATH_TEXT": build_json_extract_path(exp.JSONExtractScalar),
         "LENGTH": lambda args: exp.Length(this=seq_get(args, 0), encoding=seq_get(args, 1)),
+        "MAKE_INTERVAL": _build_make_interval,
         "MAKE_TIME": exp.TimeFromParts.from_arg_list,
         "MAKE_TIMESTAMP": exp.TimestampFromParts.from_arg_list,
         "NOW": exp.CurrentTimestamp.from_arg_list,

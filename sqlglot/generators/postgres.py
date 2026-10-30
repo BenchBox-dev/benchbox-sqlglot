@@ -12,6 +12,7 @@ from sqlglot.dialects.dialect import (
     array_concat_sql,
     bool_xor_sql,
     count_if_to_sum,
+    date_delta_to_binary_sql,
     datestrtodate_sql,
     filter_array_using_unnest,
     generate_series_sql,
@@ -52,28 +53,39 @@ DATE_DIFF_FACTOR = {
     "DAY": " / 86400",
 }
 
+DATE_DIFF_BOUNDARY_UNITS = {
+    "MICROSECOND",
+    "MILLISECOND",
+    "SECOND",
+    "MINUTE",
+    "HOUR",
+    "MONTH",
+    "QUARTER",
+    "YEAR",
+}
+
 
 def _date_add_sql(kind: str) -> t.Callable[[PostgresGenerator, DATE_ADD_OR_SUB], str]:
     def func(self: PostgresGenerator, expression: DATE_ADD_OR_SUB) -> str:
         if isinstance(expression, exp.TsOrDsAdd):
             expression = ts_or_ds_add_cast(expression)
 
-        this = self.sql(expression, "this")
+        this = expression.this
         unit = expression.args.get("unit")
 
         e = self._simplify_unless_literal(expression.expression)
+        interval: exp.Expr
         if isinstance(e, exp.Interval):
-            return f"{this} {kind} {self.sql(e)}"
-        elif isinstance(e, exp.Literal):
-            e.set("is_string", True)
-        elif e.is_number:
-            e = exp.Literal.string(e.to_py())
+            interval = e
+        elif e.is_number or e.is_string:
+            interval = exp.Interval(this=exp.Literal.string(e.to_py()), unit=unit)
         else:
             one = exp.Literal.number(1)
-            interval_times_value = exp.Interval(this=one, unit=unit) * e
-            return f"{this} {kind} {self.sql(interval_times_value)}"
+            interval = exp.Interval(this=one, unit=unit) * e
 
-        return f"{this} {kind} {self.sql(exp.Interval(this=e, unit=unit))}"
+        return date_delta_to_binary_sql(
+            self, expression, this + interval if kind == "+" else this - interval
+        )
 
     return func
 
@@ -103,6 +115,13 @@ def _date_diff_sql(self: PostgresGenerator, expression: exp.DateDiff | exp.TsOrD
 
     end = f"CAST({self.sql(expression, 'this')} AS TIMESTAMP)"
     start = f"CAST({self.sql(expression, 'expression')} AS TIMESTAMP)"
+
+    # The arithmetic below counts complete units between the operands, whereas dialects that set
+    # date_part_boundary count unit boundary crossings, so the operands are truncated down to the
+    # unit to make the two coincide. WEEK is left out: its start day differs across dialects
+    if expression.args.get("date_part_boundary") and unit in DATE_DIFF_BOUNDARY_UNITS:
+        end = self.func("DATE_TRUNC", exp.Literal.string(unit), end)
+        start = self.func("DATE_TRUNC", exp.Literal.string(unit), start)
 
     if factor is not None:
         return f"CAST(EXTRACT(epoch FROM {end} - {start}){factor} AS BIGINT)"
@@ -337,6 +356,8 @@ class PostgresGenerator(generator.Generator):
         exp.DateDiff: _date_diff_sql,
         exp.DateStrToDate: datestrtodate_sql,
         exp.DateSub: _date_add_sql("-"),
+        exp.DatetimeAdd: _date_add_sql("+"),
+        exp.DatetimeSub: _date_add_sql("-"),
         exp.Day: _day_month_year_sql,
         exp.Explode: rename_func("UNNEST"),
         exp.ExplodingGenerateSeries: rename_func("GENERATE_SERIES"),
@@ -401,6 +422,8 @@ class PostgresGenerator(generator.Generator):
         exp.TimeFromParts: rename_func("MAKE_TIME"),
         exp.TimestampFromParts: rename_func("MAKE_TIMESTAMP"),
         exp.TimestampTrunc: timestamptrunc_sql(zone=True),
+        exp.TimestampAdd: _date_add_sql("+"),
+        exp.TimestampSub: _date_add_sql("-"),
         exp.TimeStrToTime: timestrtotime_sql,
         exp.TimeToStr: lambda self, e: self.func("TO_CHAR", e.this, self.format_time(e)),
         exp.ToChar: lambda self, e: (

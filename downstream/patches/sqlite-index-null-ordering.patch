@@ -1,8 +1,8 @@
 diff --git a/sqlglot/generator.py b/sqlglot/generator.py
-index 1cd0a3a9..b0554f96 100644
+index 9584f751..96177f95 100644
 --- a/sqlglot/generator.py
 +++ b/sqlglot/generator.py
-@@ -305,6 +305,12 @@ class Generator:
+@@ -306,6 +306,12 @@ class Generator:
      # such as window specifications, aggregate functions etc
      NULL_ORDERING_SUPPORTED: bool | None = True
  
@@ -15,7 +15,7 @@ index 1cd0a3a9..b0554f96 100644
      # Whether a window ORDER BY accepts an expression, so that an unsupported NULLS FIRST/LAST
      # can be simulated with a leading sort key
      SUPPORTS_NULL_SORT_KEY_IN_WINDOW = True
-@@ -3391,6 +3397,10 @@ class Generator:
+@@ -3443,6 +3449,10 @@ class Generator:
          ):
              nulls_sort_change = " NULLS LAST"
  
@@ -27,10 +27,10 @@ index 1cd0a3a9..b0554f96 100644
          if nulls_sort_change and not self.NULL_ORDERING_SUPPORTED:
              window = expression.find_ancestor(exp.Window, exp.Select)
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index 18f23e9b..e987ec0d 100644
+index b4a78b3d..d737049b 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
-@@ -212,6 +212,9 @@ def _global_having_to_subquery(expression: exp.Expr) -> exp.Expr:
+@@ -199,6 +199,9 @@ def _global_having_to_subquery(expression: exp.Expr) -> exp.Expr:
  
  class SQLiteGenerator(generator.Generator):
      SUPPORTS_EMPTY_GROUP_BY = False
@@ -41,10 +41,10 @@ index 18f23e9b..e987ec0d 100644
      TRY_SUPPORTED = False
      SUPPORTS_UESCAPE = False
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index a7aa0b40..aa1209bb 100644
+index 267a5ca2..a05f568c 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
-@@ -1723,3 +1723,26 @@ class TestSQLite(Validator):
+@@ -1811,3 +1811,26 @@ class TestSQLite(Validator):
              with self.subTest(query=query):
                  self.assertEqual(outputs["sqlite"], outputs["duckdb"])
                  self.assertGreater(outputs["duckdb"][0][0], 0)

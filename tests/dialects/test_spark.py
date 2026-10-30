@@ -1155,10 +1155,35 @@ TBLPROPERTIES (
         )
         self.validate_all(
             "LISTAGG(x, ', ')",
+            read={
+                "spark": "LISTAGG(ALL x, ', ')",
+                "databricks": "LISTAGG(ALL x, ', ')",
+            },
             write={
                 "spark, version=3.0.0": "ARRAY_JOIN(COLLECT_LIST(x), ', ')",
                 "spark, version=4.0.0": "LISTAGG(x, ', ')",
                 "spark": "LISTAGG(x, ', ')",
+            },
+        )
+        self.validate_all(
+            "LISTAGG(x, '-') WITHIN GROUP (ORDER BY x DESC)",
+            read={
+                "spark": "LISTAGG(ALL x, '-') WITHIN GROUP (ORDER BY x DESC)",
+                "databricks": "LISTAGG(ALL x, '-') WITHIN GROUP (ORDER BY x DESC)",
+            },
+        )
+        self.validate_all(
+            "LISTAGG(DISTINCT x, '-')",
+            write={
+                "spark": "LISTAGG(DISTINCT x, '-')",
+                "databricks": "LISTAGG(DISTINCT x, '-')",
+            },
+        )
+        self.validate_all(
+            "LISTAGG(DISTINCT x, '-') WITHIN GROUP (ORDER BY x DESC)",
+            write={
+                "spark": "LISTAGG(DISTINCT x, '-') WITHIN GROUP (ORDER BY x DESC)",
+                "databricks": "LISTAGG(DISTINCT x, '-') WITHIN GROUP (ORDER BY x DESC)",
             },
         )
         self.validate_all(
@@ -1228,6 +1253,10 @@ TBLPROPERTIES (
             write={
                 "databricks": "WITH RECURSIVE t(n) AS (SELECT * FROM VALUES (1) AS _values) SELECT n FROM t",
             },
+        )
+        self.validate_identity(
+            "SELECT 1 AS a UNION ALL (VALUES (2), (3) AS v(a) ORDER BY 1 DESC LIMIT 1)",
+            "SELECT 1 AS a UNION ALL (SELECT * FROM VALUES (2), (3) AS v(a) ORDER BY 1 DESC LIMIT 1)",
         )
 
     def test_named_struct(self):

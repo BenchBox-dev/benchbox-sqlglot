@@ -48,7 +48,20 @@ def _build_array_prepend(args: list) -> exp.Expr:
 
 
 def _build_date_diff(args: list) -> exp.Expr:
-    return exp.DateDiff(this=seq_get(args, 2), expression=seq_get(args, 1), unit=seq_get(args, 0))
+    unit = seq_get(args, 0)
+
+    # DATE_DIFF counts the unit boundaries crossed, e.g. one month from 2026-01-31 to 2026-02-01,
+    # except for WEEK, which counts whole 7-day spans
+    date_part_boundary = (
+        isinstance(unit, (exp.Literal, exp.Var)) and unit.name.upper() not in ("WEEK", "WEEKS", "W")
+    ) or None
+
+    return exp.DateDiff(
+        this=seq_get(args, 2),
+        expression=seq_get(args, 1),
+        unit=unit,
+        date_part_boundary=date_part_boundary,
+    )
 
 
 def _build_generate_series(end_exclusive: bool = False) -> t.Callable[[list], exp.GenerateSeries]:
@@ -92,6 +105,10 @@ def _convert_text_type(dtype: exp.DataType) -> exp.DataType:
     return dtype
 
 
+_parse_regexp_like = binary_range_parser(exp.RegexpLike)
+_parse_regexp_full_match = binary_range_parser(exp.RegexpFullMatch)
+
+
 class DuckDBParser(parser.Parser):
     IS_PREDICATE_PRECEDENCE = IsPredicatePrecedence.LOW
 
@@ -126,7 +143,7 @@ class DuckDBParser(parser.Parser):
     RANGE_PARSERS = {
         **parser.Parser.RANGE_PARSERS,
         TokenType.DAMP: binary_range_parser(exp.ArrayOverlaps),
-        TokenType.TILDE: binary_range_parser(exp.RegexpFullMatch),
+        TokenType.TILDE: lambda self, this: self._parse_tilde(this),
     }
 
     EXPONENT = {
@@ -298,6 +315,13 @@ class DuckDBParser(parser.Parser):
 
     SHOW_TRIE = new_trie(key.split(" ") for key in SHOW_PARSERS)
     SET_TRIE = new_trie(key.split(" ") for key in SET_PARSERS)
+
+    def _parse_tilde(self, this: exp.Expr | None) -> exp.Expr | None:
+        # ~ and !~ match anywhere in the string since DuckDB 2.0, and the whole string before it
+        # https://duckdb.org/docs/2.0/sql/functions/pattern_matching
+        if self.dialect.version >= (2, 0):
+            return _parse_regexp_like(self, this)
+        return _parse_regexp_full_match(self, this)
 
     def _parse_trigger_execute(self) -> exp.Expr | None:
         body = self._try_parse(self._parse_statement)
