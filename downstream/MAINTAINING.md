@@ -318,8 +318,14 @@ tag exists it runs `python -m downstream.refresh auto --tag TAG --work-dir DIR
 candidate and the integration branch exactly as the steps below do (with no
 retirements) and follows the upstream base version in the fixtures and docs. It
 exits 0 with `status: refreshed`, or exits 3 with `status: conflict` (a carried
-patch does not apply; the report names it and its files) or `status: failed`,
-and leaves no worktree or branch behind in either failing case. A refreshed
+patch does not apply, or changes nothing because upstream may already contain it;
+the report names it, its files and git's error) or `status: failed`. `failed`
+covers any other stopped step, and it includes a refresh that would change the
+active workflows under `.github/workflows/`, which `auto` leaves for a human to
+read before anything runs them. In both failing cases it removes the worktrees
+and branches it created. It refuses to start, removing nothing, when either
+`refresh/candidate-X`, `refresh/upstream-X` or its work directory already
+exists, so run it in a clean clone or after deleting your manual branches. A refreshed
 branch becomes a pull request here and goes through the same review and
 checks as a manual refresh; a conflict or failure becomes an issue in BenchBox
 for a maintainer to resolve by hand. The workflow never merges, releases or
