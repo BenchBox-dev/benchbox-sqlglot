@@ -217,7 +217,7 @@ class TestDownstreamRefresh(unittest.TestCase):
             )
             integrate(root, "v1.1.0", "candidate", directory / "integration", "integration", {})
 
-    def automatic_fixture(self, directory, upstream_runtime):
+    def automatic_fixture(self, directory, upstream_runtime, upstream_files=None):
         root = directory / "source"
         root.mkdir()
         self.command(root, "init", "-q", "-b", "main")
@@ -261,7 +261,10 @@ class TestDownstreamRefresh(unittest.TestCase):
         )
         self.command(root, "switch", "-qc", "upstream", "v1.0.0")
         (root / "runtime.py").write_text(upstream_runtime)
-        self.commit(root, ["runtime.py"], "Extend upstream runtime")
+        for name, content in (upstream_files or {}).items():
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_text(content)
+        self.commit(root, ["runtime.py", *(upstream_files or {})], "Extend upstream runtime")
         self.command(root, "tag", "v1.1.0")
         self.command(root, "switch", "-q", "main")
         return root
@@ -312,6 +315,77 @@ class TestDownstreamRefresh(unittest.TestCase):
             report = auto(root, "v1.0.0", directory / "work")
             self.assertEqual(report["status"], "failed")
             self.assertIn("newer", report["detail"])
+
+    def test_auto_refuses_to_start_when_its_branches_or_paths_exist_and_removes_nothing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            root = self.automatic_fixture(
+                directory, "VALUE = 'upstream'\nMIDDLE = 1\nOTHER = 'changed'\n"
+            )
+            self.command(root, "branch", "refresh/upstream-1.1.0", "main")
+            self.command(root, "branch", "refresh/candidate-1.1.0", "main")
+            report = auto(root, "v1.1.0", directory / "work")
+            self.assertEqual((report["status"], report["step"]), ("failed", "preflight"))
+            self.assertIn("refresh/upstream-1.1.0", report["detail"])
+            self.assertEqual(
+                git(root, "branch", "--list", "refresh/*").split(),
+                ["refresh/candidate-1.1.0", "refresh/upstream-1.1.0"],
+            )
+            (directory / "work" / "integration").mkdir(parents=True)
+            (directory / "work" / "integration" / "keep.txt").write_text("mine")
+            self.command(root, "branch", "-D", "refresh/upstream-1.1.0", "refresh/candidate-1.1.0")
+            report = auto(root, "v1.1.0", directory / "work")
+            self.assertEqual(report["step"], "preflight")
+            self.assertEqual((directory / "work" / "integration" / "keep.txt").read_text(), "mine")
+
+    def test_auto_reports_a_carried_patch_that_upstream_already_contains(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            root = self.automatic_fixture(
+                directory, "VALUE = 'downstream'\nMIDDLE = 1\nOTHER = 'upstream'\n"
+            )
+            report = auto(root, "v1.1.0", directory / "work")
+            self.assertEqual((report["status"], report["entry"]), ("conflict", "runtime"))
+            self.assertIn("already contain", report["detail"])
+            self.assertEqual(git(root, "branch", "--list", "refresh/*"), "")
+
+    def test_auto_stops_when_upstream_adds_an_active_workflow(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            root = self.automatic_fixture(
+                directory,
+                "VALUE = 'upstream'\nMIDDLE = 1\nOTHER = 'changed'\n",
+                {".github/workflows/new.yml": "name: new\n"},
+            )
+            report = auto(root, "v1.1.0", directory / "work")
+            self.assertEqual((report["status"], report["step"]), ("failed", "inherited-workflows"))
+            self.assertIn(".github/workflows/new.yml", report["detail"])
+            self.assertEqual(git(root, "branch", "--list", "refresh/*"), "")
+            self.assertFalse((directory / "work" / "integration").exists())
+
+    def test_auto_names_the_unowned_files_an_upstream_merge_cannot_resolve(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            root = self.automatic_fixture(
+                directory,
+                "VALUE = 'upstream'\nMIDDLE = 1\nOTHER = 'changed'\n",
+                {"downstream/README.md": "Upstream wrote this file too.\n"},
+            )
+            report = auto(root, "v1.1.0", directory / "work")
+            self.assertEqual((report["status"], report["step"]), ("failed", "integrate"))
+            self.assertIn("downstream/README.md", report["detail"])
+            self.assertEqual(git(root, "branch", "--list", "refresh/*"), "")
+            self.assertFalse((directory / "work" / "integration").exists())
+
+    def test_auto_keeps_the_apply_error_when_a_patch_cannot_be_merged(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            root = self.automatic_fixture(
+                directory, "VALUE = 'rewritten'\nMIDDLE = 1\nOTHER = 'upstream'\n"
+            )
+            report = auto(root, "v1.1.0", directory / "work")
+            self.assertEqual(report["status"], "conflict")
+            self.assertIn("runtime.py", report["detail"])
 
     def test_normalized_series_reconstructs_current_source(self):
         root = Path(__file__).resolve().parents[1]

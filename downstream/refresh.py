@@ -20,12 +20,13 @@ FOLLOW_UP_EXIT = 3
 
 
 class RefreshConflict(Exception):
-    def __init__(self, entry: str, paths: list[str]):
+    def __init__(self, entry: str, paths: list[str], detail: str = ""):
         self.entry = entry
         self.paths = paths
-        super().__init__(
+        message = (
             f"Carried patch {entry} does not apply cleanly: {', '.join(paths) or 'no files merged'}"
         )
+        super().__init__(f"{message}\n{detail}" if detail else message)
 
 
 def command(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -96,12 +97,22 @@ def candidate(root: Path, tag: str, destination: Path, branch: str, retired: set
             patch_path = root / entry["patch"]
             if not patch_path.is_file():
                 raise ValueError(f"Missing normalized patch: {patch_path}")
-            applied = command(
-                destination, "apply", "--3way", "--index", str(patch_path), check=False
+            applied = subprocess.run(
+                ["git", "-C", str(destination), "apply", "--3way", "--index", str(patch_path)],
+                capture_output=True,
+                text=True,
+                check=False,
             )
             if applied.returncode:
                 conflicted = git(destination, "diff", "--name-only", "--diff-filter=U").splitlines()
-                raise RefreshConflict(entry["id"], conflicted)
+                raise RefreshConflict(entry["id"], conflicted, applied.stderr.strip()[-1000:])
+            if command(destination, "diff", "--cached", "--quiet", check=False).returncode == 0:
+                raise RefreshConflict(
+                    entry["id"],
+                    [],
+                    "The patch changes nothing on this upstream tag, so upstream may already contain it; "
+                    "retire it with a reviewed reason instead of carrying an empty patch.",
+                )
         command(destination, "commit", "--allow-empty", "-m", subject(entry))
     print(
         f"Candidate source ready at {destination}; resolve any conflicts explicitly and run source checks"
@@ -152,7 +163,8 @@ def integrate(
     conflicts = set(git(destination, "diff", "--name-only", "--diff-filter=U").splitlines())
     if conflicts - set(paths) or (merge.returncode and not conflicts):
         raise ValueError(
-            "Upstream merge needs manual resolution outside the patch-owned source paths"
+            "Upstream merge needs manual resolution outside the patch-owned source paths: "
+            + (", ".join(sorted(conflicts - set(paths))) or "no conflicted files reported")
         )
     if paths:
         command(
@@ -237,6 +249,25 @@ def discard(root: Path, path: Path, branch: str) -> None:
     subprocess.run(delete, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def occupied(root: Path, paths: list[Path], branches: list[str]) -> list[str]:
+    taken = [str(path) for path in paths if path.exists()]
+    for branch in branches:
+        if (
+            command(
+                root, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}", check=False
+            ).returncode
+            == 0
+        ):
+            taken.append(branch)
+    return taken
+
+
+def changed_workflows(root: Path, integration: Path) -> list[str]:
+    head = git(root, "rev-parse", "HEAD")
+    names = git(integration, "diff", "--name-only", head, "HEAD", "--", ".github/workflows")
+    return names.splitlines()
+
+
 def auto(root: Path, tag: str, work_dir: Path) -> dict:
     version = tag.removeprefix("v")
     candidate_branch = f"refresh/candidate-{version}"
@@ -244,6 +275,19 @@ def auto(root: Path, tag: str, work_dir: Path) -> dict:
     candidate_path = work_dir / "candidate"
     integration_path = work_dir / "integration"
     report: dict = {"tag": tag, "branch": integration_branch}
+    taken = occupied(
+        root,
+        [candidate_path, integration_path],
+        [candidate_branch, integration_branch],
+    )
+    if taken:
+        report.update(
+            status="failed",
+            step="preflight",
+            detail="Refusing to start: these already exist and would be removed or clobbered: "
+            + ", ".join(taken),
+        )
+        return report
     step = "fetch"
     try:
         clean(root)
@@ -253,6 +297,14 @@ def auto(root: Path, tag: str, work_dir: Path) -> dict:
         candidate(root, tag, candidate_path, candidate_branch, set())
         step = "integrate"
         integrate(root, tag, candidate_branch, integration_path, integration_branch, {})
+        step = "inherited-workflows"
+        workflows = changed_workflows(root, integration_path)
+        if workflows:
+            raise ValueError(
+                "Upstream changes the active workflows of this repository, which would run on the "
+                "refresh pull request before anyone reads them; review them against the workflow "
+                "rules in MAINTAINING.md and refresh by hand: " + ", ".join(workflows)
+            )
     except RefreshConflict as conflict:
         report.update(
             status="conflict",
