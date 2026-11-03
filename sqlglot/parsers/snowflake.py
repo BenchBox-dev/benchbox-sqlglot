@@ -785,11 +785,16 @@ class SnowflakeParser(parser.Parser):
         **parser.Parser.PROPERTY_PARSERS,
         "CREDENTIALS": lambda self: self._parse_credentials_property(),
         "FILE_FORMAT": lambda self: self._parse_file_format_property(),
+        "INTERACTIVE": lambda self: self.expression(exp.InteractiveProperty()),
         "LOCATION": lambda self: self._parse_location_property(),
         "ROW": lambda self: (
             self._parse_row_access_policy()
             if self._match_text_seq("ACCESS", "POLICY")
             else self._parse_row()
+        ),
+        "SCOPED": lambda self: (
+            self._match_texts(("TEMP", "TEMPORARY"))
+            and self.expression(exp.TemporaryProperty(scoped=True))
         ),
         "TAG": lambda self: self._parse_tag(),
         "USING": lambda self: (

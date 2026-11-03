@@ -824,7 +824,7 @@ def normalize_table_name(table: str | Table, dialect: DialectType = None, copy: 
 def replace_tables(
     expression: E, mapping: dict[str, str], dialect: DialectType = None, copy: bool = True
 ) -> E:
-    """Replace all tables in expression according to the mapping.
+    """Replace all FROM sources (tables, views, table functions...) in expression according to the mapping.
 
     Args:
         expression: expression node to be transformed and replaced.
@@ -845,6 +845,10 @@ def replace_tables(
 
     def _replace_tables(node: Expr) -> Expr:
         if isinstance(node, Table) and node.meta_get("replace") is not False:
+            call = node.this
+            if isinstance(call, Func) and not isinstance(call, Anonymous):
+                return node
+
             original = normalize_table_name(node, dialect=dialect)
             new_name = mapping.get(original)
 
@@ -854,6 +858,9 @@ def replace_tables(
                     **{k: v for k, v in node.args.items() if k not in TABLE_PARTS},
                     dialect=dialect,
                 )
+                if isinstance(call, Anonymous):
+                    call.set("this", table.this)
+                    table.set("this", call)
                 table.add_comments([original])
                 return table
         return node

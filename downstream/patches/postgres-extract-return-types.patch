@@ -1,5 +1,5 @@
 diff --git a/sqlglot/expressions/temporal.py b/sqlglot/expressions/temporal.py
-index 62b5bc07..0b5da196 100644
+index 6a99b5b8..086a7670 100644
 --- a/sqlglot/expressions/temporal.py
 +++ b/sqlglot/expressions/temporal.py
 @@ -227,7 +227,8 @@ class Dayname(Expression, Func):
@@ -99,10 +99,10 @@ index 5faade46..ad115971 100644
  
      FUNCTIONS = {
 diff --git a/tests/dialects/test_postgres.py b/tests/dialects/test_postgres.py
-index 5b7acd00..bfc86ea9 100644
+index b5fe4222..af7d030c 100644
 --- a/tests/dialects/test_postgres.py
 +++ b/tests/dialects/test_postgres.py
-@@ -153,6 +153,27 @@ class TestPostgres(Validator):
+@@ -156,6 +156,27 @@ class TestPostgres(Validator):
              if expression.args.get("returning"):
                  self.assertIsInstance(expression.args["returning"], exp.DataType)
  
@@ -130,7 +130,7 @@ index 5b7acd00..bfc86ea9 100644
      def test_postgres(self):
          expr = self.parse_one("SELECT * FROM r CROSS JOIN LATERAL UNNEST(ARRAY[1]) AS s(location)")
          unnest = expr.args["joins"][0].this.this
-@@ -395,11 +416,11 @@ class TestPostgres(Validator):
+@@ -398,11 +419,11 @@ class TestPostgres(Validator):
          )
          self.validate_identity(
              "SELECT DATE_PART('isodow'::varchar(6), current_date)",
@@ -144,7 +144,7 @@ index 5b7acd00..bfc86ea9 100644
          )
          self.validate_identity(
              "END WORK AND NO CHAIN",
-@@ -908,16 +929,16 @@ FROM json_data, field_ids""",
+@@ -911,16 +932,16 @@ FROM json_data, field_ids""",
          self.validate_all(
              "SELECT DATE_PART('minute', timestamp '2023-01-04 04:05:06.789')",
              write={
@@ -166,7 +166,7 @@ index 5b7acd00..bfc86ea9 100644
              },
          )
 diff --git a/tests/dialects/test_redshift.py b/tests/dialects/test_redshift.py
-index 926486b3..43c6fe9a 100644
+index a1ae80b4..c05101ba 100644
 --- a/tests/dialects/test_redshift.py
 +++ b/tests/dialects/test_redshift.py
 @@ -241,16 +241,16 @@ class TestRedshift(Validator):

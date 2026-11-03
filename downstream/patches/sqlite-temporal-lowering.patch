@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index cb7e1b6d..152f4ebf 100644
+index 088afa41..5bfb0c3c 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
 @@ -1,5 +1,6 @@
@@ -34,7 +34,7 @@ index cb7e1b6d..152f4ebf 100644
  
  def _transform_create(expression: exp.Expr) -> exp.Expr:
      """Move primary key to a column and place auto_increment after it."""
-@@ -290,31 +309,47 @@ class SQLiteGenerator(generator.Generator):
+@@ -296,31 +315,47 @@ class SQLiteGenerator(generator.Generator):
                      self.unsupported("SQLite extraction division requires known operand types")
          return super().div_sql(expression)
  
@@ -92,7 +92,7 @@ index cb7e1b6d..152f4ebf 100644
          )
          return super().extract_sql(expression)
  
-@@ -380,19 +415,33 @@ class SQLiteGenerator(generator.Generator):
+@@ -386,19 +421,33 @@ class SQLiteGenerator(generator.Generator):
          date, interval = expression.this, expression.expression
          if isinstance(expression, exp.Add) and isinstance(date, exp.Interval):
              date, interval = interval, date
@@ -134,7 +134,7 @@ index cb7e1b6d..152f4ebf 100644
          return None
  
      def add_sql(self, expression: exp.Add) -> str:
-@@ -405,6 +454,27 @@ class SQLiteGenerator(generator.Generator):
+@@ -411,6 +460,27 @@ class SQLiteGenerator(generator.Generator):
          self.unsupported("SQLite does not support this INTERVAL expression")
          return super().interval_sql(expression)
  
@@ -163,7 +163,7 @@ index cb7e1b6d..152f4ebf 100644
          if expression.is_type("date"):
              return self.func("DATE", expression.this)
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index 3a018a5c..2a28c294 100644
+index b1cbc671..b70146d3 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
 @@ -2,6 +2,8 @@ import sqlite3

@@ -13,6 +13,38 @@ class TestSnowflake(Validator):
     maxDiff = None
     dialect = "snowflake"
 
+    def test_base64_alphabet(self):
+        self.validate_all(
+            "SELECT BASE64_ENCODE(TO_BINARY('FBFF', 'HEX'), 0, '/+=')",
+            write={"duckdb": "SELECT TRANSLATE(TO_BASE64(UNHEX('FBFF')), '+/', '/+')"},
+        )
+        self.validate_all(
+            "SELECT BASE64_DECODE_BINARY('-_8+', '-_+')",
+            write={"duckdb": "SELECT FROM_BASE64(TRANSLATE('-_8+', '-_+', '+/='))"},
+        )
+        self.validate_all(
+            "SELECT BASE64_DECODE_STRING('4KC/', '/+=')",
+            write={"duckdb": "SELECT DECODE(FROM_BASE64(TRANSLATE('4KC/', '/+', '+/')))"},
+        )
+        for alphabet, source, target, encoded in (
+            ("-", "+", "-", "-/8="),
+            ("-_", "+/", "-_", "-_8="),
+            ("+/%", "=", "%", "+/8%"),
+        ):
+            with self.subTest(alphabet=alphabet):
+                self.validate_all(
+                    f"SELECT BASE64_ENCODE(TO_BINARY('FBFF', 'HEX'), 0, '{alphabet}')",
+                    write={
+                        "duckdb": f"SELECT TRANSLATE(TO_BASE64(UNHEX('FBFF')), '{source}', '{target}')"
+                    },
+                )
+                self.validate_all(
+                    f"SELECT BASE64_DECODE_BINARY('{encoded}', '{alphabet}')",
+                    write={
+                        "duckdb": f"SELECT FROM_BASE64(TRANSLATE('{encoded}', '{target}', '{source}'))"
+                    },
+                )
+
     def test_time_format_case(self):
         self.validate_all(
             "SELECT TO_TIMESTAMP('2024-5-9', 'yyyy-mm-DD')",
@@ -3281,7 +3313,7 @@ class TestSnowflake(Validator):
             "SELECT BASE64_DECODE_STRING('U25vd2ZsYWtl', '-_+')",
             write={
                 "snowflake": "SELECT BASE64_DECODE_STRING('U25vd2ZsYWtl', '-_+')",
-                "duckdb": "SELECT DECODE(FROM_BASE64(REPLACE(REPLACE(REPLACE('U25vd2ZsYWtl', '-', '+'), '_', '/'), '+', '=')))",
+                "duckdb": "SELECT DECODE(FROM_BASE64(TRANSLATE('U25vd2ZsYWtl', '-_+', '+/=')))",
             },
         )
         self.validate_all(
@@ -3295,7 +3327,7 @@ class TestSnowflake(Validator):
             "SELECT BASE64_DECODE_BINARY(x, '-_+')",
             write={
                 "snowflake": "SELECT BASE64_DECODE_BINARY(x, '-_+')",
-                "duckdb": "SELECT FROM_BASE64(REPLACE(REPLACE(REPLACE(x, '-', '+'), '_', '/'), '+', '='))",
+                "duckdb": "SELECT FROM_BASE64(TRANSLATE(x, '-_+', '+/='))",
             },
         )
 
@@ -4673,6 +4705,31 @@ class TestSnowflake(Validator):
             "CREATE DYNAMIC TABLE dt TARGET_LAG='1 minute' WAREHOUSE=my_wh (id) AS SELECT * FROM bla",
             "CREATE DYNAMIC TABLE dt (id) TARGET_LAG='1 minute' WAREHOUSE=my_wh AS SELECT * FROM bla",
         )
+        create = self.validate_identity(
+            "CREATE INTERACTIVE TABLE t CLUSTER BY (a) AS SELECT a FROM s"
+        ).assert_is(exp.Create)
+        self.assertEqual(create.kind, "TABLE")
+        self.assertIsInstance(create.find(exp.InteractiveProperty), exp.InteractiveProperty)
+        self.validate_identity(
+            "CREATE OR REPLACE INTERACTIVE TABLE t CLUSTER BY (a, b) TARGET_LAG='5 minutes' WAREHOUSE=wh AS SELECT a, b FROM s"
+        )
+        self.validate_identity(
+            "CREATE INTERACTIVE TABLE IF NOT EXISTS db.s.t (a INT, b VARCHAR) CLUSTER BY (a) TARGET_LAG='1 hour' WAREHOUSE=wh INITIALIZATION_WAREHOUSE=init_wh AS SELECT a, b FROM s"
+        )
+        self.validate_all(
+            "CREATE OR REPLACE INTERACTIVE TABLE t CLUSTER BY (a) AS SELECT a FROM s",
+            write={
+                "duckdb": "CREATE OR REPLACE TABLE t AS SELECT a FROM s",
+                "snowflake": "CREATE OR REPLACE INTERACTIVE TABLE t CLUSTER BY (a) AS SELECT a FROM s",
+            },
+        )
+        self.validate_identity(
+            "CREATE INTERACTIVE WAREHOUSE wh WAREHOUSE_SIZE='SMALL'"
+        ).this.assert_is(exp.Identifier)
+        self.validate_identity(
+            "CREATE INTERACTIVE WAREHOUSE wh TABLES (t1, t2) WAREHOUSE_SIZE='SMALL'",
+            check_command_warning=True,
+        )
         self.validate_identity(
             "ALTER TABLE db_name.schmaName.tblName ADD COLUMN_1 VARCHAR NOT NULL TAG (key1='value_1')"
         )
@@ -4744,6 +4801,24 @@ class TestSnowflake(Validator):
                 "bigquery": "CREATE TABLE orders_clone CLONE orders",
                 "snowflake": "CREATE TABLE orders_clone CLONE orders",
             },
+        )
+        self.validate_identity("CREATE SCOPED TEMPORARY TABLE t (a INT)")
+        self.validate_identity("CREATE OR REPLACE SCOPED TEMPORARY VIEW v AS SELECT 1 AS c")
+        self.validate_identity(
+            "CREATE SCOPED TEMP TABLE t (a INT)",
+            "CREATE SCOPED TEMPORARY TABLE t (a INT)",
+        )
+        self.validate_all(
+            "CREATE SCOPED TEMPORARY TABLE t (a INT)",
+            write={
+                "duckdb": "CREATE TEMPORARY TABLE t (a INT)",
+                "oracle": "CREATE GLOBAL TEMPORARY TABLE t (a INT)",
+                "snowflake": "CREATE SCOPED TEMPORARY TABLE t (a INT)",
+            },
+        )
+        self.validate_all(
+            "CREATE TEMPORARY TABLE ora$ptt_t (a INT)",
+            read={"oracle": "CREATE PRIVATE TEMPORARY TABLE ora$ptt_t (a INT)"},
         )
         self.validate_all(
             "CREATE OR REPLACE TRANSIENT TABLE a (id INT)",

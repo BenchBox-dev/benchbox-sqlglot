@@ -2,6 +2,7 @@ import datetime
 import math
 import sys
 import unittest
+from decimal import MAX_EMAX
 
 from sqlglot import ParseError, alias, exp, parse_one
 from sqlglot.parser import logger as parser_logger
@@ -333,6 +334,82 @@ class TestExprs(unittest.TestCase):
             ).sql(),
             "SELECT * FROM example.table /* sqlglot.meta replace=false */",
         )
+
+    def test_replace_tables_keeps_function_arguments(self):
+        def replace(sql, mapping, dialect):
+            return exp.replace_tables(
+                parse_one(sql, dialect=dialect), mapping, dialect=dialect
+            ).sql(dialect)
+
+        self.assertEqual(
+            replace(
+                "SELECT * FROM db1.pv1(sim_id = 1, d = '2026-01-01') AS p",
+                {"db1.pv1": "db2.pv2"},
+                "clickhouse",
+            ),
+            "SELECT * FROM db2.pv2(sim_id = 1, d = '2026-01-01') AS p /* db1.pv1 */",
+        )
+        self.assertEqual(
+            replace("SELECT * FROM ds.tvf(1, 'a')", {"ds.tvf": "proj.ds2.tvf2"}, "bigquery"),
+            "SELECT * FROM proj.ds2.tvf2(1, 'a') /* ds.tvf */",
+        )
+        self.assertEqual(
+            replace("SELECT * FROM f(1)", {"f": "db.g"}, "bigquery"),
+            "SELECT * FROM db.g(1) /* f */",
+        )
+        self.assertEqual(
+            replace(
+                "SELECT * FROM ds.tvf(1)", {"ds.tvf": '"my-project"."ds2"."tvf2"'}, "clickhouse"
+            ),
+            'SELECT * FROM "my-project"."ds2"."tvf2"(1) /* ds.tvf */',
+        )
+        self.assertEqual(
+            replace(
+                "SELECT * FROM numbers(10) JOIN pv.pv(a = 1) USING (x)",
+                {"pv.pv": "db.other"},
+                "clickhouse",
+            ),
+            "SELECT * FROM numbers(10) JOIN db.other(a = 1) /* pv.pv */ USING (x)",
+        )
+        # known functions get parsed into dedicated expressions, they shouldn't get mangled
+        self.assertEqual(
+            replace("SELECT * FROM generate_series(1, 3)", {"generate_series": "c.d"}, "postgres"),
+            "SELECT * FROM GENERATE_SERIES(1, 3)",
+        )
+        self.assertEqual(
+            replace("SELECT * FROM read_csv('foo') AS r", {"foo": "c.d"}, "duckdb"),
+            "SELECT * FROM READ_CSV('foo') AS r",
+        )
+
+    def test_replace_tables_function_copy(self):
+        for copy in (True, False):
+            with self.subTest(copy=copy):
+                original = parse_one("SELECT * FROM f(1) AS t", dialect="clickhouse")
+                before = original.copy()
+                call = original.find(exp.Anonymous)
+                result = exp.replace_tables(
+                    original, {"f": "db.g"}, dialect="clickhouse", copy=copy
+                )
+                self.assertEqual(result.sql("clickhouse"), "SELECT * FROM db.g(1) AS t /* f */")
+                if copy:
+                    self.assertEqual(original, before)
+                    self.assertIsNot(result.find(exp.Anonymous), call)
+                else:
+                    self.assertIs(result, original)
+                    self.assertIs(result.find(exp.Anonymous), call)
+                for node in result.walk():
+                    for child in node.iter_expressions():
+                        self.assertIs(child.parent, node)
+
+    def test_replace_tables_builtin_parent(self):
+        for copy in (True, False):
+            with self.subTest(copy=copy):
+                original = parse_one("SELECT * FROM read_csv('foo') AS r", dialect="duckdb")
+                result = exp.replace_tables(original, {"foo": "c.d"}, dialect="duckdb", copy=copy)
+                self.assertEqual(result, original)
+                for node in result.walk():
+                    for child in node.iter_expressions():
+                        self.assertIs(child.parent, node)
 
     def test_expand(self):
         self.assertEqual(
@@ -1357,6 +1434,8 @@ FROM foo""",
 
     def test_is_int(self):
         self.assertTrue(parse_one("- -1").is_int)
+        self.assertFalse(exp.Literal.number(f"1E{MAX_EMAX + 1}").is_int)
+        self.assertFalse(exp.Literal.number("0.1.2").is_int)
 
     def test_is_star(self):
         assert parse_one("*").is_star

@@ -1,5 +1,6 @@
 import time
 import unittest
+from decimal import MAX_EMAX
 from unittest.mock import patch
 
 from sqlglot import Parser, exp, parse, parse_one
@@ -405,7 +406,7 @@ class TestParser(unittest.TestCase):
             for operator in ("=", "<"):
                 expression = parse_one(f"a IS NULL {operator} b", read=dialect)
                 if dialect == "sqlite" and operator == "<":
-                    self.assertIsInstance(expression, exp.Is)
+                    self.assertIsInstance(expression, exp.NullSafeEQ)
                     self.assertIsInstance(expression.expression, exp.Paren)
                     self.assertIsInstance(expression.expression.this, exp.LT)
                 else:
@@ -832,6 +833,12 @@ class TestParser(unittest.TestCase):
         self.assertEqual(expression.comments, ["comment2"])
         self.assertEqual(expression.this.comments, ["comment3"])
         self.assertEqual(expression.args["with_"].comments, ["comment1.1", "comment1.2"])
+
+    def test_large_exponent_array_index(self):
+        sql = f"SELECT arr[1E{MAX_EMAX + 1}]"
+        for dialect in ("postgres", "duckdb"):
+            with self.subTest(dialect=dialect):
+                self.assertEqual(parse_one(sql, read=dialect).sql(dialect), sql)
 
     def test_type_literals(self):
         self.assertEqual(parse_one("int 1"), parse_one("CAST(1 AS INT)"))
@@ -1533,3 +1540,17 @@ class TestParser(unittest.TestCase):
         with self.assertRaises(ParseError):
             parse_one("SELECT " + ",".join(f"x={i}" for i in range(100)), max_nodes=5)
         self.assertIsInstance(parse_one("SELECT 1, 2, 3"), exp.Select)
+
+    def test_describe_followed_by_dot(self):
+        # https://github.com/tobymao/sqlglot/issues/8870
+        for dialect in (None, "spark", "mysql", "snowflake"):
+            for sql in ("DESC.", "DESCRIBE.", "DESC. ;", "DESC ."):
+                with self.subTest(dialect=dialect, sql=sql):
+                    with self.assertRaises(ParseError):
+                        parse_one(sql, read=dialect)
+
+        # A style/kind keyword used as a db name must still work
+        self.assertEqual(
+            parse_one("DESCRIBE history.tbl", read="spark").sql("spark"),
+            "DESCRIBE history.tbl",
+        )

@@ -121,7 +121,7 @@ class TestSQLite(Validator):
                 ("NULL IS NULL", exp.Is),
                 ("NULL IS NOT DISTINCT FROM NULL", exp.NullSafeEQ),
             ):
-                lhs = f"({predicate})" if suffix.startswith("BETWEEN") else predicate
+                lhs = "(NULL IS NULL)" if suffix.startswith("BETWEEN") else "NULL IS NULL"
                 expression = self.validate_identity(
                     f"SELECT {predicate} {suffix}", f"SELECT {lhs} {suffix}"
                 )
@@ -140,7 +140,7 @@ class TestSQLite(Validator):
         self.validate_all(
             "SELECT FALSE IS DISTINCT FROM TRUE IS DISTINCT FROM FALSE",
             write={
-                "sqlite": "SELECT (FALSE IS DISTINCT FROM TRUE) IS DISTINCT FROM FALSE",
+                "sqlite": "SELECT (FALSE IS NOT TRUE) IS NOT FALSE",
                 "postgres": "SELECT (FALSE IS DISTINCT FROM TRUE) IS DISTINCT FROM FALSE",
             },
         )
@@ -148,7 +148,7 @@ class TestSQLite(Validator):
         self.validate_all(
             "SELECT FALSE IS DISTINCT FROM NULL = NULL",
             write={
-                "sqlite": "SELECT (FALSE IS DISTINCT FROM NULL) = NULL",
+                "sqlite": "SELECT (FALSE IS NOT NULL) = NULL",
                 "postgres": "SELECT (FALSE IS DISTINCT FROM NULL) = NULL",
                 "duckdb": "SELECT (FALSE IS DISTINCT FROM NULL) = NULL",
             },
@@ -704,6 +704,22 @@ class TestSQLite(Validator):
         self.validate_identity("SELECT DATE()")
         self.validate_identity("SELECT DATE('now', 'start of month', '+1 month', '-1 day')")
         self.validate_all(
+            "SELECT DATE('2020-01-31', '+1 month')",
+            read={"sqlite": "SELECT DATE('2020-01-31', '+1 month')"},
+            write={
+                "sqlite": "SELECT DATE('2020-01-31', '+1 month')",
+                "duckdb": "SELECT DATE('2020-01-31', '+1 month')",
+            },
+        )
+        self.validate_all(
+            "SELECT DATE('2020-03-15', 'start of month', '+1 day')",
+            read={"sqlite": "SELECT DATE('2020-03-15', 'start of month', '+1 day')"},
+            write={
+                "sqlite": "SELECT DATE('2020-03-15', 'start of month', '+1 day')",
+                "duckdb": "SELECT DATE('2020-03-15', 'start of month', '+1 day')",
+            },
+        )
+        self.validate_all(
             "SELECT DATE(d, '1 DAY') FROM t",
             read={
                 "duckdb": "SELECT DATE_ADD(d, INTERVAL 1 DAY) FROM t",
@@ -1031,10 +1047,7 @@ class TestSQLite(Validator):
                 "spark": "ASCII(x)",
             },
         )
-        self.validate_identity(
-            "SELECT * FROM station WHERE city IS NOT ''",
-            "SELECT * FROM station WHERE NOT city IS ''",
-        )
+        self.validate_identity("SELECT * FROM station WHERE city IS NOT ''")
         self.validate_identity("SELECT JSON_OBJECT('col1', 1, 'col2', '1')")
         self.validate_identity(
             'CREATE TABLE "foo t" ("foo t id" TEXT NOT NULL, PRIMARY KEY ("foo t id"))',
@@ -1058,9 +1071,7 @@ class TestSQLite(Validator):
         )
         self.validate_identity("DETACH DATABASE schema_name", "DETACH schema_name")
         self.validate_identity("SELECT * FROM t WHERE NULL IS y")
-        self.validate_identity(
-            "SELECT * FROM t WHERE NULL IS NOT y", "SELECT * FROM t WHERE NOT NULL IS y"
-        )
+        self.validate_identity("SELECT * FROM t WHERE NULL IS NOT y")
         self.validate_identity("SELECT SQLITE_VERSION()")
 
     def test_json_arrow_precedence(self):
@@ -1453,6 +1464,37 @@ class TestSQLite(Validator):
             "CREATE TRIGGER view_insert INSTEAD OF INSERT ON employee_view BEGIN INSERT INTO employees (id, name, department) VALUES (NEW.id, NEW.name, NEW.department) END",
             check_command_warning=True,
         )
+
+    def test_is_operator_null_safe_comparison(self):
+        # issue #8855: SQLite's IS / IS NOT is a null-safe equality against any
+        # expression; DuckDB and Postgres only accept NULL/TRUE/FALSE/UNKNOWN
+        # on the right side. Non-trivial right sides parse as IS
+        # [NOT] DISTINCT FROM so each transpiler emits the syntax it supports,
+        # while the SQLite round trip keeps IS / IS NOT.
+        self.validate_transpile(
+            "SELECT a IS b, a IS NOT b FROM t",
+            "SELECT a IS NOT DISTINCT FROM b, a IS DISTINCT FROM b FROM t",
+            write_dialect="duckdb",
+        )
+        self.validate_transpile(
+            "SELECT a IS b FROM t",
+            "SELECT a IS NOT DISTINCT FROM b FROM t",
+            write_dialect="postgres",
+        )
+        self.validate_identity("SELECT a IS b, a IS NOT b FROM t")
+        self.validate_identity(
+            "SELECT a IS NULL, a IS NOT NULL FROM t",
+            "SELECT a IS NULL, NOT a IS NULL FROM t",
+        )
+
+        for rhs in ("TRUE", "FALSE", "NULL"):
+            for wrapped in (f"({rhs})", f"(({rhs}))"):
+                for negate in (False, True):
+                    sql = f"SELECT 2 IS {'NOT ' if negate else ''}{wrapped}"
+                    expected = f"SELECT {'NOT ' if negate else ''}2 IS {rhs}"
+                    self.validate_all(sql, write={"sqlite": expected, "duckdb": expected})
+                    expression = self.parse_one(sql).expressions[0]
+                    self.assertIsInstance(expression.this if negate else expression, exp.Is)
 
     def test_date_day_difference_and_subtraction(self):
         for unit in ("DAY", "day"):

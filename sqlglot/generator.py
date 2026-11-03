@@ -782,6 +782,7 @@ class Generator:
         exp.IcebergProperty: exp.Properties.Location.POST_CREATE,
         exp.IncludeProperty: exp.Properties.Location.POST_SCHEMA,
         exp.InputModelProperty: exp.Properties.Location.POST_SCHEMA,
+        exp.InteractiveProperty: exp.Properties.Location.UNSUPPORTED,
         exp.IsolatedLoadingProperty: exp.Properties.Location.POST_NAME,
         exp.JournalProperty: exp.Properties.Location.POST_NAME,
         exp.LanguageProperty: exp.Properties.Location.POST_SCHEMA,
@@ -2882,7 +2883,8 @@ class Generator:
                 else values
             )
             values = self.query_modifiers(expression, values)
-            return f"{values} AS {alias}" if alias else values
+            pivots = self.expressions(expression, key="pivots", sep="", flat=True)
+            return f"{values} AS {alias}{pivots}" if alias else f"{values}{pivots}"
 
         # Converts `VALUES...` expression into a series of select unions.
         alias_node = expression.args.get("alias")
@@ -2905,11 +2907,17 @@ class Generator:
             # the deep nesting of the resulting exp.Unions. If this is a problem, either increase
             # `sys.setrecursionlimit` to avoid RecursionErrors, or don't set `pretty`.
             query = reduce(lambda x, y: exp.union(x, y, distinct=False, copy=False), selects)
-            return self.subquery_sql(query.subquery(alias_node and alias_node.this, copy=False))
+            for key in ("order", "limit", "offset"):
+                if value := expression.args.get(key):
+                    query.set(key, value.pop())
+            subquery = query.subquery(alias_node and alias_node.this, copy=False)
+            subquery.set("pivots", expression.args.pop("pivots", None))
+            return self.subquery_sql(subquery)
 
         alias = f" AS {self.sql(alias_node, 'this')}" if alias_node else ""
         unions = " UNION ALL ".join(self.sql(select) for select in selects)
-        return f"({unions}){alias}"
+        pivots = self.expressions(expression, key="pivots", sep="", flat=True)
+        return f"({self.query_modifiers(expression, unions)}){alias}{pivots}"
 
     def var_sql(self, expression: exp.Var) -> str:
         return self.sql(expression, "this")

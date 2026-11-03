@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generator.py b/sqlglot/generator.py
-index 1081f67a..917398d1 100644
+index 29575f2d..52a4780b 100644
 --- a/sqlglot/generator.py
 +++ b/sqlglot/generator.py
 @@ -8,6 +8,7 @@ from decimal import Decimal
@@ -20,7 +20,7 @@ index 1081f67a..917398d1 100644
      # The string used for creating an index on a table
      INDEX_ON = "ON"
  
-@@ -4702,6 +4706,9 @@ class Generator:
+@@ -4710,6 +4714,9 @@ class Generator:
          return self.binary(expression, "||")
  
      def div_sql(self, expression: exp.Div) -> str:
