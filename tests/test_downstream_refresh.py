@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from downstream.build import git
-from downstream.refresh import candidate, integrate
+from downstream.refresh import auto, candidate, integrate
 
 
 class TestDownstreamRefresh(unittest.TestCase):
@@ -216,6 +216,102 @@ class TestDownstreamRefresh(unittest.TestCase):
                 ["feat: retain second", "feat: retain first"],
             )
             integrate(root, "v1.1.0", "candidate", directory / "integration", "integration", {})
+
+    def automatic_fixture(self, directory, upstream_runtime):
+        root = directory / "source"
+        root.mkdir()
+        self.command(root, "init", "-q", "-b", "main")
+        self.command(root, "config", "user.name", "Test Fixture")
+        self.command(root, "config", "user.email", "fixture@example.invalid")
+        (root / "runtime.py").write_text("VALUE = 'upstream'\nMIDDLE = 1\nOTHER = 'upstream'\n")
+        self.commit(root, ["runtime.py"], "Record upstream runtime")
+        self.command(root, "tag", "v1.0.0")
+        base = git(root, "rev-parse", "HEAD")
+        (root / "runtime.py").write_text("VALUE = 'downstream'\nMIDDLE = 1\nOTHER = 'upstream'\n")
+        patch = subprocess.check_output(["git", "-C", str(root), "diff", "--binary"])
+        downstream = root / "downstream"
+        downstream.mkdir()
+        (downstream / "runtime.patch").write_bytes(patch)
+        (downstream / "README.md").write_text("The base is upstream 1.0.0 and the entries.\n")
+        data = {
+            "schema": 1,
+            "version": "1.0.0.1",
+            "upstream": {"repository": str(root), "tag": "v1.0.0", "sha": base},
+            "patches": [
+                {
+                    "id": "runtime",
+                    "status": "carried",
+                    "paths": ["runtime.py"],
+                    "patch": "downstream/runtime.patch",
+                    "upstream_state": "not_offered",
+                    "upstream_reason": "Fixture patch",
+                }
+            ],
+        }
+        (downstream / "patches.json").write_text(json.dumps(data))
+        self.commit(
+            root,
+            [
+                "runtime.py",
+                "downstream/runtime.patch",
+                "downstream/README.md",
+                "downstream/patches.json",
+            ],
+            "Record downstream patch",
+        )
+        self.command(root, "switch", "-qc", "upstream", "v1.0.0")
+        (root / "runtime.py").write_text(upstream_runtime)
+        self.commit(root, ["runtime.py"], "Extend upstream runtime")
+        self.command(root, "tag", "v1.1.0")
+        self.command(root, "switch", "-q", "main")
+        return root
+
+    def test_auto_refreshes_when_every_patch_applies(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            root = self.automatic_fixture(
+                directory, "VALUE = 'upstream'\nMIDDLE = 1\nOTHER = 'changed'\n"
+            )
+            report = auto(root, "v1.1.0", directory / "work")
+            self.assertEqual(report["status"], "refreshed")
+            self.assertEqual(report["version"], "1.1.0.1")
+            self.assertEqual(report["entries"], 1)
+            integration = Path(report["worktree"])
+            self.assertEqual(
+                (integration / "runtime.py").read_text(),
+                "VALUE = 'downstream'\nMIDDLE = 1\nOTHER = 'changed'\n",
+            )
+            self.assertEqual(
+                (integration / "downstream/README.md").read_text(),
+                "The base is upstream 1.1.0 and the entries.\n",
+            )
+            self.assertEqual(git(integration, "status", "--porcelain"), "")
+            self.assertFalse((directory / "work" / "candidate").exists())
+            self.assertEqual(git(root, "branch", "--list", "refresh/candidate-1.1.0"), "")
+
+    def test_auto_reports_the_conflicting_patch_and_leaves_nothing_behind(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            root = self.automatic_fixture(
+                directory, "VALUE = 'rewritten upstream'\nMIDDLE = 1\nOTHER = 'upstream'\n"
+            )
+            report = auto(root, "v1.1.0", directory / "work")
+            self.assertEqual(report["status"], "conflict")
+            self.assertEqual(report["step"], "candidate")
+            self.assertEqual(report["entry"], "runtime")
+            self.assertEqual(report["paths"], ["runtime.py"])
+            self.assertEqual(git(root, "branch", "--list", "refresh/*"), "")
+            self.assertEqual(git(root, "worktree", "list", "--porcelain").count("worktree "), 1)
+
+    def test_auto_refuses_a_tag_that_is_not_newer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            root = self.automatic_fixture(
+                directory, "VALUE = 'upstream'\nMIDDLE = 1\nOTHER = 'changed'\n"
+            )
+            report = auto(root, "v1.0.0", directory / "work")
+            self.assertEqual(report["status"], "failed")
+            self.assertIn("newer", report["detail"])
 
     def test_normalized_series_reconstructs_current_source(self):
         root = Path(__file__).resolve().parents[1]
