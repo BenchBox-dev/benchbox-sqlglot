@@ -1,8 +1,8 @@
 diff --git a/sqlglot/generators/duckdb.py b/sqlglot/generators/duckdb.py
-index b58f76f4..eecec1ed 100644
+index 10628e8c..5b0fda49 100644
 --- a/sqlglot/generators/duckdb.py
 +++ b/sqlglot/generators/duckdb.py
-@@ -4590,6 +4590,24 @@ class DuckDBGenerator(generator.Generator):
+@@ -4595,6 +4595,24 @@ class DuckDBGenerator(generator.Generator):
          # UNHEX('FF') correctly produces blob \xFF in DuckDB
          return super().hexstring_sql(expression, binary_function_repr="UNHEX")
  

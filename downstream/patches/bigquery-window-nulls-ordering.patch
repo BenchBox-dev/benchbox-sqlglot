@@ -1,8 +1,8 @@
 diff --git a/sqlglot/generators/bigquery.py b/sqlglot/generators/bigquery.py
-index c10f245c..be14b1af 100644
+index 766e0790..b11de51a 100644
 --- a/sqlglot/generators/bigquery.py
 +++ b/sqlglot/generators/bigquery.py
-@@ -380,6 +380,10 @@ class BigQueryGenerator(generator.Generator):
+@@ -384,6 +384,10 @@ class BigQueryGenerator(generator.Generator):
          exp.RowNumber,
      )
  
@@ -13,7 +13,7 @@ index c10f245c..be14b1af 100644
      TS_OR_DS_TYPES: t.ClassVar = (
          exp.TsOrDsToDatetime,
          exp.TsOrDsToTimestamp,
-@@ -875,6 +879,44 @@ class BigQueryGenerator(generator.Generator):
+@@ -917,6 +921,44 @@ class BigQueryGenerator(generator.Generator):
  
          return super().cast_sql(expression, safe_prefix=safe_prefix)
  
@@ -59,10 +59,10 @@ index c10f245c..be14b1af 100644
          if expression.this:
              self.unsupported(f"Unsupported CLUSTER BY {self.sql(expression, 'this')}")
 diff --git a/tests/dialects/test_bigquery.py b/tests/dialects/test_bigquery.py
-index 2bc1d40e..ab24292f 100644
+index 1212cfa7..e4e538ec 100644
 --- a/tests/dialects/test_bigquery.py
 +++ b/tests/dialects/test_bigquery.py
-@@ -3074,6 +3074,46 @@ OPTIONS (
+@@ -3096,6 +3096,46 @@ OPTIONS (
                          f"WITH t AS (SELECT 1 AS id, 2 AS col1) SELECT {func_call} OVER (PARTITION BY id ORDER BY col1 {sort_order} {null_order}) FROM t"
                      )
  

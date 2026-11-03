@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generator.py b/sqlglot/generator.py
-index 54877b43..1081f67a 100644
+index 98ddfd33..29575f2d 100644
 --- a/sqlglot/generator.py
 +++ b/sqlglot/generator.py
 @@ -362,6 +362,9 @@ class Generator:
@@ -12,7 +12,7 @@ index 54877b43..1081f67a 100644
      # The string used for creating an index on a table
      INDEX_ON = "ON"
  
-@@ -2933,7 +2936,31 @@ class Generator:
+@@ -2941,7 +2944,31 @@ class Generator:
          expressions = self.expressions(expression, indent=False)
          return f"CUBE {self.wrap(expressions)}" if expressions else "WITH CUBE"
  
@@ -45,7 +45,7 @@ index 54877b43..1081f67a 100644
          if group_by_all is True:
              modifier = " ALL"
 diff --git a/sqlglot/generators/snowflake.py b/sqlglot/generators/snowflake.py
-index 97d8f50f..a31a1a40 100644
+index ac837ee9..08299cb7 100644
 --- a/sqlglot/generators/snowflake.py
 +++ b/sqlglot/generators/snowflake.py
 @@ -417,6 +417,7 @@ def _eliminate_dot_variant_lookup(expression: exp.Expr) -> exp.Expr:

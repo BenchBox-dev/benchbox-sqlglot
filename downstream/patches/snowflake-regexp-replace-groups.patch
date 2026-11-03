@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/snowflake.py b/sqlglot/generators/snowflake.py
-index 21290f7c..97d8f50f 100644
+index 9c7bd1d4..ac837ee9 100644
 --- a/sqlglot/generators/snowflake.py
 +++ b/sqlglot/generators/snowflake.py
 @@ -1,5 +1,6 @@
@@ -62,7 +62,7 @@ index 21290f7c..97d8f50f 100644
  def _build_datediff(args: list) -> exp.DateDiff:
      return exp.DateDiff(
          this=seq_get(args, 2),
-@@ -1159,6 +1206,38 @@ class SnowflakeGenerator(generator.Generator):
+@@ -1164,6 +1211,38 @@ class SnowflakeGenerator(generator.Generator):
              expression.set("spec", None)
          return super().window_sql(expression)
  
@@ -102,10 +102,10 @@ index 21290f7c..97d8f50f 100644
          # Snowflake's MODE doesn't support the ordered-set syntax, i.e. it only
          # accepts the value to aggregate as an argument: MODE(<expr>)
 diff --git a/tests/dialects/test_snowflake.py b/tests/dialects/test_snowflake.py
-index 983ca90c..daad9d3a 100644
+index 74346324..adcf6008 100644
 --- a/tests/dialects/test_snowflake.py
 +++ b/tests/dialects/test_snowflake.py
-@@ -7299,3 +7299,51 @@ FROM SEMANTIC_VIEW(
+@@ -7374,3 +7374,51 @@ FROM SEMANTIC_VIEW(
          self.validate_identity("UNDROP TABLE db.schema.my_table")
          self.validate_identity("UNDROP SNAPSHOT IDENTIFIER('my_snap')")
          self.validate_identity("UNDROP SNAPSHOT my_snap RENAME TO new_snap")

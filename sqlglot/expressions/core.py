@@ -933,7 +933,10 @@ class Expression(Expr):
 
     @property
     def is_int(self) -> bool:
-        return self.is_number and isinstance(self.to_py(), int)
+        try:
+            return self.is_number and isinstance(self.to_py(), int)
+        except ValueError:
+            return False
 
     @property
     def is_star(self) -> bool:

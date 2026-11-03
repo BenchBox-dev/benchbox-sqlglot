@@ -547,6 +547,7 @@ class SnowflakeGenerator(generator.Generator):
         exp.GetExtract: rename_func("GET"),
         exp.GroupConcat: lambda self, e: groupconcat_sql(self, e, sep=""),
         exp.If: if_sql(name="IFF", false_value="NULL"),
+        exp.InteractiveProperty: lambda *_: "INTERACTIVE",
         exp.JSONArray: lambda self, e: self.func(
             "TO_VARIANT", self.func("ARRAY_CONSTRUCT", *e.expressions)
         ),
@@ -625,6 +626,9 @@ class SnowflakeGenerator(generator.Generator):
         exp.StrtokToArray: rename_func("STRTOK_TO_ARRAY"),
         exp.Stuff: rename_func("INSERT"),
         exp.StPoint: rename_func("ST_MAKEPOINT"),
+        exp.TemporaryProperty: lambda _, e: (
+            "SCOPED TEMPORARY" if e.args.get("scoped") else "TEMPORARY"
+        ),
         exp.TimeAdd: date_delta_sql("TIMEADD"),
         exp.TimeSlice: lambda self, e: self.func(
             "TIME_SLICE",
@@ -696,6 +700,7 @@ class SnowflakeGenerator(generator.Generator):
     PROPERTIES_LOCATION = {
         **generator.Generator.PROPERTIES_LOCATION,
         exp.CredentialsProperty: exp.Properties.Location.POST_WITH,
+        exp.InteractiveProperty: exp.Properties.Location.POST_CREATE,
         exp.LocationProperty: exp.Properties.Location.POST_WITH,
         exp.PartitionedByProperty: exp.Properties.Location.POST_SCHEMA,
         exp.RowAccessProperty: exp.Properties.Location.POST_SCHEMA,

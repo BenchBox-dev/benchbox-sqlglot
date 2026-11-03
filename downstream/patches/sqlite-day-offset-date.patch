@@ -1,8 +1,8 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index 4e51bc7e..c05d0808 100644
+index c2365319..aa530d06 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
-@@ -438,7 +438,9 @@ class SQLiteGenerator(generator.Generator):
+@@ -444,7 +444,9 @@ class SQLiteGenerator(generator.Generator):
          unit = interval.unit.name.upper()
          if unit in ("DAY", "HOUR", "MINUTE", "SECOND"):
              modifier = exp.Literal.string(f"{amount} {unit}")
@@ -14,7 +14,7 @@ index 4e51bc7e..c05d0808 100644
              # SQLite carries an overflowing month end into the next month, while the
              # source engines clamp it, so only inputs that cannot overflow are lowered:
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index dbe52605..82aa3003 100644
+index 6e547931..fdbe0d20 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
 @@ -230,19 +230,20 @@ class TestSQLite(Validator):
@@ -63,7 +63,7 @@ index dbe52605..82aa3003 100644
                          sql = parse_one(query, read=dialect).sql(
                              "sqlite", unsupported_level=ErrorLevel.RAISE
                          )
-@@ -1340,3 +1345,92 @@ class TestSQLite(Validator):
+@@ -1382,3 +1387,92 @@ class TestSQLite(Validator):
              (row,) = connection.execute(node.sql("sqlite"))
              (expected,) = connection.execute("SELECT DATE('now', '-30 days')")
          self.assertEqual(row, (expected[0], "2024-02-15"))
