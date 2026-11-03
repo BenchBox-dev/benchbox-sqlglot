@@ -310,9 +310,20 @@ fork never falls back to `postgres` silently.
 
 ## Upstream refresh
 
-The maintainer reviews upstream monthly and promptly for correctness or
-security fixes. The scheduled workflow reports newer tags with read-only
-permissions. It never creates a release, changes refs or submits upstream PRs.
+The maintainer reviews upstream promptly for correctness or security fixes.
+This repository runs no scheduled or write-capable workflow. BenchBox's
+`sqlglot-fork-refresh` workflow runs nightly, and when a newer final upstream
+tag exists it runs `python -m downstream.refresh auto --tag TAG --work-dir DIR
+--report FILE` in a fresh clone of `main`. `auto` fetches the tag, builds the
+candidate and the integration branch exactly as the steps below do (with no
+retirements) and follows the upstream base version in the fixtures and docs. It
+exits 0 with `status: refreshed`, or exits 3 with `status: conflict` (a carried
+patch does not apply; the report names it and its files) or `status: failed`,
+and leaves no worktree or branch behind in either failing case. A refreshed
+branch becomes a pull request here and goes through the same review and
+checks as a manual refresh; a conflict or failure becomes an issue in BenchBox
+for a maintainer to resolve by hand. The workflow never merges, releases or
+submits upstream PRs.
 
 1. Fetch the chosen upstream tag and record its commit. Review upstream changes
    and every carried, upstreamed and excluded disposition. New capabilities

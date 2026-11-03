@@ -25,8 +25,7 @@
         "tests/test_downstream_contract.py",
         "tests/test_downstream_distribution.py",
         "tests/test_downstream_refresh.py",
-        ".github/workflows/benchbox-candidate.yml",
-        ".github/workflows/benchbox-upstream-check.yml"
+        ".github/workflows/benchbox-candidate.yml"
       ],
       "reason": "New files that build, verify and refresh the fork; none exists upstream and none is part of the runtime wheel."
     },

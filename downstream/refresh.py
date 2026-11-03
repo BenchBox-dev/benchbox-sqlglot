@@ -4,9 +4,28 @@ import argparse
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 from downstream.build import ROOT, git
+
+BASE_VERSION_FILES = (
+    "downstream/MAINTAINING.md",
+    "downstream/README.md",
+    "downstream/ci-constraints.txt",
+    "downstream/smoke.py",
+    "downstream/verify.py",
+)
+FOLLOW_UP_EXIT = 3
+
+
+class RefreshConflict(Exception):
+    def __init__(self, entry: str, paths: list[str]):
+        self.entry = entry
+        self.paths = paths
+        super().__init__(
+            f"Carried patch {entry} does not apply cleanly: {', '.join(paths) or 'no files merged'}"
+        )
 
 
 def command(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -77,11 +96,27 @@ def candidate(root: Path, tag: str, destination: Path, branch: str, retired: set
             patch_path = root / entry["patch"]
             if not patch_path.is_file():
                 raise ValueError(f"Missing normalized patch: {patch_path}")
-            command(destination, "apply", "--3way", "--index", str(patch_path))
+            applied = command(
+                destination, "apply", "--3way", "--index", str(patch_path), check=False
+            )
+            if applied.returncode:
+                conflicted = git(destination, "diff", "--name-only", "--diff-filter=U").splitlines()
+                raise RefreshConflict(entry["id"], conflicted)
         command(destination, "commit", "--allow-empty", "-m", subject(entry))
     print(
         f"Candidate source ready at {destination}; resolve any conflicts explicitly and run source checks"
     )
+
+
+def follow_base_version(destination: Path, old_tag: str, new_tag: str) -> None:
+    old, new = old_tag.removeprefix("v"), new_tag.removeprefix("v")
+    for name in BASE_VERSION_FILES:
+        path = destination / name
+        if path.is_file():
+            text = path.read_text()
+            if old in text:
+                path.write_text(text.replace(old, new))
+                command(destination, "add", "--", name)
 
 
 def integrate(
@@ -131,6 +166,7 @@ def integrate(
             *paths,
         )
         command(destination, "diff", "--exit-code", "--cached", candidate_sha, "--", *paths)
+    follow_base_version(destination, data["upstream"]["tag"], tag)
     data["upstream"]["tag"] = tag
     data["upstream"]["sha"] = sha
     data["version"] = tag[1:] + ".1"
@@ -193,10 +229,63 @@ def latest(root: Path) -> None:
     )
 
 
+def discard(root: Path, path: Path, branch: str) -> None:
+    if path.exists():
+        remove = ["git", "-C", str(root), "worktree", "remove", "--force", str(path)]
+        subprocess.run(remove, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    delete = ["git", "-C", str(root), "branch", "-D", branch]
+    subprocess.run(delete, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def auto(root: Path, tag: str, work_dir: Path) -> dict:
+    version = tag.removeprefix("v")
+    candidate_branch = f"refresh/candidate-{version}"
+    integration_branch = f"refresh/upstream-{version}"
+    candidate_path = work_dir / "candidate"
+    integration_path = work_dir / "integration"
+    report: dict = {"tag": tag, "branch": integration_branch}
+    step = "fetch"
+    try:
+        clean(root)
+        repository = manifest(root)["upstream"]["repository"]
+        command(root, "fetch", "--no-tags", repository, "tag", tag)
+        step = "candidate"
+        candidate(root, tag, candidate_path, candidate_branch, set())
+        step = "integrate"
+        integrate(root, tag, candidate_branch, integration_path, integration_branch, {})
+    except RefreshConflict as conflict:
+        report.update(
+            status="conflict",
+            step=step,
+            entry=conflict.entry,
+            paths=conflict.paths,
+            detail=str(conflict),
+        )
+    except (subprocess.CalledProcessError, ValueError) as error:
+        report.update(status="failed", step=step, detail=str(error))
+    else:
+        refreshed = manifest(integration_path)
+        report.update(
+            status="refreshed",
+            worktree=str(integration_path),
+            version=refreshed["version"],
+            upstream_sha=refreshed["upstream"]["sha"],
+            entries=len(carried(refreshed, set())),
+        )
+    discard(root, candidate_path, candidate_branch)
+    if report.get("status") != "refreshed":
+        discard(root, integration_path, integration_branch)
+    return report
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="action", required=True)
     commands.add_parser("latest")
+    automatic = commands.add_parser("auto")
+    automatic.add_argument("--tag", required=True)
+    automatic.add_argument("--work-dir", type=Path, required=True)
+    automatic.add_argument("--report", type=Path, required=True)
     for action in ("candidate", "integrate"):
         sub = commands.add_parser(action)
         sub.add_argument("--tag", required=True)
@@ -208,6 +297,11 @@ def main() -> None:
     args = parser.parse_args()
     if args.action == "latest":
         latest(ROOT)
+    elif args.action == "auto":
+        report = auto(ROOT, args.tag, args.work_dir.resolve())
+        args.report.write_text(json.dumps(report, indent=2) + "\n")
+        print(json.dumps(report, indent=2))
+        sys.exit(0 if report["status"] == "refreshed" else FOLLOW_UP_EXIT)
     elif args.action == "candidate":
         candidate(ROOT, args.tag, args.path.resolve(), args.branch, set(args.retire))
     else:
