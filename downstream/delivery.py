@@ -416,7 +416,7 @@ def read_bundle(data: bytes, digest: str, version: str, source: str, manifest: d
     return {"wheel": wheel, "sdist": sdist, "files": files, "sums": sums}
 
 
-def prior_deliveries(api: Api, root: Path, head: str) -> dict[str, dict[str, dict]]:
+def prior_deliveries(api: Api) -> dict[str, dict[str, dict]]:
     runs = api.pages(f"actions/workflows/{Path(PUBLISHER).name}/runs", "workflow_runs")
     receipts: dict[str, dict[str, dict]] = {}
     for run in runs:
@@ -426,7 +426,6 @@ def prior_deliveries(api: Api, root: Path, head: str) -> dict[str, dict[str, dic
             or run["event"] not in PUBLISHER_ORIGINS
             or run["repository"]["full_name"] != REPOSITORY
             or run["head_repository"]["full_name"] != REPOSITORY
-            or git(root, "merge-base", "--is-ancestor", run["head_sha"], head, check=False) is None
         ):
             continue
         for attempt in range(1, run["run_attempt"] + 1):
@@ -488,7 +487,7 @@ def deliver(
         api.artifact(artifact["id"]), artifact["digest"], version, source, manifest
     )
     sha256 = bundle["sums"][bundle["wheel"]]
-    reject_conflicts(prior_deliveries(api, root, head), version, sha256)
+    reject_conflicts(prior_deliveries(api), version, sha256)
     for check in checks:
         current_run(api, check)
     name = job_name(version, sha256)

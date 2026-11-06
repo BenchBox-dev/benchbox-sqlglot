@@ -456,6 +456,12 @@ class TestVerifiedDelivery(unittest.TestCase):
         self.api.publisher_runs[0]["head_branch"] = "feature"
         self.assertEqual(self.deliver()["version"], VERSION)
 
+    def test_receipt_from_a_newer_publisher_commit_still_counts(self):
+        newer = self.commit(VERSION, "newer tooling")
+        self.api.deliver_run(500, VERSION, "a" * 64, newer)
+        with self.assertRaisesRegex(DeliveryError, "new fork version"):
+            self.deliver()
+
     def test_bundle_rejects_unsafe_or_inconsistent_archives(self):
         good, wheel_name, wheel = make_bundle(self.release)
         digest = "sha256:" + hashlib.sha256(good).hexdigest()

@@ -137,9 +137,9 @@ match the source manifest, fork SHA, upstream SHA and clean state. Deeper wheel
 verification stays in `downstream.verify`.
 
 **One version, one wheel.** Before delivering, the producer lists every run of the
-publisher workflow, whatever its current status (main branch, publisher path, this
-repository, source on `main` history, trigger `workflow_run` or `workflow_dispatch`),
-and reads each attempt's jobs, so a rerun cannot hide an earlier receipt. A successful
+publisher workflow, whatever its current status or commit (main branch, publisher
+path, this repository, trigger `workflow_run` or `workflow_dispatch`), and reads each
+attempt's jobs, so neither a rerun nor an older publisher can miss a receipt. A successful
 job named exactly
 `delivered benchbox-sqlglot <version> sha256:<wheel sha256>` is the durable receipt,
 which survives artifact and log expiry because job metadata is retained. A different
