@@ -559,6 +559,23 @@ class TestUpstreamController(unittest.TestCase):
                 env.apply(plan)
                 self.assertFalse(env.api.pulls[1]["merged"])
 
+    def test_a_merge_declined_at_publication_keeps_the_failure_issue(self):
+        env = Env(self)
+        env.publish()
+        head = env.remote_sha(BRANCH)
+        env.pass_checks(head, conclusion="failure")
+        env.apply(env.plan())
+        issue = next(iter(env.api.issues.values()))
+        self.assertEqual(issue["state"], "open")
+        env.pass_checks(head)
+        plan = env.plan()
+        self.assertEqual(ops(plan), ["merge_pr", "close_issues"])
+        env.pass_checks(head, conclusion="failure")
+        result = env.apply(plan)
+        self.assertIn("was not merged", result["deferred"])
+        self.assertFalse(env.api.pulls[1]["merged"])
+        self.assertEqual(issue["state"], "open")
+
     def test_merge_is_bound_to_the_exact_head_with_a_merge_commit(self):
         env = Env(self)
         env.publish()

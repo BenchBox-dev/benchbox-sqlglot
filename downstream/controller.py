@@ -982,6 +982,10 @@ def apply(controller: Controller, plan: dict, mode: str, bundle: Path) -> dict:
             report_publication(controller, plan, outcome_name, str(error), result)
             return result
         result["performed"].append({"op": op["op"], **outcome})
+        if op["op"] == "merge_pr" and outcome["status"] not in ("merged", "unchanged"):
+            result["deferred"] = f"#{op['number']} was not merged ({outcome['status']})"
+            result["unapplied"] = plan["actions"][index + 1 :]
+            return result
     return result
 
 
