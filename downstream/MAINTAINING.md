@@ -96,6 +96,80 @@ the packaged private wheel and installed BenchBox wheel and sdist. The fork
 checks do not replace actual consumer packaging checks. Preserve
 upstream notices. New semantic changes require separately approved scope.
 
+## Verified wheel delivery
+
+`.github/workflows/benchbox-delivery.yml` (`downstream/delivery.py`) is the only
+producer of a verified delivery. Jobs have only `contents: read`, `actions: read`
+and `checks: read` permissions; Actions' artifact service uploads verified bundles.
+It has no sleeping step, publishes no release, tag or package, and uses no state
+branch, registry or database. It runs when any of the
+three required push/`main` workflows (`BenchBox distribution`, `BenchBox real engines`,
+`Run tests and linter checks`) completes, and on manual dispatch with `source_sha`.
+Pending checks end the run quietly without a delivery; the last workflow to finish
+delivers. A dispatch treats pending, tooling-only or missing as failure.
+
+**Source.** The delivery source is the first-parent `main` commit that introduced the
+manifest version, not a later tooling-only commit: the wheel provenance embeds the
+source SHA, so rebuilding a tooling commit would give the same version a different
+wheel. A trigger for a later same-version commit delivers nothing. The trusted
+publisher commit (`delivery.commit`, the `main` tip running the workflow) is separate
+from the source commit (`forkSha`) and is never the source of wheel bytes. v30.29's
+release source is `6fd92da9333eb5c9920306237d8c4e4893012c60` even though `main` has since
+moved on with the same version.
+
+**Gate.** The producer reads the required status checks that apply to `main`, from
+both rulesets and enforced classic branch protection. Every required context and
+publisher constraint must be covered by successful jobs from the canonical workflows.
+A new uncovered context, a different publisher, or unreadable protection refuses
+delivery. At the source SHA each workflow must have a completed successful `push`
+run on `main` of this repository (no pull request or synthetic merge), with a GitHub
+Actions check suite at that SHA. Its attempt's jobs must exactly equal the jobs and
+matrix its workflow file defines at that SHA, all `success`; skipped, missing, extra
+or failed jobs refuse. A `workflow_run` trigger must match the discovered run id and
+attempt. Every required run is read again just before delivery; a rerun, a new
+attempt or a changed conclusion since the gate refuses delivery.
+The unexpired canonical `benchbox-sqlglot` artifact is reused without rebuilding.
+Its creation time must fall within the successful build upload step of that exact
+attempt, not a previous attempt. It must belong to the run, SHA and `main`, match
+its recorded zip digest, and contain exactly three flat regular files within size
+bounds: wheel, sdist and `SHA256SUMS`. Checksums must agree, and wheel provenance must
+match the source manifest, fork SHA, upstream SHA and clean state. Deeper wheel
+verification stays in `downstream.verify`.
+
+**One version, one wheel.** Before delivering, the producer lists every run of the
+publisher workflow, whatever its current status (main branch, publisher path, this
+repository, source on `main` history, trigger `workflow_run` or `workflow_dispatch`),
+and reads each attempt's jobs, so a rerun cannot hide an earlier receipt. A successful
+job named exactly
+`delivered benchbox-sqlglot <version> sha256:<wheel sha256>` is the durable receipt,
+which survives artifact and log expiry because job metadata is retained. A different
+hash for a delivered version, or a delivered hash under another version, is refused;
+a changed product needs a new fork version. A truncated, short-counted or unreadable
+history is refused rather than assumed empty. All publisher runs share one
+concurrency group that queues rather than replaces pending runs, so conflicting
+deliveries cannot race and no completed release trigger is dropped. The `deliver`
+job succeeds only after this passes; candidate code does not set its receipt name.
+
+**Delivery.** Artifact `benchbox-sqlglot-delivery-a<run attempt>` of the publisher run
+(retained 90 days) holds `delivery.json`, the wheel, sdist and `SHA256SUMS`.
+`delivery.json` (`schema` 1, `kind` `benchbox-sqlglot-verified-delivery`) carries the
+version, `forkSha`, `upstreamSha`, wheel filename/sha256/size, sdist, the source run id,
+attempt and artifact id/name/digest, every required check run with its jobs, and the
+delivery run id, attempt, trusted commit, receipt `jobName` and the
+`api.github.com` run and jobs URLs. A consumer fixes the trusted repository, workflow
+path, `main` ref and event itself and confirms the record by reading that run
+(`path`, `head_branch`, `conclusion`) and the receipt job from the GitHub API; the
+record cannot change its own trust root. Because the record carries the wheel bytes,
+it stays verifiable after the original canonical artifact expires.
+
+**Recovery.** An expired or missing canonical artifact, a missing run or an
+unavailable history makes the publisher fail with an `::error::` naming the cause: a
+fork-owned exception. Rerun the canonical distribution workflow at the same merged
+`source` SHA, wait for the required checks to pass again, and the completion triggers
+a new delivery attempt (or dispatch `source_sha`). The new record carries the same
+version and hash with a new run attempt; an old receipt is never rebound. A different
+hash is the conflict above.
+
 ## Real-engine tests and gap list
 
 Translated SQL is proven by executing it on a real engine wherever one can be

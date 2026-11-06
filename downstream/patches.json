@@ -15,6 +15,7 @@
         "downstream/__init__.py",
         "downstream/build.py",
         "downstream/ci-constraints.txt",
+        "downstream/delivery.py",
         "downstream/MAINTAINING.md",
         "downstream/patches.json",
         "downstream/README.md",
@@ -23,11 +24,13 @@
         "downstream/smoke.py",
         "downstream/verify.py",
         "tests/test_downstream_contract.py",
+        "tests/test_downstream_delivery.py",
         "tests/test_downstream_distribution.py",
         "tests/test_downstream_refresh.py",
-        ".github/workflows/benchbox-candidate.yml"
+        ".github/workflows/benchbox-candidate.yml",
+        ".github/workflows/benchbox-delivery.yml"
       ],
-      "reason": "New files that build, verify and refresh the fork; none exists upstream and none is part of the runtime wheel."
+      "reason": "New files that build, verify, refresh and deliver the fork; none exists upstream and none is part of the runtime wheel."
     },
     {
       "id": "fork-edits-to-upstream-files",
