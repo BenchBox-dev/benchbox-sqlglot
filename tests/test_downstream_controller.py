@@ -905,6 +905,42 @@ class TestUpstreamController(unittest.TestCase):
         self.assertIn("POST pulls failed", result["halted"])
         self.assertIn("GET issues failed", result["issue_error"])
 
+    def test_a_failure_while_preparing_is_reported_once_and_suppressed(self):
+        env = Env(self)
+        original = env.api.lists
+        calls = []
+        broken = [True]
+
+        def lists(path, params=None):
+            if path == "pulls":
+                calls.append(path)
+                if broken[0]:
+                    raise ControllerError("GET pulls failed: ConnectionResetError('reset')")
+            return original(path, params)
+
+        env.api.lists = lists
+        plan = env.plan()
+        self.assertEqual((plan["outcome"], plan["fail"]), ("prepare-failed", True))
+        self.assertEqual(ops(plan), ["upsert_issue"])
+        self.assertIn("reset", plan["detail"])
+        result = env.apply(plan)
+        self.assertNotIn("halted", result)
+        issue = next(iter(env.api.issues.values()))
+        self.assertIn('"outcome":"prepare-failed"', issue["body"])
+        calls.clear()
+        skipped = env.plan()
+        self.assertEqual((skipped["outcome"], skipped["actions"]), ("skipped", []))
+        self.assertNotIn("fail", skipped)
+        self.assertEqual(calls, [])
+        retried = env.plan(retry=True)
+        self.assertEqual(calls, ["pulls"])
+        self.assertEqual((retried["outcome"], ops(retried)), ("prepare-failed", ["upsert_issue"]))
+        broken[0] = False
+        healed = env.plan(retry=True)
+        self.assertEqual(ops(healed), ["push_branch", "open_pr", "close_issues"])
+        env.advance_main()
+        self.assertEqual(env.plan()["outcome"], "refreshed")
+
     def test_discovery_reads_the_newest_final_tag(self):
         env = Env(self)
         run(env.source, "tag", "v1.2.0-rc1", TAG)

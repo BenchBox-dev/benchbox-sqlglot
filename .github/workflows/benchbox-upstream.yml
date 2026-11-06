@@ -74,6 +74,7 @@ jobs:
     name: publish
     needs: prepare
     if: >-
+      !cancelled() &&
       github.repository == 'BenchBox-dev/benchbox-sqlglot' &&
       github.ref == 'refs/heads/main' &&
       vars.BENCHBOX_UPSTREAM_ENABLED == 'true' &&

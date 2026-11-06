@@ -31,6 +31,7 @@ SCHEMA = 1
 BRANCH_PREFIX = "refresh/upstream-"
 HOLD_LABELS = frozenset({"no-auto-merge", "hold"})
 REPORT_ONLY = frozenset({"draft", "held"})
+PREPARE_FAILED = "prepare-failed"
 PUBLISHING = frozenset({"push_branch", "open_pr", "update_pr", "merge_pr"})
 PUBLICATION_FAILURES = frozenset({"publish-refused", "publish-failed"})
 FAILED_INPUTS = frozenset({"conflict", "failed"}) | PUBLICATION_FAILURES
@@ -447,15 +448,45 @@ class Controller:
         if not TAG.fullmatch(tag):
             raise ControllerError(f"Unexpected upstream tag {tag!r}")
         out.update(current=current, latest=tag)
-        issues = self.controller_issues()
         if not refresh.is_newer(tag, current):
+            issues = self.controller_issues()
             out["outcome"] = "up-to-date"
             if issues:
                 out["actions"].append({"op": "close_issues", "tag": None})
             return out
         out["tag"] = tag
+        try:
+            return self.decide(out, base, tag)
+        except Exception as error:  # noqa: BLE001
+            return self.prepare_failed(out, base, tag, error)
+
+    def prepare_failed(self, out: dict, base: str, tag: str, error: Exception) -> dict:
+        try:
+            issues = self.controller_issues()
+        except Exception:  # noqa: BLE001
+            issues = []
+        out["actions"] = []
+        out.pop("pull_request", None)
+        out["fail"] = True
+        self.problem(out, issues, tag, base, PREPARE_FAILED, f"{type(error).__name__}: {error}")
+        return out
+
+    def decide(self, out: dict, base: str, tag: str) -> dict:
+        issues = self.controller_issues()
+        known = next((i["key"] for i in issues if i["key"]["tag"] == tag), None)
+        if (
+            known
+            and known["base"] == base
+            and known["outcome"] == PREPARE_FAILED
+            and not self.retry
+        ):
+            out["outcome"] = "skipped"
+            out["notes"].append(
+                "Preparing this input already failed; set retry or close the issue to re-attempt"
+            )
+            return out
         self.reconcile(out, tag, base, issues)
-        key = next((i["key"] for i in issues if i["key"]["tag"] == tag), None)
+        key = known
         if (
             key
             and key["base"] == base
@@ -1044,6 +1075,8 @@ def main() -> None:
         write_summary(summary(plan, mode))
         write_output("mutate", "true" if mode == "enabled" and plan["actions"] else "false")
         print(json.dumps(plan, indent=2))
+        if plan.get("fail"):
+            sys.exit(f"Preparing the plan failed: {plan.get('detail')}")
         return
     plan = json.loads(state.read_text())
     result = apply(controller, plan, mode, controller.bundle)

@@ -467,7 +467,12 @@ Pending or not yet reported checks wait for the next pass.
 
 **Issues.** A conflict, failure or refusal opens or updates one fork issue per
 tag, keyed by (tag, base `main` SHA, outcome) in a marker and authored by the App.
-A publication refusal or GitHub write error (a rejected push, a moved branch, a
+A failure while preparing the plan once the tag and base are known (a GitHub or
+git read error) becomes outcome `prepare-failed`: `prepare` still uploads the plan
+and exits non-zero so the run is red, `publish` reports the keyed issue, and later
+runs skip the unchanged input until the tag or `main` changes, `retry` is set or the
+issue is closed. Failures before the tag and base are known fail the run without an
+issue. A publication refusal or GitHub write error (a rejected push, a moved branch, a
 failed API call) is reported the same way with outcome `publish-refused` or
 `publish-failed` and the job still exits non-zero; if the issue itself cannot be
 written the job fails with both errors.
