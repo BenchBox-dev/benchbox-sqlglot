@@ -845,6 +845,37 @@ class TestUpstreamController(unittest.TestCase):
         self.assertIn('"outcome":"publish-failed"', next(iter(env.api.issues.values()))["body"])
         self.assertEqual(env.plan()["outcome"], "skipped")
 
+    def test_unreadable_error_body_and_failed_issue_lookup_still_report(self):
+        import urllib.error
+        import urllib.request
+        from unittest import mock
+
+        error = urllib.error.HTTPError("https://api.github.com/x", 502, "Bad Gateway", {}, None)
+        error.read = mock.Mock(side_effect=TimeoutError("body timed out"))
+        with (
+            mock.patch.object(urllib.request, "urlopen", side_effect=error),
+            self.assertRaisesRegex(ControllerError, "502"),
+        ):
+            Client("token", REPOSITORY).send("POST", "pulls", {})
+        env = Env(self)
+        plan = env.plan()
+        original_send, original_lists = env.api.send, env.api.lists
+
+        def failing_send(method, path, body=None):
+            if (method, path) == ("POST", "pulls"):
+                raise ControllerError("POST pulls failed: TimeoutError('t')")
+            return original_send(method, path, body)
+
+        def failing_lists(path, params=None):
+            if path == "issues":
+                raise ControllerError("GET issues failed: TimeoutError('t')")
+            return original_lists(path, params)
+
+        env.api.send, env.api.lists = failing_send, failing_lists
+        result = env.apply(plan)
+        self.assertIn("POST pulls failed", result["halted"])
+        self.assertIn("GET issues failed", result["issue_error"])
+
     def test_discovery_reads_the_newest_final_tag(self):
         env = Env(self)
         run(env.source, "tag", "v1.2.0-rc1", TAG)

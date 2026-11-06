@@ -82,7 +82,10 @@ class Client(GitHub):
             with urllib.request.urlopen(request, timeout=60) as response:
                 text = response.read().decode()
         except urllib.error.HTTPError as error:
-            detail = error.read()[:500].decode(errors="replace")
+            try:
+                detail = error.read()[:500].decode(errors="replace")
+            except TRANSPORT:
+                detail = "the error body could not be read"
             raise ControllerError(f"{method} {path} failed with {error.code}: {detail}") from error
         except TRANSPORT as error:
             raise ControllerError(f"{method} {path} failed: {error!r}") from error
@@ -920,10 +923,6 @@ def report_publication(
     if not tag:
         return
     key = {"base": plan["base"], "outcome": outcome, "tag": tag}
-    existing = [i for i in controller.controller_issues() if i["key"]["tag"] == tag]
-    if existing and existing[0]["key"] == key and not controller.retry:
-        result["issue"] = "unchanged failed input; no issue update"
-        return
     op = {
         "op": "upsert_issue",
         "tag": tag,
@@ -932,6 +931,10 @@ def report_publication(
         "body": issue_body(tag, plan["base"], outcome, detail, plan.get("run_url", "")),
     }
     try:
+        existing = [i for i in controller.controller_issues() if i["key"]["tag"] == tag]
+        if existing and existing[0]["key"] == key and not controller.retry:
+            result["issue"] = "unchanged failed input; no issue update"
+            return
         result["issue"] = upsert_issue(controller, op)
     except (ControllerError, DeliveryError) as error:
         result["issue_error"] = f"The failure issue could not be published: {error}"
