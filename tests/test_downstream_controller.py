@@ -780,6 +780,71 @@ class TestUpstreamController(unittest.TestCase):
         self.assertIn("could not be published", result["issue_error"])
         self.assertEqual(other.api.issues, {})
 
+    def test_a_waiting_pass_keeps_the_publication_failure_suppression(self):
+        env = Env(self)
+        env.publish()
+        head = env.remote_sha(BRANCH)
+        env.pass_checks(head)
+        plan = env.plan()
+        self.assertEqual(ops(plan), ["merge_pr"])
+        original = env.api.send
+
+        def failing(method, path, body=None):
+            if method == "PUT":
+                raise ControllerError("PUT merge failed with 502")
+            return original(method, path, body)
+
+        env.api.send = failing
+        result = env.apply(plan)
+        self.assertIn("502", result["halted"])
+        env.api.send = original
+        issue = next(i for i in env.api.issues.values() if i["state"] == "open")
+        self.assertIn("publish-failed", issue["body"])
+        env.pass_checks(head, status="in_progress", conclusion=None)
+        waiting = env.plan()
+        self.assertEqual((waiting["outcome"], waiting["actions"]), ("waiting", []))
+        self.assertEqual(issue["state"], "open")
+        env.pass_checks(head)
+        ready = env.plan()
+        self.assertEqual((ready["outcome"], ready["actions"]), ("skipped", []))
+        self.assertEqual(ops(env.plan(retry=True)), ["merge_pr", "close_issues"])
+        env.advance_main()
+        self.assertEqual(env.plan()["outcome"], "refreshed")
+
+    def test_transport_errors_are_normalized_and_reported_through_the_issue(self):
+        import urllib.request
+        from unittest import mock
+
+        client = Client("token", REPOSITORY)
+        for error in (TimeoutError("timed out"), ConnectionResetError("reset")):
+            with mock.patch.object(urllib.request, "urlopen", side_effect=error):
+                with self.assertRaises(ControllerError):
+                    client.send("POST", "pulls", {})
+                with self.assertRaises(ControllerError):
+                    client.get("pulls/1")
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b"<html>"
+        with (
+            mock.patch.object(urllib.request, "urlopen", return_value=response),
+            self.assertRaises(ControllerError),
+        ):
+            client.send("POST", "pulls", {})
+        env = Env(self)
+        plan = env.plan()
+        original = env.api.send
+
+        def over_the_wire(method, path, body=None):
+            if (method, path) == ("POST", "pulls"):
+                with mock.patch.object(urllib.request, "urlopen", side_effect=TimeoutError("t")):
+                    return Client.send(env.api, method, path, body)
+            return original(method, path, body)
+
+        env.api.send = over_the_wire
+        result = env.apply(plan)
+        self.assertIn("TimeoutError", result["halted"])
+        self.assertIn('"outcome":"publish-failed"', next(iter(env.api.issues.values()))["body"])
+        self.assertEqual(env.plan()["outcome"], "skipped")
+
     def test_discovery_reads_the_newest_final_tag(self):
         env = Env(self)
         run(env.source, "tag", "v1.2.0-rc1", TAG)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import http.client
 import json
 import os
 import re
@@ -50,7 +51,18 @@ class Refused(Exception):
     pass
 
 
+TRANSPORT = (OSError, http.client.HTTPException, ValueError)
+
+
 class Client(GitHub):
+    def get(self, path: str, params: dict | None = None) -> Any:
+        try:
+            return super().get(path, params)
+        except DeliveryError:
+            raise
+        except TRANSPORT as error:
+            raise ControllerError(f"GET {path} failed: {error!r}") from error
+
     def lists(self, path: str, params: dict | None = None) -> list:
         items: list = []
         for page in range(1, MAX_PAGES + 1):
@@ -72,9 +84,12 @@ class Client(GitHub):
         except urllib.error.HTTPError as error:
             detail = error.read()[:500].decode(errors="replace")
             raise ControllerError(f"{method} {path} failed with {error.code}: {detail}") from error
-        except urllib.error.URLError as error:
-            raise ControllerError(f"{method} {path} failed: {error}") from error
-        return json.loads(text) if text else None
+        except TRANSPORT as error:
+            raise ControllerError(f"{method} {path} failed: {error!r}") from error
+        try:
+            return json.loads(text) if text else None
+        except ValueError as error:
+            raise ControllerError(f"{method} {path} returned unreadable JSON: {error}") from error
 
 
 class Remote:
@@ -455,8 +470,22 @@ class Controller:
 
     def finish(self, out: dict, outcome: str, issues: list[dict], tag: str) -> None:
         out["outcome"] = outcome
-        if any(issue["key"]["tag"] == tag for issue in issues):
-            out["actions"].append({"op": "close_issues", "tag": tag})
+        waiting = outcome == "waiting"
+        closable = [
+            issue
+            for issue in issues
+            if issue["key"]["tag"] == tag
+            and not (
+                waiting
+                and issue["key"]["outcome"] in PUBLICATION_FAILURES
+                and issue["key"]["base"] == out["base"]
+            )
+        ]
+        if closable:
+            op = {"op": "close_issues", "tag": tag}
+            if waiting:
+                op["keep_publication_base"] = out["base"]
+            out["actions"].append(op)
 
     def problem(
         self, out: dict, issues: list[dict], tag: str, base: str, outcome: str, detail: str
@@ -870,7 +899,11 @@ def upsert_issue(controller: Controller, op: dict) -> dict:
 def close_issues(controller: Controller, op: dict) -> dict:
     closed = []
     for issue in controller.controller_issues():
-        if op["tag"] is None or issue["key"]["tag"] == op["tag"]:
+        key = issue["key"]
+        kept = key["outcome"] in PUBLICATION_FAILURES and key["base"] == op.get(
+            "keep_publication_base"
+        )
+        if (op["tag"] is None or key["tag"] == op["tag"]) and not kept:
             controller.api.send(
                 "PATCH",
                 f"issues/{issue['number']}",
