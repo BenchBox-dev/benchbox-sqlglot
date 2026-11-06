@@ -1,0 +1,126 @@
+name: BenchBox upstream controller
+
+on:
+  schedule:
+    - cron: '41 5 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Compute and report the plan without any hosted mutation
+        required: false
+        default: true
+        type: boolean
+      retry:
+        description: Re-attempt an unchanged failed input
+        required: false
+        default: false
+        type: boolean
+
+permissions: {}
+
+concurrency:
+  group: benchbox-upstream-controller
+  cancel-in-progress: false
+  queue: max
+
+env:
+  RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+jobs:
+  prepare:
+    name: prepare
+    if: github.repository == 'BenchBox-dev/benchbox-sqlglot' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      checks: read
+      statuses: read
+    outputs:
+      mutate: ${{ steps.prepare.outputs.mutate }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+        with:
+          python-version: '3.12'
+      - id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENABLED: ${{ vars.BENCHBOX_UPSTREAM_ENABLED }}
+          BENCHBOX_UPSTREAM_APP_SLUG: ${{ vars.BENCHBOX_UPSTREAM_APP_SLUG }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          RETRY: ${{ github.event_name == 'workflow_dispatch' && inputs.retry }}
+          GIT_AUTHOR_NAME: benchbox-bot
+          GIT_AUTHOR_EMAIL: bot@benchbox.dev
+          GIT_COMMITTER_NAME: benchbox-bot
+          GIT_COMMITTER_EMAIL: bot@benchbox.dev
+        run: uv run --no-project -- python -m downstream.controller prepare --out-dir "$RUNNER_TEMP/upstream" --run-url "$RUN_URL"
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: benchbox-upstream-plan
+          path: |
+            ${{ runner.temp }}/upstream/state.json
+            ${{ runner.temp }}/upstream/refresh.bundle
+          retention-days: 7
+          if-no-files-found: ignore
+  publish:
+    name: publish
+    needs: prepare
+    if: >-
+      !cancelled() &&
+      github.repository == 'BenchBox-dev/benchbox-sqlglot' &&
+      github.ref == 'refs/heads/main' &&
+      vars.BENCHBOX_UPSTREAM_ENABLED == 'true' &&
+      needs.prepare.outputs.mutate == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - env:
+          APP_ID: ${{ secrets.BENCHBOX_UPSTREAM_APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.BENCHBOX_UPSTREAM_APP_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APP_ID" ] || [ -z "$APP_PRIVATE_KEY" ]; then
+            echo "::error::BENCHBOX_UPSTREAM_APP_ID and BENCHBOX_UPSTREAM_APP_PRIVATE_KEY are not both configured as secrets of this repository; the controller refuses to mutate without its GitHub App"
+            exit 1
+          fi
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: benchbox-upstream-plan
+          path: ${{ runner.temp }}/upstream
+      - id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          app-id: ${{ secrets.BENCHBOX_UPSTREAM_APP_ID }}
+          private-key: ${{ secrets.BENCHBOX_UPSTREAM_APP_PRIVATE_KEY }}
+          owner: BenchBox-dev
+          repositories: benchbox-sqlglot
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+          permission-checks: read
+          permission-statuses: read
+          permission-actions: read
+      - env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          ENABLED: ${{ vars.BENCHBOX_UPSTREAM_ENABLED }}
+          BENCHBOX_UPSTREAM_APP_SLUG: ${{ vars.BENCHBOX_UPSTREAM_APP_SLUG }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          RETRY: ${{ github.event_name == 'workflow_dispatch' && inputs.retry }}
+        run: uv run --no-project -- python -m downstream.controller publish --out-dir "$RUNNER_TEMP/upstream" --run-url "$RUN_URL"
