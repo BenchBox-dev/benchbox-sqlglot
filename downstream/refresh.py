@@ -215,7 +215,7 @@ def integrate(
     )
 
 
-def latest(root: Path) -> None:
+def newest_tag(root: Path) -> tuple[str, str]:
     data = manifest(root)
     response = subprocess.check_output(
         ["git", "ls-remote", "--tags", data["upstream"]["repository"], "refs/tags/v*"], text=True
@@ -226,15 +226,26 @@ def latest(root: Path) -> None:
         match = re.fullmatch(r"refs/tags/v(\d+)\.(\d+)\.(\d+)", ref)
         if match:
             tags.append((tuple(map(int, match.groups())), ref.removeprefix("refs/tags/"), sha))
-    version, tag, sha = max(tags)
-    current = tuple(map(int, data["upstream"]["tag"][1:].split(".")))
+    if not tags:
+        raise ValueError("The upstream repository lists no final release tags")
+    _, tag, sha = max(tags)
+    return tag, sha
+
+
+def is_newer(tag: str, than: str) -> bool:
+    return tuple(map(int, tag[1:].split("."))) > tuple(map(int, than[1:].split(".")))
+
+
+def latest(root: Path) -> None:
+    data = manifest(root)
+    tag, sha = newest_tag(root)
     print(
         json.dumps(
             {
                 "current": data["upstream"],
                 "latest_tag": tag,
                 "tag_object": sha,
-                "refresh_available": version > current,
+                "refresh_available": is_newer(tag, data["upstream"]["tag"]),
             },
             indent=2,
         )

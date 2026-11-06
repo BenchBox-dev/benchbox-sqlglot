@@ -16,6 +16,7 @@ RETAINED_STRINGS = {
 }
 SUITE_EXCLUSIONS = {
     "test_downstream_contract.py": "Checks source manifest and workflow files, not the installed runtime.",
+    "test_downstream_controller.py": "Checks the source repository's upstream lifecycle controller.",
     "test_downstream_delivery.py": "Checks the source repository's delivery publisher.",
     "test_downstream_distribution.py": "Checks release tooling in the source repository.",
     "test_downstream_refresh.py": "Checks source Git refresh operations.",

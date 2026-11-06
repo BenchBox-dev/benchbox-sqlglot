@@ -138,6 +138,27 @@ class TestDownstreamContract(unittest.TestCase):
                             publishers.append(path.name)
         self.assertEqual(publishers, [])
 
+    def test_write_capability_is_confined_to_the_controller_publisher(self):
+        root = Path(__file__).resolve().parents[1]
+        minting = []
+        for path in sorted((root / ".github" / "workflows").glob("*.yml")):
+            workflow = yaml.safe_load(path.read_text())
+            scopes = [workflow.get("permissions") or {}]
+            for name, job in workflow["jobs"].items():
+                scopes.append(job.get("permissions") or {})
+                text = yaml.safe_dump(job)
+                uses = [step.get("uses", "") for step in job.get("steps", [])]
+                for use in uses:
+                    if use.startswith("actions/create-github-app-token@"):
+                        minting.append((path.name, name))
+                        self.assertRegex(use, r"@[0-9a-f]{40}$")
+                if (path.name, name) != ("benchbox-upstream.yml", "publish"):
+                    self.assertNotIn("secrets.", text.replace("secrets.GITHUB_TOKEN", ""))
+            for scope in scopes:
+                if isinstance(scope, dict):
+                    self.assertNotIn("write", scope.values(), path.name)
+        self.assertEqual(minting, [("benchbox-upstream.yml", "publish")])
+
     def test_artifact_ci_is_bounded_and_retained(self):
         root = Path(__file__).resolve().parents[1]
         workflow = yaml.safe_load((root / ".github/workflows/benchbox-candidate.yml").read_text())

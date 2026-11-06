@@ -182,7 +182,8 @@ its own execution tests with `requires_engine`. Platforms with no engine in CI,
 and the evidence that substitutes for them, are listed in
 [ENGINE-GAPS.md](ENGINE-GAPS.md); a piece that targets one of them records the
 gap in its tracker item. Keep every workflow free of publishing steps and write
-permissions, as `tests/test_downstream_contract.py` requires.
+permissions; only the upstream controller's `publish` job holds write capability,
+through a GitHub App token, as `tests/test_downstream_contract.py` requires.
 
 ## Manifest entries
 
@@ -385,10 +386,17 @@ fork never falls back to `postgres` silently.
 ## Upstream refresh
 
 The maintainer reviews upstream promptly for correctness or security fixes.
-This repository runs no scheduled or write-capable workflow. BenchBox's
-`sqlglot-fork-refresh` workflow runs nightly, and when a newer final upstream
-tag exists it runs `python -m downstream.refresh auto --tag TAG --work-dir DIR
---report FILE` in a fresh clone of `main`. `auto` fetches the tag, builds the
+`.github/workflows/benchbox-upstream.yml` (`downstream/controller.py`) owns the
+whole upstream lifecycle in this repository: it runs daily and on
+`workflow_dispatch`, discovers a newer final upstream tag, refreshes
+deterministically, opens the fork pull request, merges it once the required checks
+pass, and raises fork issues for failures. BenchBox core holds no fork credential
+and no upstream logic. The controller never releases or submits upstream PRs;
+wheel delivery stays with `benchbox-delivery.yml`, which runs after the merged
+refresh's required workflows succeed.
+
+Refresh itself is `python -m downstream.refresh auto --tag TAG --work-dir DIR
+--report FILE` in a clean checkout of `main`. `auto` fetches the tag, builds the
 candidate and the integration branch exactly as the steps below do (with no
 retirements) and follows the upstream base version in the fixtures and docs. It
 exits 0 with `status: refreshed`, or exits 3 with `status: conflict` (a carried
@@ -399,11 +407,73 @@ active workflows under `.github/workflows/`, which `auto` leaves for a human to
 read before anything runs them. In both failing cases it removes the worktrees
 and branches it created. It refuses to start, removing nothing, when either
 `refresh/candidate-X`, `refresh/upstream-X` or its work directory already
-exists, so run it in a clean clone or after deleting your manual branches. A refreshed
-branch becomes a pull request here and goes through the same review and
-checks as a manual refresh; a conflict or failure becomes an issue in BenchBox
-for a maintainer to resolve by hand. The workflow never merges, releases or
-submits upstream PRs.
+exists, so run it in a clean clone or after deleting your manual branches.
+
+**Controller jobs.** `prepare` runs with `contents`, `pull-requests`, `issues`,
+`checks` and `statuses` read-only, no secrets, on trusted `main`: it reads GitHub,
+runs discovery and `auto`, and uploads `state.json` (the plan) and
+`refresh.bundle`. It never has the App credential, so nothing it executes on
+upstream-influenced data can write. `publish` runs only when the kill switch is on,
+the run is not a dry run and the plan has actions. It checks out trusted `main`,
+downloads the artifact, fails closed with a clear error when the App secrets are
+missing, mints a GitHub App token with `actions/create-github-app-token` (pinned
+to a full commit SHA), and applies the plan. Every action re-reads live state first
+and refuses on a mismatch: main moved, branch moved, marker changed, the bundle's
+head or tree differs from the plan, or the bundle changes workflows. The workflow
+runs in one serialized group (`cancel-in-progress: false`, `queue: max`). The
+workflow `GITHUB_TOKEN` stays read-only; the App token is the only write
+capability, as `tests/test_downstream_contract.py` requires.
+
+**Kill switch and dry run.** Nothing is mutated unless the repository variable
+`BENCHBOX_UPSTREAM_ENABLED` is exactly `true` (default off). A manual dispatch
+defaults to `dry_run: true`; scheduled runs are never dry runs. Dry runs, and runs
+with the variable unset, still compute and print the plan in the job summary and
+perform zero hosted mutations (no push, pull request, merge, issue or label
+change). `retry: true` re-attempts an input that already failed.
+
+**Credentials.** The App is installed on this repository only, with
+contents, pull-requests and issues write and checks, statuses and actions read.
+It must not be a bypass actor of any ruleset or branch protection. Configure the
+secrets `BENCHBOX_UPSTREAM_APP_ID` and `BENCHBOX_UPSTREAM_APP_PRIVATE_KEY` and the
+variable `BENCHBOX_UPSTREAM_ENABLED` in this repository. The controller never
+changes rulesets, branch protection or auto-merge settings.
+
+**Ownership.** A branch name or author is never authority. A pull request is the
+controller's only when all of these hold: the head is on this repository, the body
+carries exactly one `<!-- benchbox-upstream {...} -->` marker recording (tag, base
+`main` SHA, head SHA, tree), the head SHA equals the recorded one (or the recorded
+pending update during a re-refresh), and recomputing the deterministic refresh for
+that tag and base `main` SHA yields the same tree and the same two parents as the
+head. A branch with no pull request (a push that was interrupted before the pull
+request opened) is adopted by the same tree and parent proof. Anything else, such
+as a human commit on top, a draft, a closed pull request, a `no-auto-merge` or
+`hold` label, or a foreign branch, is left untouched and reported; all but draft
+and held also raise an issue.
+
+**Reconciliation.** Each pass is derived only from GitHub refs, pull requests and
+issues; there is no state branch or database. With no branch, the refresh is
+pushed and the pull request opened. If the recorded base is no longer `main`, the
+refresh is recomputed, the branch is lease-pushed in place and the marker updated
+(a pending marker is written first so an interrupted update recovers). The pull
+request merges only when it is open, not draft, not held, based on the current
+`main`, every required check on `main` (rulesets and enforced classic protection,
+read as `downstream/delivery.py` reads them) succeeded on the exact head from the
+required publisher, and the merge state is clean. The merge uses the `merge`
+method (preserving upstream ancestry), bound to the exact head SHA, with no bypass.
+Pending or not yet reported checks wait for the next pass.
+
+**Issues.** A conflict, failure or refusal opens or updates one fork issue per
+tag, keyed by (tag, base `main` SHA, outcome) in a marker and authored by the App.
+An unchanged failed input is skipped on later runs until the tag or `main`
+changes, `retry` is set, or the issue is closed. A healthy pull request, an
+up-to-date `main` or a successful refresh closes it.
+
+**Recovery.** To hold a refresh add the `no-auto-merge` label or mark the pull
+request draft. To resolve a conflict, refresh by hand with the steps below on a
+branch with a different name, merge it, and the controller sees `main` current. To
+discard a stuck refresh, close its pull request and delete its branch, close the
+issue, and dispatch with `dry_run: false`. To pause everything, set
+`BENCHBOX_UPSTREAM_ENABLED` to anything but `true`.
 
 1. Fetch the chosen upstream tag and record its commit. Review upstream changes
    and every carried, upstreamed and excluded disposition. New capabilities
