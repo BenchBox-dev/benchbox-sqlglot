@@ -16,7 +16,7 @@ import urllib.request
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 SCHEMA = 1
 KIND = "benchbox-sqlglot-verified-delivery"
@@ -361,7 +361,8 @@ def bounded_read(archive: zipfile.ZipFile, info: zipfile.ZipInfo, limit: int) ->
 
 
 def read_bundle(data: bytes, digest: str, version: str, source: str, manifest: dict) -> dict:
-    if hashlib.sha256(data).hexdigest() != DIGEST.fullmatch(digest).group(1):
+    match = DIGEST.fullmatch(digest)
+    if match is None or hashlib.sha256(data).hexdigest() != match.group(1):
         raise DeliveryError("Downloaded artifact does not match the digest GitHub recorded")
     wheel = f"benchbox_sqlglot-{version}-py3-none-any.whl"
     sdist = f"benchbox_sqlglot-{version}.tar.gz"
@@ -479,7 +480,7 @@ def deliver(
             f"{source} only changes tooling after {version} was introduced at {origin}; "
             "deliver the version from its release source"
         )
-    manifest = manifest_at(root, source)
+    manifest = cast(dict, manifest_at(root, source))
     checks = required_checks(api, root, source, expected)
     canonical = next(c for c in checks if c["workflow"] == CANONICAL)
     artifact = canonical_artifact(api, current_run(api, canonical), source)
