@@ -1,0 +1,98 @@
+name: BenchBox verified delivery
+
+on:
+  workflow_run:
+    workflows:
+      - BenchBox distribution
+      - BenchBox real engines
+      - Run tests and linter checks
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Merged main commit that introduced the version being delivered
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: benchbox-verified-delivery
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  verify:
+    if: >-
+      github.repository == 'BenchBox-dev/benchbox-sqlglot' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.repository.full_name == github.repository &&
+      github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+    outputs:
+      verified: ${{ steps.deliver.outputs.verified }}
+      version: ${{ steps.deliver.outputs.version }}
+      sha256: ${{ steps.deliver.outputs.sha256 }}
+      wheel: ${{ steps.deliver.outputs.wheel }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+        with:
+          python-version: '3.12'
+      - id: deliver
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha || inputs.source_sha }}
+          TRIGGER: ${{ github.event.workflow_run.path }}:${{ github.event.workflow_run.id }}:${{ github.event.workflow_run.run_attempt }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ]; then
+            set -- --strict
+          else
+            set -- --expect "$TRIGGER"
+          fi
+          uv run --no-project --with pyyaml==6.0.2 -- python -m downstream.delivery --source "$SOURCE_SHA" --out dist/delivery "$@"
+      - if: steps.deliver.outputs.verified == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: benchbox-sqlglot-delivery-staged-a${{ github.run_attempt }}
+          path: dist/delivery/
+          retention-days: 1
+          if-no-files-found: error
+  deliver:
+    name: delivered benchbox-sqlglot ${{ needs.verify.outputs.version }} sha256:${{ needs.verify.outputs.sha256 }}
+    needs: verify
+    if: needs.verify.outputs.verified == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: benchbox-sqlglot-delivery-staged-a${{ github.run_attempt }}
+          path: dist/delivery/
+      - env:
+          WHEEL: ${{ needs.verify.outputs.wheel }}
+          SHA256: ${{ needs.verify.outputs.sha256 }}
+        run: |
+          echo "$SHA256  dist/delivery/$WHEEL" | sha256sum --check --strict
+          grep -Fx "$SHA256  $WHEEL" dist/delivery/SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: benchbox-sqlglot-delivery-a${{ github.run_attempt }}
+          path: dist/delivery/
+          retention-days: 90
+          if-no-files-found: error
