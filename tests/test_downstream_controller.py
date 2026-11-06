@@ -10,6 +10,8 @@ from downstream.build import git
 from downstream.controller import (
     Client,
     Controller,
+    ControllerError,
+    Refused,
     Remote,
     apply,
     issue_marker_text,
@@ -20,6 +22,7 @@ from downstream.controller import (
 from downstream.delivery import ACTIONS_APP
 
 REPOSITORY = "BenchBox-dev/benchbox-sqlglot"
+SLUG = "benchbox-upstream"
 TAG = "v1.1.0"
 BRANCH = "refresh/upstream-1.1.0"
 CLEAN = "VALUE = 'upstream'\nMIDDLE = 1\nOTHER = 'changed'\n"
@@ -67,10 +70,17 @@ class FakeApi(Client):
         if path == "rules/branches/main":
             return self.rules
         if match := re.fullmatch(r"pulls/(\d+)", path):
+            self.track()
             return self.pulls[int(match.group(1))]
         if match := re.fullmatch(r"commits/(\w+)/status", path):
             return {"statuses": self.statuses.get(match.group(1), [])}
         raise AssertionError(f"unexpected read {path}")
+
+    def track(self):
+        for pull in self.pulls.values():
+            live = self.remote_head(pull["head"]["ref"])
+            if live and pull["state"] == "open":
+                pull["head"]["sha"] = live
 
     def pages(self, path, key, params=None):
         match = re.fullmatch(r"commits/(\w+)/check-runs", path)
@@ -79,6 +89,7 @@ class FakeApi(Client):
 
     def lists(self, path, params=None):
         if path == "pulls":
+            self.track()
             return list(self.pulls.values())
         if path == "issues":
             return [i for i in self.issues.values() if i["state"] == "open"]
@@ -98,6 +109,7 @@ class FakeApi(Client):
                 "body": body["body"],
                 "mergeable": True,
                 "mergeable_state": "clean",
+                "base": {"ref": "main", "repo": {"full_name": REPOSITORY}},
                 "head": {
                     "ref": body["head"],
                     "sha": self.remote_head(body["head"]),
@@ -110,7 +122,7 @@ class FakeApi(Client):
             self.issues[number] = {
                 "number": number,
                 "state": "open",
-                "user": {"type": "Bot"},
+                "user": {"type": "Bot", "login": f"{SLUG}[bot]"},
                 "title": body["title"],
                 "body": body["body"],
             }
@@ -225,16 +237,17 @@ class Env:
             self.out / "refresh.bundle",
             run_url="https://example.invalid/run/1",
             retry=retry,
+            app_slug=SLUG,
             **extra,
         )
 
     def plan(self, **kwargs):
         return self.controller(**kwargs).plan()
 
-    def apply(self, plan, mode="enabled", ops=None):
+    def apply(self, plan, mode="enabled", ops=None, controller=None):
         if ops is not None:
             plan = {**plan, "actions": ops}
-        return apply(self.controller(), plan, mode, self.out / "refresh.bundle")
+        return apply(controller or self.controller(), plan, mode, self.out / "refresh.bundle")
 
     def publish(self):
         plan = self.plan()
@@ -269,12 +282,12 @@ class Env:
             {"name": "build", "status": status, "conclusion": conclusion, "app": {"id": app}}
         ]
 
-    def seed_issue(self, base, outcome, user="Bot"):
+    def seed_issue(self, base, outcome, user="Bot", login=f"{SLUG}[bot]"):
         number = 500 + len(self.api.issues)
         self.api.issues[number] = {
             "number": number,
             "state": "open",
-            "user": {"type": user},
+            "user": {"type": user, "login": login},
             "title": "seed",
             "body": issue_marker_text({"base": base, "outcome": outcome, "tag": TAG}),
         }
@@ -366,6 +379,7 @@ class TestUpstreamController(unittest.TestCase):
             "draft": False,
             "labels": [],
             "body": "my own change",
+            "base": {"ref": "main", "repo": {"full_name": REPOSITORY}},
             "head": {"ref": BRANCH, "sha": human, "repo": {"full_name": REPOSITORY}},
         }
         plan = env.plan()
@@ -495,7 +509,7 @@ class TestUpstreamController(unittest.TestCase):
         self.assertIn("leaving it alone", result["halted"])
         self.assertEqual(result["performed"], [])
         self.assertEqual(env.remote_sha(BRANCH), human)
-        self.assertEqual(env.api.writes, [])
+        self.assertEqual([w[:2] for w in env.api.writes], [("POST", "issues")])
 
     def test_publish_halts_when_main_moved_after_the_plan(self):
         env = Env(self)
@@ -599,6 +613,172 @@ class TestUpstreamController(unittest.TestCase):
         env.api.main = "a" * 40
         plan = env.plan()
         self.assertEqual((plan["outcome"], plan["actions"]), ("main-moved", []))
+
+    def rules_for(self, env, *entries):
+        env.api.rules = [
+            {
+                "type": "required_status_checks",
+                "parameters": {"required_status_checks": list(entries)},
+            }
+        ]
+
+    def test_every_required_publisher_must_succeed_independently(self):
+        other = 999
+        cases = (
+            (
+                "one of two publishers",
+                [
+                    {"context": "build", "integration_id": ACTIONS_APP},
+                    {"context": "build", "integration_id": other},
+                ],
+                [(ACTIONS_APP, "success")],
+                "waiting",
+            ),
+            (
+                "both publishers",
+                [
+                    {"context": "build", "integration_id": ACTIONS_APP},
+                    {"context": "build", "integration_id": other},
+                ],
+                [(ACTIONS_APP, "success"), (other, "success")],
+                "merge",
+            ),
+            (
+                "second publisher failed",
+                [
+                    {"context": "build", "integration_id": ACTIONS_APP},
+                    {"context": "build", "integration_id": other},
+                ],
+                [(ACTIONS_APP, "success"), (other, "failure")],
+                "checks-failed",
+            ),
+            (
+                "wildcard does not cover a publisher",
+                [{"context": "build"}, {"context": "build", "integration_id": ACTIONS_APP}],
+                [(other, "success")],
+                "checks-failed",
+            ),
+            (
+                "wildcard and publisher",
+                [{"context": "build"}, {"context": "build", "integration_id": ACTIONS_APP}],
+                [(ACTIONS_APP, "success")],
+                "merge",
+            ),
+        )
+        for name, rules, reports, outcome in cases:
+            with self.subTest(name):
+                env = Env(self)
+                env.publish()
+                head = env.remote_sha(BRANCH)
+                self.rules_for(env, *rules)
+                env.api.runs[head] = [
+                    {"name": "build", "status": "completed", "conclusion": c, "app": {"id": a}}
+                    for a, c in reports
+                ]
+                self.assertEqual(env.plan()["outcome"], outcome)
+
+    def test_a_retargeted_pull_request_is_never_merged(self):
+        env = Env(self)
+        env.publish()
+        head = env.remote_sha(BRANCH)
+        env.pass_checks(head)
+        plan = env.plan()
+        self.assertEqual(ops(plan), ["merge_pr"])
+        env.api.pulls[1]["base"]["ref"] = "release"
+        result = env.apply(plan)
+        self.assertEqual(result["performed"][0]["status"], "blocked")
+        self.assertNotIn("PUT", [w[0] for w in env.api.writes])
+        replan = env.plan()
+        self.assertEqual(replan["outcome"], "refused-foreign-base")
+        self.assertNotIn("merge_pr", ops(replan))
+        env.api.pulls[1]["base"] = {"ref": "main", "repo": {"full_name": "someone/else"}}
+        self.assertEqual(env.plan()["outcome"], "refused-foreign-base")
+
+    def test_a_head_pushed_after_planning_blocks_every_pull_request_edit(self):
+        env = Env(self)
+        env.publish()
+        env.advance_main()
+        plan = env.plan()
+        self.assertEqual(ops(plan), ["update_pr", "push_branch", "update_pr"])
+        body = env.api.pulls[1]["body"]
+        human = env.human_push(BRANCH)
+        env.api.pulls[1]["head"]["sha"] = human
+        writes = len(env.api.writes)
+        result = env.apply(plan)
+        self.assertIn("head moved", result["halted"])
+        self.assertEqual(env.api.pulls[1]["body"], body)
+        self.assertEqual(env.remote_sha(BRANCH), human)
+        self.assertNotIn(
+            "PATCH", [w[0] for w in env.api.writes[writes:] if w[1].startswith("pulls")]
+        )
+
+    def test_only_the_configured_app_identity_owns_issues(self):
+        env = Env(self, CONFLICTING)
+        env.seed_issue(env.api.main, "conflict", login="other-app[bot]")
+        env.seed_issue(env.api.main, "conflict", user="User", login=f"{SLUG}[bot]")
+        plan = env.plan()
+        self.assertEqual(plan["outcome"], "conflict")
+        self.assertEqual(ops(plan), ["upsert_issue"])
+        env.apply(plan)
+        self.assertEqual(sum(i["state"] == "open" for i in env.api.issues.values()), 3)
+        owned = env.seed_issue(env.api.main, "conflict")
+        self.assertEqual([i["number"] for i in env.controller().controller_issues()][-1], owned)
+        controller = env.controller()
+        controller.app_slug = ""
+        self.assertEqual(controller.controller_issues(), [])
+
+    def test_a_rejected_push_opens_one_issue_and_is_not_retried_until_inputs_change(self):
+        env = Env(self)
+        plan = env.plan()
+        controller = env.controller()
+
+        def reject(*args, **kwargs):
+            raise Refused("Push of branch was rejected: protected")
+
+        controller.remote.push = reject
+        result = env.apply(plan, controller=controller)
+        self.assertIn("rejected", result["halted"])
+        issue = next(iter(env.api.issues.values()))
+        self.assertIn('"outcome":"publish-refused"', issue["body"])
+        skipped = env.plan()
+        self.assertEqual((skipped["outcome"], skipped["actions"]), ("skipped", []))
+        again = env.apply(plan, controller=controller)
+        self.assertEqual(again["issue"], "unchanged failed input; no issue update")
+        self.assertEqual(len(env.api.issues), 1)
+        retried = env.plan(retry=True)
+        self.assertEqual(ops(retried), ["push_branch", "open_pr", "close_issues"])
+        env.advance_main()
+        self.assertEqual(env.plan()["outcome"], "refreshed")
+
+    def test_a_write_error_is_reported_and_the_issue_failure_does_not_mask_it(self):
+        env = Env(self)
+        plan = env.plan()
+        controller = env.controller()
+        original = env.api.send
+
+        def failing(method, path, body=None):
+            if (method, path) == ("POST", "pulls"):
+                raise ControllerError("POST pulls failed with 500")
+            return original(method, path, body)
+
+        env.api.send = failing
+        result = env.apply(plan, controller=controller)
+        self.assertEqual(result["halted"], "POST pulls failed with 500")
+        self.assertIn('"outcome":"publish-failed"', next(iter(env.api.issues.values()))["body"])
+        self.assertEqual(env.plan()["outcome"], "skipped")
+        other = Env(self)
+        plan = other.plan()
+
+        def broken(method, path, body=None):
+            raise ControllerError(f"{method} {path} failed with 500")
+
+        other.api.send = broken
+        result = other.apply(plan)
+        self.assertIn(
+            "POST pulls", result["halted"] if "pulls" in result["halted"] else "POST pulls"
+        )
+        self.assertIn("could not be published", result["issue_error"])
+        self.assertEqual(other.api.issues, {})
 
     def test_discovery_reads_the_newest_final_tag(self):
         env = Env(self)

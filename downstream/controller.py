@@ -30,7 +30,9 @@ SCHEMA = 1
 BRANCH_PREFIX = "refresh/upstream-"
 HOLD_LABELS = frozenset({"no-auto-merge", "hold"})
 REPORT_ONLY = frozenset({"draft", "held"})
-FAILED_INPUTS = frozenset({"conflict", "failed"})
+PUBLISHING = frozenset({"push_branch", "open_pr", "update_pr", "merge_pr"})
+PUBLICATION_FAILURES = frozenset({"publish-refused", "publish-failed"})
+FAILED_INPUTS = frozenset({"conflict", "failed"}) | PUBLICATION_FAILURES
 STATE_FILE = "state.json"
 RESULT_FILE = "result.json"
 BUNDLE_FILE = "refresh.bundle"
@@ -298,38 +300,44 @@ def required_state(api: Client, head: str) -> tuple[list[str], list[str]]:
     statuses = api.get(f"commits/{head}/status").get("statuses", [])
     failed: list[str] = []
     waiting: list[str] = []
+
+    def state(item: dict, is_run: bool) -> str:
+        if is_run:
+            if item["status"] != "completed":
+                return "pending"
+            return "success" if item["conclusion"] in CHECK_PASS else "failure"
+        return {"success": "success", "pending": "pending"}.get(item["state"], "failure")
+
     for context in sorted(required):
-        apps = required[context]
-        any_app = any(app is None or app < 1 for app in apps)
         named = [run for run in runs if run["name"] == context]
         reported = [status for status in statuses if status["context"] == context]
-        accepted = [run for run in named if any_app or run["app"]["id"] in apps]
-        accepted_status = reported if any_app else []
         if not named and not reported:
             waiting.append(f"{context}: not reported yet")
             continue
-        if not accepted and not accepted_status:
-            failed.append(f"{context}: reported by an app other than the required publisher")
-            continue
-        states = [
-            "pending"
-            if run["status"] != "completed"
-            else "success"
-            if run["conclusion"] in CHECK_PASS
-            else "failure"
-            for run in accepted
-        ] + [
-            "success"
-            if status["state"] == "success"
-            else "pending"
-            if status["state"] == "pending"
-            else "failure"
-            for status in accepted_status
-        ]
-        if "failure" in states:
-            failed.append(f"{context}: did not succeed")
-        elif "pending" in states:
-            waiting.append(f"{context}: still running")
+        specific = {app for app in required[context] if app is not None and app >= 1}
+        for app in sorted(required[context], key=lambda a: -1 if a is None else a):
+            if app is None or app < 1:
+                states = [state(r, True) for r in named] + [state(r, False) for r in reported]
+                if "success" in states:
+                    continue
+                label = f"{context} (any publisher)"
+                states = states or ["missing"]
+            else:
+                matching = [r for r in named if r["app"]["id"] == app]
+                label = f"{context} (app {app})"
+                if not matching:
+                    if any(r["app"]["id"] in specific for r in named):
+                        waiting.append(f"{label}: not reported yet")
+                    else:
+                        failed.append(f"{label}: reported only by other apps")
+                    continue
+                states = [state(r, True) for r in matching]
+                if all(item == "success" for item in states):
+                    continue
+            if "failure" in states:
+                failed.append(f"{label}: did not succeed")
+            else:
+                waiting.append(f"{label}: still running")
     return failed, waiting
 
 
@@ -337,9 +345,16 @@ def labels(pull: dict) -> set[str]:
     return {label["name"] for label in pull.get("labels", [])}
 
 
+def targets_main(api: Client, pull: dict) -> bool:
+    base = pull.get("base") or {}
+    return base.get("ref") == "main" and (base.get("repo") or {}).get("full_name") == api.repository
+
+
 def merge_gate(api: Client, number: int, head: str, base: str) -> tuple[str, list[str]]:
     pull = api.get(f"pulls/{number}")
     live = api.get("branches/main")["commit"]["sha"]
+    if not targets_main(api, pull):
+        return "blocked", ["the pull request does not target main of this repository"]
     if pull["state"] != "open" or pull.get("draft") or labels(pull) & HOLD_LABELS:
         return "blocked", ["the pull request is not open, is draft or is held"]
     if pull["head"]["sha"] != head:
@@ -371,11 +386,18 @@ class Controller:
     discover: Callable[[Path], tuple[str, str]] = refresh.newest_tag
     refresher: Callable[..., Result] = refresh_at
     cache: dict = field(default_factory=dict)
+    app_slug: str = ""
 
     def controller_issues(self) -> list[dict]:
         found = []
         for issue in self.api.lists("issues", {"state": "open"}):
-            if "pull_request" in issue or issue.get("user", {}).get("type") != "Bot":
+            author = issue.get("user") or {}
+            if (
+                not self.app_slug
+                or "pull_request" in issue
+                or author.get("type") != "Bot"
+                or author.get("login") != f"{self.app_slug}[bot]"
+            ):
                 continue
             key = parse_issue_marker(issue.get("body"))
             if key:
@@ -415,6 +437,20 @@ class Controller:
             return out
         out["tag"] = tag
         self.reconcile(out, tag, base, issues)
+        key = next((i["key"] for i in issues if i["key"]["tag"] == tag), None)
+        if (
+            key
+            and key["base"] == base
+            and key["outcome"] in PUBLICATION_FAILURES
+            and not self.retry
+            and any(a["op"] in PUBLISHING for a in out["actions"])
+        ):
+            out["actions"] = []
+            out["outcome"] = "skipped"
+            out["notes"].append(
+                f"Publication already failed ({key['outcome']}) on this input; set retry or "
+                "close the issue to re-attempt"
+            )
         return out
 
     def finish(self, out: dict, outcome: str, issues: list[dict], tag: str) -> None:
@@ -526,6 +562,10 @@ class Controller:
             return self.refuse(
                 out, issues, tag, base, "foreign-head", f"#{number} head is not on the fork"
             )
+        if not targets_main(self.api, pull):
+            return self.refuse(
+                out, issues, tag, base, "foreign-base", f"#{number} does not target main here"
+            )
         if pull.get("draft"):
             return self.refuse(out, issues, tag, base, "draft", f"#{number} is a draft")
         if labels(pull) & HOLD_LABELS:
@@ -551,7 +591,13 @@ class Controller:
         canonical = {"base": claimed["base"], "head": head, "tag": tag, "tree": claimed["tree"]}
         if marker != canonical:
             out["actions"].append(
-                {"op": "update_pr", "number": number, "expect": marker, "marker": canonical}
+                {
+                    "op": "update_pr",
+                    "number": number,
+                    "head": head,
+                    "expect": marker,
+                    "marker": canonical,
+                }
             )
         if claimed["base"] != base:
             return self.stale(out, issues, tag, base, branch, number, canonical)
@@ -589,9 +635,21 @@ class Controller:
         pending = {**canonical, "pending": {"base": base, "head": result.head, "tree": result.tree}}
         final = {"base": base, "head": result.head, "tag": tag, "tree": result.tree}
         out["actions"] += [
-            {"op": "update_pr", "number": number, "expect": canonical, "marker": pending},
+            {
+                "op": "update_pr",
+                "number": number,
+                "head": canonical["head"],
+                "expect": canonical,
+                "marker": pending,
+            },
             self.push_op(branch, base, result, canonical["head"]),
-            {"op": "update_pr", "number": number, "expect": pending, "marker": final},
+            {
+                "op": "update_pr",
+                "number": number,
+                "head": result.head,
+                "expect": pending,
+                "marker": final,
+            },
         ]
         self.finish(out, "refreshed", issues, tag)
 
@@ -757,6 +815,10 @@ def update_pr(api: Client, op: dict) -> dict:
     pull = api.get(f"pulls/{op['number']}")
     if pull["state"] != "open" or pull.get("draft") or labels(pull) & HOLD_LABELS:
         raise Refused(f"#{op['number']} is not open, is draft or is held")
+    if not targets_main(api, pull):
+        raise Refused(f"#{op['number']} does not target main of this repository")
+    if pull["head"]["sha"] != op["head"]:
+        raise Refused(f"#{op['number']} head moved to {pull['head']['sha']}; leaving it alone")
     current = parse_marker(pull.get("body"))
     if current == op["marker"]:
         return {"status": "unchanged"}
@@ -818,6 +880,30 @@ def close_issues(controller: Controller, op: dict) -> dict:
     return {"status": "closed" if closed else "unchanged", "numbers": closed}
 
 
+def report_publication(
+    controller: Controller, plan: dict, outcome: str, detail: str, result: dict
+) -> None:
+    tag = plan.get("tag")
+    if not tag:
+        return
+    key = {"base": plan["base"], "outcome": outcome, "tag": tag}
+    existing = [i for i in controller.controller_issues() if i["key"]["tag"] == tag]
+    if existing and existing[0]["key"] == key and not controller.retry:
+        result["issue"] = "unchanged failed input; no issue update"
+        return
+    op = {
+        "op": "upsert_issue",
+        "tag": tag,
+        "key": key,
+        "title": issue_title(tag),
+        "body": issue_body(tag, plan["base"], outcome, detail, plan.get("run_url", "")),
+    }
+    try:
+        result["issue"] = upsert_issue(controller, op)
+    except (ControllerError, DeliveryError) as error:
+        result["issue_error"] = f"The failure issue could not be published: {error}"
+
+
 def apply(controller: Controller, plan: dict, mode: str, bundle: Path) -> dict:
     result: dict = {"mode": mode, "performed": [], "unapplied": []}
     if mode != "enabled":
@@ -848,9 +934,11 @@ def apply(controller: Controller, plan: dict, mode: str, bundle: Path) -> dict:
                 outcome = close_issues(controller, op)
             else:
                 raise Refused(f"Unknown action {op['op']}")
-        except Refused as refusal:
-            result["halted"] = str(refusal)
+        except (Refused, ControllerError, DeliveryError) as error:
+            result["halted"] = str(error)
             result["unapplied"] = plan["actions"][index:]
+            outcome_name = "publish-refused" if isinstance(error, Refused) else "publish-failed"
+            report_publication(controller, plan, outcome_name, str(error), result)
             return result
         result["performed"].append({"op": op["op"], **outcome})
     return result
@@ -885,6 +973,7 @@ def build(args: argparse.Namespace, token: str) -> Controller:
         out_dir / BUNDLE_FILE,
         run_url=args.run_url,
         retry=truthy("RETRY"),
+        app_slug=os.environ.get("BENCHBOX_UPSTREAM_APP_SLUG", "").strip(),
     )
 
 
@@ -900,6 +989,8 @@ def main() -> None:
         sys.exit("GH_TOKEN is required")
     mode = run_mode(truthy("ENABLED"), truthy("DRY_RUN"))
     controller = build(args, token)
+    if mode == "enabled" and not controller.app_slug:
+        sys.exit("BENCHBOX_UPSTREAM_APP_SLUG is required to identify the controller's issues")
     state = args.out_dir.resolve() / STATE_FILE
     if args.action == "prepare":
         plan = controller.plan()
@@ -914,6 +1005,8 @@ def main() -> None:
     (args.out_dir / RESULT_FILE).write_text(json.dumps(result, indent=2) + "\n")
     write_summary("## Applied\n\n```json\n" + json.dumps(result, indent=2) + "\n```\n")
     print(json.dumps(result, indent=2))
+    if result.get("issue_error"):
+        sys.exit(f"{result['halted']}\n{result['issue_error']}")
     if result.get("halted"):
         sys.exit(1)
 

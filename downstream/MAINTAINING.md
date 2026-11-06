@@ -435,8 +435,11 @@ change). `retry: true` re-attempts an input that already failed.
 contents, pull-requests and issues write and checks, statuses and actions read.
 It must not be a bypass actor of any ruleset or branch protection. Configure the
 secrets `BENCHBOX_UPSTREAM_APP_ID` and `BENCHBOX_UPSTREAM_APP_PRIVATE_KEY` and the
-variable `BENCHBOX_UPSTREAM_ENABLED` in this repository. The controller never
-changes rulesets, branch protection or auto-merge settings.
+variables `BENCHBOX_UPSTREAM_ENABLED` and `BENCHBOX_UPSTREAM_APP_SLUG` (the App's
+slug; its issues are authored by `<slug>[bot]`) in this repository. The controller
+adopts, updates and closes only open issues authored by that login that carry its
+marker, and refuses to mutate when the slug is unset. It never changes rulesets,
+branch protection or auto-merge settings.
 
 **Ownership.** A branch name or author is never authority. A pull request is the
 controller's only when all of these hold: the head is on this repository, the body
@@ -455,15 +458,19 @@ issues; there is no state branch or database. With no branch, the refresh is
 pushed and the pull request opened. If the recorded base is no longer `main`, the
 refresh is recomputed, the branch is lease-pushed in place and the marker updated
 (a pending marker is written first so an interrupted update recovers). The pull
-request merges only when it is open, not draft, not held, based on the current
-`main`, every required check on `main` (rulesets and enforced classic protection,
-read as `downstream/delivery.py` reads them) succeeded on the exact head from the
-required publisher, and the merge state is clean. The merge uses the `merge`
+request merges only when it is open, not draft, not held, targets `main` of this
+repository, based on the current `main`, every required check on `main` (rulesets and enforced classic protection,
+read as `downstream/delivery.py` reads them) succeeded on the exact head, each
+required publisher of a check satisfying its own obligation, and the merge state is clean. The merge uses the `merge`
 method (preserving upstream ancestry), bound to the exact head SHA, with no bypass.
 Pending or not yet reported checks wait for the next pass.
 
 **Issues.** A conflict, failure or refusal opens or updates one fork issue per
 tag, keyed by (tag, base `main` SHA, outcome) in a marker and authored by the App.
+A publication refusal or GitHub write error (a rejected push, a moved branch, a
+failed API call) is reported the same way with outcome `publish-refused` or
+`publish-failed` and the job still exits non-zero; if the issue itself cannot be
+written the job fails with both errors.
 An unchanged failed input is skipped on later runs until the tag or `main`
 changes, `retry` is set, or the issue is closed. A healthy pull request, an
 up-to-date `main` or a successful refresh closes it.

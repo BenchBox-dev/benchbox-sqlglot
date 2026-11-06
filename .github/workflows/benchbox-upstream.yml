@@ -53,6 +53,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ENABLED: ${{ vars.BENCHBOX_UPSTREAM_ENABLED }}
+          BENCHBOX_UPSTREAM_APP_SLUG: ${{ vars.BENCHBOX_UPSTREAM_APP_SLUG }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
           RETRY: ${{ github.event_name == 'workflow_dispatch' && inputs.retry }}
           GIT_AUTHOR_NAME: benchbox-bot
@@ -118,5 +119,7 @@ jobs:
       - env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           ENABLED: ${{ vars.BENCHBOX_UPSTREAM_ENABLED }}
+          BENCHBOX_UPSTREAM_APP_SLUG: ${{ vars.BENCHBOX_UPSTREAM_APP_SLUG }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          RETRY: ${{ github.event_name == 'workflow_dispatch' && inputs.retry }}
         run: uv run --no-project -- python -m downstream.controller publish --out-dir "$RUNNER_TEMP/upstream" --run-url "$RUN_URL"
