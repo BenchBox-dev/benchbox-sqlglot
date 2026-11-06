@@ -829,6 +829,11 @@ def open_pr(controller: Controller, op: dict) -> dict:
             return {"status": "unchanged", "number": pull["number"]}
     if existing:
         raise Refused(f"A pull request already uses {op['branch']}; leaving it alone")
+    live = controller.remote.head(controller.root, op["branch"])
+    if live != op["head"]:
+        raise Refused(
+            f"{op['branch']} moved to {live}, not the planned {op['head']}; leaving it alone"
+        )
     created = api.send(
         "POST",
         "pulls",

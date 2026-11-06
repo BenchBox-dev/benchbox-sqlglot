@@ -489,6 +489,18 @@ class TestUpstreamController(unittest.TestCase):
         self.assertEqual(len(env.api.pulls), 1)
         self.assertEqual(env.api.pulls[1]["head"]["sha"], env.remote_sha(BRANCH))
 
+    def test_an_adopted_branch_moved_before_publication_gets_no_pull_request(self):
+        env = Env(self)
+        plan = env.plan()
+        env.apply(plan, ops=plan["actions"][:1])
+        recovery = env.plan()
+        self.assertEqual(ops(recovery), ["open_pr"])
+        human = env.human_push(BRANCH)
+        result = env.apply(recovery)
+        self.assertIn("leaving it alone", result["halted"])
+        self.assertEqual(env.api.pulls, {})
+        self.assertEqual(env.remote_sha(BRANCH), human)
+
     def test_reapplying_a_plan_is_idempotent(self):
         env = Env(self)
         plan = env.plan()
