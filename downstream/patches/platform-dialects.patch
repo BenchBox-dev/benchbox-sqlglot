@@ -1,5 +1,5 @@
 diff --git a/sqlglot/dialects/__init__.py b/sqlglot/dialects/__init__.py
-index 16bcf6c9..f31f6b9e 100644
+index 16bcf6c96..f31f6b9e3 100644
 --- a/sqlglot/dialects/__init__.py
 +++ b/sqlglot/dialects/__init__.py
 @@ -69,6 +69,7 @@ DIALECTS = [
@@ -36,7 +36,7 @@ index 16bcf6c9..f31f6b9e 100644
  
  MODULE_BY_DIALECT = {name: name.lower() for name in DIALECTS}
 diff --git a/sqlglot/dialects/dialect.py b/sqlglot/dialects/dialect.py
-index a0d08413..81289ed5 100644
+index 7ab34a604..c8d494b86 100644
 --- a/sqlglot/dialects/dialect.py
 +++ b/sqlglot/dialects/dialect.py
 @@ -103,6 +103,7 @@ class Dialects(str, Enum):

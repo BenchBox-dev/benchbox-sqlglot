@@ -1,5 +1,5 @@
 diff --git a/sqlglot/expressions/temporal.py b/sqlglot/expressions/temporal.py
-index 6a99b5b8..086a7670 100644
+index 8d729c85d..5aeba101e 100644
 --- a/sqlglot/expressions/temporal.py
 +++ b/sqlglot/expressions/temporal.py
 @@ -227,7 +227,8 @@ class Dayname(Expression, Func):
@@ -13,7 +13,7 @@ index 6a99b5b8..086a7670 100644
  
  class GetExtract(Expression, Func):
 diff --git a/sqlglot/generators/postgres.py b/sqlglot/generators/postgres.py
-index 88ca1a73..8664d8a4 100644
+index 88ca1a73b..8664d8a43 100644
 --- a/sqlglot/generators/postgres.py
 +++ b/sqlglot/generators/postgres.py
 @@ -483,6 +483,15 @@ class PostgresGenerator(generator.Generator):
@@ -33,10 +33,10 @@ index 88ca1a73..8664d8a4 100644
          self.unsupported("Table comments are not supported in the CREATE statement")
          return ""
 diff --git a/sqlglot/optimizer/annotate_types.py b/sqlglot/optimizer/annotate_types.py
-index 4612efb9..a2f83325 100644
+index 3005beba9..3f7067bcf 100644
 --- a/sqlglot/optimizer/annotate_types.py
 +++ b/sqlglot/optimizer/annotate_types.py
-@@ -1153,7 +1153,9 @@ class TypeAnnotator:
+@@ -1159,7 +1159,9 @@ class TypeAnnotator:
  
      def _annotate_extract(self, expression: exp.Extract) -> exp.Extract:
          part = expression.name
@@ -48,10 +48,10 @@ index 4612efb9..a2f83325 100644
          elif part == "DATE":
              self._set_type(expression, exp.DType.DATE)
 diff --git a/sqlglot/parsers/postgres.py b/sqlglot/parsers/postgres.py
-index 7580942c..ace4d528 100644
+index dc5362bd2..dbc7c6173 100644
 --- a/sqlglot/parsers/postgres.py
 +++ b/sqlglot/parsers/postgres.py
-@@ -112,6 +112,7 @@ class PostgresParser(parser.Parser):
+@@ -114,6 +114,7 @@ class PostgresParser(parser.Parser):
      ALTER_TABLE_MIXED_ACTIONS = True
      ALTER_COLUMN_TYPE_REQUIRES_KEYWORD = True
      SUPPORTS_OMITTED_INTERVAL_SPAN_UNIT = True
@@ -59,7 +59,7 @@ index 7580942c..ace4d528 100644
  
      # The one-byte "char" type is distinct from CHAR, and it can only be referenced by
      # quoting it: https://www.postgresql.org/docs/current/datatype-character.html
-@@ -358,6 +359,12 @@ class PostgresParser(parser.Parser):
+@@ -360,6 +361,12 @@ class PostgresParser(parser.Parser):
          self._match_text_seq("S")
          return self.expression(exp.Placeholder(this=this))
  
@@ -72,7 +72,7 @@ index 7580942c..ace4d528 100644
      def _parse_date_part(self) -> exp.Expr:
          part = self._parse_type()
          self._match(TokenType.COMMA)
-@@ -366,7 +373,11 @@ class PostgresParser(parser.Parser):
+@@ -368,7 +375,11 @@ class PostgresParser(parser.Parser):
          if part and isinstance(part, (exp.Column, exp.Literal)):
              part = exp.var(part.name.upper())
  
@@ -86,7 +86,7 @@ index 7580942c..ace4d528 100644
      def _parse_unique(self) -> exp.UniqueColumnConstraint:
          return self.expression(
 diff --git a/sqlglot/parsers/redshift.py b/sqlglot/parsers/redshift.py
-index 5faade46..ad115971 100644
+index 5faade46d..ad1159719 100644
 --- a/sqlglot/parsers/redshift.py
 +++ b/sqlglot/parsers/redshift.py
 @@ -33,6 +33,8 @@ def _build_date_delta(expr_type: Type[E]) -> t.Callable[[list], E]:
@@ -99,10 +99,10 @@ index 5faade46..ad115971 100644
  
      FUNCTIONS = {
 diff --git a/tests/dialects/test_postgres.py b/tests/dialects/test_postgres.py
-index b5fe4222..af7d030c 100644
+index 13b5879e1..0bc4c8892 100644
 --- a/tests/dialects/test_postgres.py
 +++ b/tests/dialects/test_postgres.py
-@@ -156,6 +156,27 @@ class TestPostgres(Validator):
+@@ -170,6 +170,27 @@ class TestPostgres(Validator):
              if expression.args.get("returning"):
                  self.assertIsInstance(expression.args["returning"], exp.DataType)
  
@@ -130,7 +130,7 @@ index b5fe4222..af7d030c 100644
      def test_postgres(self):
          expr = self.parse_one("SELECT * FROM r CROSS JOIN LATERAL UNNEST(ARRAY[1]) AS s(location)")
          unnest = expr.args["joins"][0].this.this
-@@ -398,11 +419,11 @@ class TestPostgres(Validator):
+@@ -412,11 +433,11 @@ class TestPostgres(Validator):
          )
          self.validate_identity(
              "SELECT DATE_PART('isodow'::varchar(6), current_date)",
@@ -144,7 +144,7 @@ index b5fe4222..af7d030c 100644
          )
          self.validate_identity(
              "END WORK AND NO CHAIN",
-@@ -911,16 +932,16 @@ FROM json_data, field_ids""",
+@@ -925,16 +946,16 @@ FROM json_data, field_ids""",
          self.validate_all(
              "SELECT DATE_PART('minute', timestamp '2023-01-04 04:05:06.789')",
              write={
@@ -166,7 +166,7 @@ index b5fe4222..af7d030c 100644
              },
          )
 diff --git a/tests/dialects/test_redshift.py b/tests/dialects/test_redshift.py
-index a1ae80b4..c05101ba 100644
+index a1ae80b4e..c05101baa 100644
 --- a/tests/dialects/test_redshift.py
 +++ b/tests/dialects/test_redshift.py
 @@ -241,16 +241,16 @@ class TestRedshift(Validator):
@@ -200,7 +200,7 @@ index a1ae80b4..c05101ba 100644
          self.validate_identity(
              "SELECT CONCAT('abc', 'def')",
 diff --git a/tests/fixtures/optimizer/annotate_types.sql b/tests/fixtures/optimizer/annotate_types.sql
-index 5266c521..ce8854fd 100644
+index 5266c5217..ce8854fdf 100644
 --- a/tests/fixtures/optimizer/annotate_types.sql
 +++ b/tests/fixtures/optimizer/annotate_types.sql
 @@ -237,6 +237,34 @@ TIME;

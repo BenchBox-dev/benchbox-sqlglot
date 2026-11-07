@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index 312bb311..2c8d0bce 100644
+index a303d6122..4dbe31ee4 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
 @@ -150,7 +150,55 @@ def _generated_to_auto_increment(expression: exp.Expr) -> exp.Expr:

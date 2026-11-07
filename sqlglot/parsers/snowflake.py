@@ -241,7 +241,11 @@ def _build_regexp_extract(expr_type: type[E]) -> t.Callable[[list, Dialect], E]:
             parameters=seq_get(args, 4),
             group=seq_get(args, 5) or exp.Literal.number(0),
             **(
-                {"null_if_pos_overflow": dialect.REGEXP_EXTRACT_POSITION_OVERFLOW_RETURNS_NULL}
+                {
+                    "null_if_pos_overflow": dialect.REGEXP_EXTRACT_POSITION_OVERFLOW_RETURNS_NULL,
+                    "null_if_no_match": dialect.REGEXP_EXTRACT_NO_MATCH_RETURNS_NULL,
+                    "empty_if_group_missing": dialect.REGEXP_EXTRACT_MISSING_GROUP_RETURNS_EMPTY,
+                }
                 if expr_type is exp.RegexpExtract
                 else {}
             ),
@@ -785,6 +789,7 @@ class SnowflakeParser(parser.Parser):
         **parser.Parser.PROPERTY_PARSERS,
         "CREDENTIALS": lambda self: self._parse_credentials_property(),
         "FILE_FORMAT": lambda self: self._parse_file_format_property(),
+        "IGNORE": lambda self: self._parse_ignore_property(),
         "INTERACTIVE": lambda self: self.expression(exp.InteractiveProperty()),
         "LOCATION": lambda self: self._parse_location_property(),
         "ROW": lambda self: (
@@ -1008,6 +1013,13 @@ class SnowflakeParser(parser.Parser):
         if self._match_text_seq("TAGS"):
             return self.expression(exp.CopyTagsProperty())
         return super()._parse_copy_property()
+
+    def _parse_ignore_property(self) -> exp.Property | None:
+        if not self._match_text_seq("GRANTS"):
+            self._retreat(self._index - 1)
+            return None
+
+        return self.expression(exp.IgnoreGrantsProperty())
 
     def _parse_tag(self) -> exp.Tags:
         return self.expression(exp.Tags(expressions=self._parse_wrapped_csv(self._parse_property)))

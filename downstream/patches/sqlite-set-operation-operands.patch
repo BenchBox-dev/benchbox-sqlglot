@@ -1,8 +1,8 @@
 diff --git a/sqlglot/generator.py b/sqlglot/generator.py
-index 52a4780b..adcdb1a9 100644
+index ab4e60092..33b13c26b 100644
 --- a/sqlglot/generator.py
 +++ b/sqlglot/generator.py
-@@ -2043,7 +2043,10 @@ class Generator:
+@@ -2046,7 +2046,10 @@ class Generator:
                  elif (
                      not self.SET_OP_PARENTHESIZED_OPERANDS
                      and isinstance(node, exp.Subquery)
@@ -15,7 +15,7 @@ index 52a4780b..adcdb1a9 100644
                      node = exp.select("*").from_(node, copy=False)
                  sqls.append(open_parens + self.indent(self.sql(node), level=depth, pad=0))
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index a2387413..e3984707 100644
+index d72307a10..1ad913edf 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
 @@ -320,6 +320,58 @@ class TestSQLite(Validator):

@@ -203,6 +203,7 @@ class Generator:
         exp.HeapProperty: lambda *_: "HEAP",
         exp.HybridProperty: lambda *_: "HYBRID",
         exp.IcebergProperty: lambda *_: "ICEBERG",
+        exp.IgnoreGrantsProperty: lambda *_: "IGNORE GRANTS",
         exp.InheritsProperty: lambda self, e: f"INHERITS ({self.expressions(e, flat=True)})",
         exp.InlineLengthColumnConstraint: lambda self, e: f"INLINE LENGTH {self.sql(e, 'this')}",
         exp.InputModelProperty: lambda self, e: f"INPUT{self.sql(e, 'this')}",
@@ -361,7 +362,7 @@ class Generator:
     # Whether limit and fetch are supported (possible values: "ALL", "LIMIT", "FETCH")
     LIMIT_FETCH = "ALL"
 
-    # Whether limit and fetch allows expresions or just limits
+    # Whether limit and fetch allows expressions or just limits
     LIMIT_ONLY_LITERALS = False
 
     # Whether a table is allowed to be renamed with a db
@@ -780,6 +781,7 @@ class Generator:
         exp.HybridProperty: exp.Properties.Location.POST_CREATE,
         exp.InheritsProperty: exp.Properties.Location.POST_SCHEMA,
         exp.IcebergProperty: exp.Properties.Location.POST_CREATE,
+        exp.IgnoreGrantsProperty: exp.Properties.Location.POST_SCHEMA,
         exp.IncludeProperty: exp.Properties.Location.POST_SCHEMA,
         exp.InputModelProperty: exp.Properties.Location.POST_SCHEMA,
         exp.InteractiveProperty: exp.Properties.Location.UNSUPPORTED,
@@ -799,6 +801,7 @@ class Generator:
         exp.NoPrimaryIndexProperty: exp.Properties.Location.POST_EXPRESSION,
         exp.OnProperty: exp.Properties.Location.POST_SCHEMA,
         exp.OnCommitProperty: exp.Properties.Location.POST_EXPRESSION,
+        exp.OptionsProperty: exp.Properties.Location.UNSUPPORTED,
         exp.Order: exp.Properties.Location.POST_SCHEMA,
         exp.OutputModelProperty: exp.Properties.Location.POST_SCHEMA,
         exp.PartitionedByProperty: exp.Properties.Location.POST_WITH,
@@ -6163,6 +6166,14 @@ class Generator:
 
         return array_agg_sql
 
+    @unsupported_args("count")
+    def min_sql(self, expression: exp.Min) -> str:
+        return self.function_fallback_sql(expression)
+
+    @unsupported_args("count")
+    def max_sql(self, expression: exp.Max) -> str:
+        return self.function_fallback_sql(expression)
+
     def arrayagg_sql(self, expression: exp.ArrayAgg) -> str:
         array_agg = self.function_fallback_sql(expression)
         column_expr = expression.this
@@ -6170,6 +6181,17 @@ class Generator:
             column_expr = column_expr.this
 
         return self._add_arrayagg_null_filter(array_agg, expression, column_expr)
+
+    def timeslice_sql(self, expression: exp.TimeSlice) -> str:
+        # Only the SQLGlot dialect serializes the internal origin for round-tripping.
+        origin = expression.args.get("origin") if self.dialect == "" else None
+        kind = expression.args.get("kind")
+        if origin is not None and kind is None:
+            kind = exp.Literal.string("START")
+
+        return self.func(
+            "TIME_SLICE", expression.this, expression.expression, expression.unit, kind, origin
+        )
 
     def slice_sql(self, expression: exp.Slice) -> str:
         step = self.sql(expression, "step")
