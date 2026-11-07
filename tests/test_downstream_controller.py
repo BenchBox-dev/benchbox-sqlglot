@@ -1,10 +1,15 @@
+import base64
 import json
+import os
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from downstream import controller as controller_module
 from downstream import refresh
 from downstream.build import git
 from downstream.controller import (
@@ -13,9 +18,16 @@ from downstream.controller import (
     ControllerError,
     Refused,
     Remote,
+    app_jwt,
     apply,
+    event_from_env,
+    event_refusal,
     issue_marker_text,
+    openssl_sign,
     parse_marker,
+    permission_gaps,
+    readiness,
+    readiness_summary,
     refresh_at,
     run_mode,
 )
@@ -227,8 +239,10 @@ class Env:
         )
         return result.stdout.strip() or None
 
-    def controller(self, retry=False, refresher=None):
+    def controller(self, retry=False, refresher=None, event=None):
         extra = {"refresher": refresher} if refresher else {}
+        if event is not None:
+            extra["event"] = event
         return Controller(
             self.api,
             self.source,
@@ -945,6 +959,473 @@ class TestUpstreamController(unittest.TestCase):
         env = Env(self)
         run(env.source, "tag", "v1.2.0-rc1", TAG)
         self.assertEqual(refresh.newest_tag(env.source)[0], TAG)
+
+
+def refresh_event(**changes):
+    event = {
+        "workflow": "Run tests and linter checks",
+        "type": "pull_request",
+        "conclusion": "success",
+        "repository": REPOSITORY,
+        "head_repository": REPOSITORY,
+        "branch": BRANCH,
+        "head": "a" * 40,
+    }
+    return {**event, **changes}
+
+
+def forbidden_refresher(root, tag, base, *args, **kwargs):
+    if base == git(root, "rev-parse", "HEAD"):
+        raise AssertionError("an event must never refresh onto current main")
+    return refresh_at(root, tag, base, *args, **kwargs)
+
+
+class TestEventDrivenMerge(unittest.TestCase):
+    def ready(self):
+        env = Env(self)
+        env.publish()
+        head = env.remote_sha(BRANCH)
+        return env, head
+
+    def test_a_passing_refresh_merges_on_the_event_without_dispatch(self):
+        env, head = self.ready()
+        self.assertEqual(env.plan()["outcome"], "waiting")
+        env.pass_checks(head)
+        plan = env.plan(event=refresh_event(head=head))
+        self.assertEqual((plan["outcome"], ops(plan)), ("merge", ["merge_pr"]))
+        self.assertEqual(plan["event"]["branch"], BRANCH)
+        result = env.apply(plan)
+        self.assertEqual(result["performed"][0]["status"], "merged")
+        self.assertEqual(env.api.writes[-1][:2], ("PUT", "pulls/1/merge"))
+        self.assertEqual(env.api.writes[-1][2]["sha"], head)
+
+    def test_an_event_waits_while_any_required_check_is_unfinished(self):
+        env, head = self.ready()
+        env.pass_checks(head, status="in_progress", conclusion=None)
+        plan = env.plan(event=refresh_event(head=head))
+        self.assertEqual((plan["outcome"], plan["actions"]), ("waiting", []))
+        env.pass_checks(head, conclusion="failure")
+        plan = env.plan(event=refresh_event(head=head))
+        self.assertEqual((plan["outcome"], plan["actions"]), ("checks-failed", []))
+
+    def test_untrusted_event_facts_are_refused_before_any_read(self):
+        env, head = self.ready()
+        env.pass_checks(head)
+        cases = {
+            "another workflow": {"workflow": "Some other workflow"},
+            "a push run": {"type": "push"},
+            "a pull request from a fork": {"head_repository": "attacker/benchbox-sqlglot"},
+            "another repository": {"repository": "attacker/benchbox-sqlglot"},
+            "a failed run": {"conclusion": "failure"},
+            "a cancelled run": {"conclusion": "cancelled"},
+            "a foreign branch": {"branch": "feature/refresh/upstream-1.1.0"},
+            "an unversioned branch": {"branch": "refresh/upstream-latest"},
+            "a prefix only": {"branch": "refresh/upstream-"},
+            "a malformed head": {"head": "HEAD"},
+        }
+        for label, change in cases.items():
+            with self.subTest(label):
+                event = {**refresh_event(head=head), **change}
+                self.assertIsNotNone(event_refusal(event, REPOSITORY), label)
+                writes = len(env.api.writes)
+                plan = env.plan(event=event)
+                self.assertEqual((plan["outcome"], plan["actions"]), ("ignored", []))
+                self.assertEqual(len(env.api.writes), writes)
+        self.assertIsNone(event_refusal(refresh_event(head=head), REPOSITORY))
+
+    def test_an_event_for_another_branch_or_a_stale_head_acts_on_nothing(self):
+        env, head = self.ready()
+        env.pass_checks(head)
+        other = env.plan(event=refresh_event(head=head, branch="refresh/upstream-9.9.9"))
+        self.assertEqual((other["outcome"], other["actions"]), ("ignored", []))
+        stale = env.plan(event=refresh_event(head="b" * 40))
+        self.assertEqual((stale["outcome"], stale["actions"]), ("ignored", []))
+
+    def test_an_event_never_refreshes_pushes_opens_or_raises_issues(self):
+        env = Env(self)
+        fresh = env.controller(refresher=forbidden_refresher, event=refresh_event()).plan()
+        self.assertEqual((fresh["outcome"], fresh["actions"]), ("ignored", []))
+        env.publish()
+        head = env.remote_sha(BRANCH)
+        env.pass_checks(head)
+        env.advance_main()
+        stale = env.controller(refresher=forbidden_refresher, event=refresh_event(head=head)).plan()
+        self.assertEqual((stale["outcome"], stale["actions"]), ("waiting", []))
+        env.api.pulls[1]["labels"] = [{"name": "hold"}]
+        held = env.plan(event=refresh_event(head=head))
+        self.assertEqual((held["outcome"], held["actions"]), ("held", []))
+        env.api.pulls[1]["labels"] = []
+        env.api.pulls[1]["state"] = "closed"
+        closed = env.plan(event=refresh_event(head=head))
+        self.assertEqual(closed["actions"], [])
+        self.assertEqual([w for w in env.api.writes if w[1] == "issues"], [])
+
+    def test_an_unproven_head_is_never_merged_by_an_event(self):
+        env, _ = self.ready()
+        human = env.human_push(BRANCH)
+        env.pass_checks(human)
+        plan = env.plan(event=refresh_event(head=human))
+        self.assertEqual(plan["outcome"], "refused-head-modified")
+        self.assertEqual(plan["actions"], [])
+
+    def test_publish_refuses_when_live_state_changed_after_the_event_plan(self):
+        env, head = self.ready()
+        env.pass_checks(head)
+        plan = env.plan(event=refresh_event(head=head))
+        self.assertEqual(ops(plan), ["merge_pr"])
+        env.api.pulls[1]["labels"] = [{"name": "no-auto-merge"}]
+        self.assertEqual(env.apply(plan)["performed"][0]["status"], "blocked")
+        env.api.pulls[1]["labels"] = []
+        env.pass_checks(head, conclusion="failure")
+        self.assertEqual(env.apply(plan)["performed"][0]["status"], "failed")
+        env.pass_checks(head, status="in_progress", conclusion=None)
+        self.assertEqual(env.apply(plan)["performed"][0]["status"], "wait")
+        env.pass_checks(head)
+        env.api.pulls[1]["head"]["sha"] = "c" * 40
+        env.api.track = lambda: None
+        with self.assertRaises(Refused):
+            controller_module.merge_pr(env.api, plan["actions"][0])
+        self.assertNotIn("PUT", [w[0] for w in env.api.writes])
+
+    def test_dry_run_and_the_kill_switch_keep_an_event_plan_read_only(self):
+        env, head = self.ready()
+        env.pass_checks(head)
+        plan = env.plan(event=refresh_event(head=head))
+        for mode in ("dry-run", "disabled"):
+            writes = len(env.api.writes)
+            result = env.apply(plan, mode=mode)
+            self.assertEqual((result["performed"], result["unapplied"]), ([], plan["actions"]))
+            self.assertEqual(len(env.api.writes), writes)
+        self.assertFalse(env.api.pulls[1]["merged"])
+
+    def test_a_publication_failure_still_suppresses_an_event_merge(self):
+        env, head = self.ready()
+        env.pass_checks(head)
+        env.seed_issue(env.api.main, "publish-refused")
+        plan = env.plan(event=refresh_event(head=head))
+        self.assertEqual((plan["outcome"], plan["actions"]), ("skipped", []))
+
+    def test_event_facts_come_only_from_the_workflow_run_trigger(self):
+        self.assertIsNone(event_from_env({"EVENT": "schedule", "EVENT_BRANCH": BRANCH}))
+        self.assertIsNone(event_from_env({}))
+        got = event_from_env(
+            {"EVENT": "workflow_run", "EVENT_BRANCH": BRANCH, "EVENT_HEAD_SHA": "a" * 40}
+        )
+        self.assertEqual((got["branch"], got["head"], got["type"]), (BRANCH, "a" * 40, ""))
+        self.assertIsNotNone(event_refusal(got, REPOSITORY))
+
+    def test_a_not_yet_computed_merge_state_is_polled_before_waiting(self):
+        env, head = self.ready()
+        env.pass_checks(head)
+        env.api.pulls[1]["mergeable"] = None
+        reads = []
+        original = env.api.get
+
+        def get(path, params=None):
+            pull = original(path, params)
+            if path == "pulls/1":
+                reads.append(path)
+                if len(reads) >= 3:
+                    pull["mergeable"] = True
+            return pull
+
+        env.api.get = get
+        with mock.patch.object(controller_module.time, "sleep") as sleep:
+            plan = env.plan(event=refresh_event(head=head))
+        self.assertEqual(ops(plan), ["merge_pr"])
+        self.assertEqual(sleep.call_count, 2)
+
+
+APP_ID = "1234"
+APP_SLUG_NAME = "benchbox-sqlglot-upstream"
+GRANTED = {
+    "metadata": "read",
+    "contents": "write",
+    "pull_requests": "write",
+    "issues": "write",
+    "checks": "read",
+    "statuses": "read",
+    "actions": "read",
+}
+
+
+class FakeAppApi:
+    def __init__(self, **changes):
+        self.calls = []
+        self.app = {"id": 1234, "slug": APP_SLUG_NAME}
+        self.installation = {
+            "id": 77,
+            "app_id": 1234,
+            "account": {"login": "BenchBox-dev"},
+            "permissions": dict(GRANTED),
+        }
+        self.token = {"token": "ghs_secret"}
+        self.repositories = {"total_count": 1, "repositories": [{"full_name": REPOSITORY}]}
+        self.repository = {
+            "full_name": REPOSITORY,
+            "name": "benchbox-sqlglot",
+            "has_issues": True,
+            "archived": False,
+        }
+        self.errors = {}
+        self.__dict__.update(changes)
+
+    def get(self, path, credential, jwt=False):
+        self.calls.append(("GET", path, jwt))
+        if path in self.errors:
+            raise ControllerError(f"GET {path} answered {self.errors[path]}")
+        if path == "/app":
+            return self.app
+        if path == f"/repos/{REPOSITORY}/installation":
+            return self.installation
+        if path.startswith("/installation/repositories"):
+            assert credential == "ghs_secret" and not jwt
+            return self.repositories
+        if path == f"/repos/{REPOSITORY}":
+            assert credential == "ghs_secret" and not jwt
+            return self.repository
+        raise AssertionError(f"unexpected read {path}")
+
+    def revoke(self, token):
+        self.calls.append(("DELETE", "/installation/token", False))
+        if "revoke" in self.errors:
+            raise ControllerError("DELETE answered 500")
+
+    def exchange(self, installation, credential):
+        self.calls.append(("POST", f"/app/installations/{installation}/access_tokens", True))
+        if "exchange" in self.errors:
+            raise ControllerError("POST answered 401")
+        return self.token
+
+
+def fake_sign(key, message):
+    return b"signature"
+
+
+def probe(api, app_id=APP_ID, key="KEY", slug=APP_SLUG_NAME, masked=None):
+    return readiness(
+        api,
+        REPOSITORY,
+        app_id,
+        key,
+        slug,
+        fake_sign,
+        (masked.append if masked is not None else (lambda _: None)),
+    )
+
+
+def failing(result):
+    return {c["check"] for c in result["checks"] if not c["ok"]}
+
+
+class TestAppReadiness(unittest.TestCase):
+    def test_a_correctly_configured_app_is_ready_and_only_reads(self):
+        api = FakeAppApi()
+        masked = []
+        result = probe(api, masked=masked)
+        self.assertEqual(
+            (result["ready"], result["state"], result["warnings"]), (True, "ready", [])
+        )
+        self.assertEqual(masked, ["ghs_secret"])
+        methods = [(m, p) for m, p, _ in api.calls if m != "GET"]
+        self.assertEqual(
+            methods,
+            [("POST", "/app/installations/77/access_tokens"), ("DELETE", "/installation/token")],
+        )
+        text = readiness_summary(result, "enabled")
+        self.assertIn("ready: the App can publish", text)
+        self.assertNotIn("ghs_secret", text)
+
+    def test_missing_configuration_is_named_and_makes_no_call(self):
+        for kwargs, named in (
+            ({"app_id": ""}, "APP_ID"),
+            ({"key": ""}, "APP_PRIVATE_KEY"),
+            ({"slug": ""}, "APP_SLUG"),
+        ):
+            with self.subTest(named):
+                api = FakeAppApi()
+                result = probe(api, **kwargs)
+                self.assertEqual((result["ready"], result["state"]), (False, "missing"))
+                self.assertEqual(api.calls, [])
+                self.assertIn(named, result["checks"][0]["detail"])
+                self.assertIn("NOT CONFIGURED", readiness_summary(result, "dry-run"))
+                self.assertIn("informational", readiness_summary(result, "dry-run"))
+
+    def test_failed_authentication_stops_before_any_other_read(self):
+        api = FakeAppApi(errors={"/app": 401})
+        result = probe(api)
+        self.assertEqual((result["ready"], result["state"]), (False, "failed"))
+        self.assertEqual(failing(result), {"probe"})
+        self.assertEqual([c[1] for c in api.calls], ["/app"])
+
+    def test_the_wrong_app_identity_is_not_ready(self):
+        self.assertIn("app identity", failing(probe(FakeAppApi(), app_id="999")))
+        self.assertIn("app identity", failing(probe(FakeAppApi(), slug="someone-else")))
+
+    def test_an_app_not_installed_on_the_repository_fails(self):
+        result = probe(FakeAppApi(errors={f"/repos/{REPOSITORY}/installation": 404}))
+        self.assertFalse(result["ready"])
+        self.assertEqual(failing(result), {"probe"})
+        wrong_owner = FakeAppApi()
+        wrong_owner.installation["account"] = {"login": "someone"}
+        self.assertIn("installation", failing(probe(wrong_owner)))
+        suspended = FakeAppApi()
+        suspended.installation["suspended_at"] = "2026-01-01T00:00:00Z"
+        self.assertIn("installation", failing(probe(suspended)))
+
+    def test_insufficient_installation_permissions_fail_exactly(self):
+        for name, level in (("contents", "read"), ("issues", None), ("actions", None)):
+            with self.subTest(name):
+                api = FakeAppApi()
+                permissions = {k: v for k, v in GRANTED.items() if k != name}
+                if level:
+                    permissions[name] = level
+                api.installation["permissions"] = permissions
+                result = probe(api)
+                self.assertFalse(result["ready"])
+                self.assertIn("installation permissions", failing(result))
+        self.assertEqual(permission_gaps({"contents": "read"})[0][0], "contents:write")
+
+    def test_extra_permissions_warn_without_blocking(self):
+        api = FakeAppApi()
+        api.installation["permissions"] = {**GRANTED, "administration": "write", "checks": "write"}
+        result = probe(api)
+        self.assertTrue(result["ready"])
+        self.assertIn("administration:write", result["warnings"][0])
+        self.assertIn("checks:write", result["warnings"][0])
+        self.assertIn("warning:", readiness_summary(result, "enabled"))
+
+    def test_the_temporary_token_is_revoked_even_when_a_later_check_fails(self):
+        api = FakeAppApi(errors={f"/repos/{REPOSITORY}": 500})
+        self.assertFalse(probe(api)["ready"])
+        self.assertEqual(api.calls[-1][0], "DELETE")
+        self.assertFalse(probe(FakeAppApi(errors={"exchange": 1}))["ready"])
+        stuck = probe(FakeAppApi(errors={"revoke": 1}))
+        self.assertTrue(stuck["ready"])
+        self.assertIn("not revoked", stuck["warnings"][0])
+
+    def test_the_installation_must_cover_only_this_repository(self):
+        for repositories in (
+            {
+                "total_count": 2,
+                "repositories": [{"full_name": REPOSITORY}, {"full_name": "BenchBox-dev/other"}],
+            },
+            {"total_count": 1, "repositories": [{"full_name": "BenchBox-dev/other"}]},
+            {"total_count": 0, "repositories": []},
+        ):
+            with self.subTest(repositories):
+                result = probe(FakeAppApi(repositories=repositories))
+                self.assertEqual(failing(result), {"repository scope"})
+
+    def test_fork_issues_must_be_enabled(self):
+        api = FakeAppApi()
+        api.repository["has_issues"] = False
+        result = probe(api)
+        self.assertEqual(failing(result), {"fork issues"})
+        self.assertIn("Issues are disabled", readiness_summary(result, "enabled"))
+        archived = FakeAppApi()
+        archived.repository["archived"] = True
+        self.assertEqual(failing(probe(archived)), {"fork issues"})
+
+    def run_cli(self, api, **env):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        summary = directory / "summary.md"
+        output = directory / "output"
+        base = {
+            "APP_ID": APP_ID,
+            "APP_PRIVATE_KEY": "KEY",
+            "BENCHBOX_UPSTREAM_APP_SLUG": APP_SLUG_NAME,
+            "ENABLED": "true",
+            "DRY_RUN": "false",
+            "GITHUB_STEP_SUMMARY": str(summary),
+            "GITHUB_OUTPUT": str(output),
+        }
+        base.update(env)
+        args = mock.Mock(repository=REPOSITORY)
+        with (
+            mock.patch.dict(os.environ, base, clear=True),
+            mock.patch.object(controller_module, "AppApi", lambda: api),
+            mock.patch.object(controller_module, "openssl_sign", fake_sign),
+            mock.patch.object(
+                controller_module, "app_jwt", lambda i, k, sign=None, now=None: "jwt"
+            ),
+            mock.patch("builtins.print"),
+        ):
+            try:
+                controller_module.check_readiness(args)
+                code = None
+            except SystemExit as error:
+                code = str(error)
+        return code, summary.read_text(), output.read_text()
+
+    def test_enabled_publish_fails_on_a_failed_readiness_but_dry_run_only_reports(self):
+        bad = FakeAppApi()
+        bad.repository["has_issues"] = False
+        code, text, output = self.run_cli(bad)
+        self.assertIn("not ready", code)
+        self.assertIn("NOT READY", text)
+        self.assertIn("ready=false", output)
+        code, text, output = self.run_cli(FakeAppApi(), ENABLED="true", DRY_RUN="true")
+        self.assertIsNone(code)
+        self.assertIn("mode: `dry-run`", text)
+        code, text, _ = self.run_cli(bad, DRY_RUN="true")
+        self.assertIsNone(code)
+        self.assertIn("informational", text)
+        code, text, _ = self.run_cli(FakeAppApi(), ENABLED="false", APP_ID="")
+        self.assertIsNone(code)
+        self.assertIn("NOT CONFIGURED", text)
+        code, _, output = self.run_cli(FakeAppApi())
+        self.assertIsNone(code)
+        self.assertIn("ready=true", output)
+        code, text, _ = self.run_cli(FakeAppApi(), APP_PRIVATE_KEY="")
+        self.assertIn("not ready", code)
+        self.assertIn("APP_PRIVATE_KEY", text)
+
+    @unittest.skipUnless(shutil.which("openssl"), "openssl is required")
+    def test_the_app_jwt_is_a_verifiable_rs256_token(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        key = directory / "key.pem"
+        subprocess.run(
+            ["openssl", "genrsa", "-out", str(key), "2048"], check=True, capture_output=True
+        )
+        public = subprocess.run(
+            ["openssl", "rsa", "-in", str(key), "-pubout"],
+            check=True,
+            capture_output=True,
+        ).stdout
+        (directory / "pub.pem").write_bytes(public)
+        token = app_jwt(APP_ID, key.read_text(), openssl_sign, now=1_000_000)
+        head, claims, signature = token.split(".")
+        pad = lambda text: text + "=" * (-len(text) % 4)
+        self.assertEqual(
+            json.loads(base64.urlsafe_b64decode(pad(head))), {"alg": "RS256", "typ": "JWT"}
+        )
+        decoded = json.loads(base64.urlsafe_b64decode(pad(claims)))
+        self.assertEqual(
+            (decoded["iss"], decoded["iat"], decoded["exp"]), (APP_ID, 999_940, 1_000_540)
+        )
+        (directory / "sig").write_bytes(base64.urlsafe_b64decode(pad(signature)))
+        (directory / "msg").write_bytes(f"{head}.{claims}".encode())
+        verify = subprocess.run(
+            [
+                "openssl",
+                "dgst",
+                "-sha256",
+                "-verify",
+                str(directory / "pub.pem"),
+                "-signature",
+                str(directory / "sig"),
+                str(directory / "msg"),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(verify.stdout.strip(), "Verified OK")
+        with self.assertRaises(ControllerError):
+            openssl_sign("not a key", b"message")
 
 
 if __name__ == "__main__":

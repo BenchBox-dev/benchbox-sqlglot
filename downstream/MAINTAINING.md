@@ -387,8 +387,9 @@ fork never falls back to `postgres` silently.
 
 The maintainer reviews upstream promptly for correctness or security fixes.
 `.github/workflows/benchbox-upstream.yml` (`downstream/controller.py`) owns the
-whole upstream lifecycle in this repository: it runs daily and on
-`workflow_dispatch`, discovers a newer final upstream tag, refreshes
+whole upstream lifecycle in this repository: it runs daily, on
+`workflow_dispatch` and when a required workflow of a refresh pull request
+finishes, discovers a newer final upstream tag, refreshes
 deterministically, opens the fork pull request, merges it once the required checks
 pass, and raises fork issues for failures. BenchBox core holds no fork credential
 and no upstream logic. The controller never releases or submits upstream PRs;
@@ -423,6 +424,42 @@ head or tree differs from the plan, or the bundle changes workflows. The workflo
 runs in one serialized group (`cancel-in-progress: false`, `queue: max`). The
 workflow `GITHUB_TOKEN` stays read-only; the App token is the only write
 capability, as `tests/test_downstream_contract.py` requires.
+
+**Merge on check completion.** The workflow also triggers on `workflow_run`
+(`completed`) of the three required workflows for branches `refresh/upstream-*`, so
+a passing refresh merges as soon as its last required check finishes, without a
+dispatch or the next daily run. The event is untrusted and is only a nudge: the
+`prepare` job runs only for a successful `pull_request` run whose repository and
+head repository are this one and whose branch is `refresh/upstream-X.Y.Z`
+(`event_refusal` repeats those checks), always checks out trusted `main`, and never
+runs the pull request's code. The pass then re-reads everything live (pull request,
+ownership marker, deterministic proof, hold labels, the required set and every
+required check on the exact head, merge state) like a scheduled pass, and keeps only
+the `merge_pr` action: an event never refreshes, pushes, opens or edits a pull
+request or raises an issue. An event whose branch is not the current refresh
+branch, whose head is not the pull request's live head, or whose pull request is
+stale, held, draft or unproven plans nothing; the daily run still reconciles. An
+event pass honors the kill switch and the publication-failure suppression, and
+`publish` re-checks the pull request, head, base and checks before the head-bound
+merge. A merge state that GitHub has not yet computed is polled for a few seconds
+before the pass waits.
+
+**App readiness.** The `readiness` job is isolated and trusted: it checks out
+`main`, has `contents: read` only, never downloads the plan and never runs refresh
+output. It runs on a dispatch (so a dry run reports it) and before any enabled
+publish. It uses the App credential only to authenticate and to GET: it signs an
+App JWT with `openssl` and reads `/app` (the id and slug match the configuration),
+`/repos/{repository}/installation` (installed on this repository's owner, not
+suspended, and the exact installation permissions grant at least contents,
+pull-requests and issues write and checks, statuses and actions read; extra
+permissions are warned about, not blocking), then exchanges it for a read-only installation token on all of the installation's
+repositories (an authentication POST; a downscoped token would not prove what the
+installation grants), reads `/installation/repositories` (exactly this repository)
+and the repository (`has_issues` on, not archived), and revokes the token. The summary names
+each check and every missing secret or variable. When the mode is `enabled` a
+failed or missing result fails the job and `publish` does not run, so nothing is
+mutated; in a dry run or with the kill switch off the result is informational. The
+job needs no new permission or secret.
 
 **Kill switch and dry run.** Nothing is mutated unless the repository variable
 `BENCHBOX_UPSTREAM_ENABLED` is exactly `true` (default off). A manual dispatch

@@ -5,6 +5,8 @@ from pathlib import Path
 
 import yaml
 
+CREDENTIAL_JOBS = {("benchbox-upstream.yml", "publish"), ("benchbox-upstream.yml", "readiness")}
+
 
 class TestDownstreamContract(unittest.TestCase):
     def test_manifest_source_boundaries(self):
@@ -152,8 +154,14 @@ class TestDownstreamContract(unittest.TestCase):
                     if use.startswith("actions/create-github-app-token@"):
                         minting.append((path.name, name))
                         self.assertRegex(use, r"@[0-9a-f]{40}$")
-                if (path.name, name) != ("benchbox-upstream.yml", "publish"):
+                if (path.name, name) not in CREDENTIAL_JOBS:
                     self.assertNotIn("secrets.", text.replace("secrets.GITHUB_TOKEN", ""))
+                if (path.name, name) == ("benchbox-upstream.yml", "readiness"):
+                    # The probe is isolated: no plan artifact, no write permission.
+                    self.assertFalse(
+                        [u for u in uses if u.startswith("actions/download-artifact@")]
+                    )
+                    self.assertEqual(job.get("permissions"), {"contents": "read"})
             for scope in scopes:
                 if isinstance(scope, dict):
                     self.assertNotIn("write", scope.values(), path.name)
