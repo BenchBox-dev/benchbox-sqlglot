@@ -1429,7 +1429,10 @@ class TestAppReadiness(unittest.TestCase):
         (directory / "pub.pem").write_bytes(public)
         token = app_jwt(APP_ID, key.read_text(), openssl_sign, now=1_000_000)
         head, claims, signature = token.split(".")
-        pad = lambda text: text + "=" * (-len(text) % 4)
+
+        def pad(text):
+            return text + "=" * (-len(text) % 4)
+
         self.assertEqual(
             json.loads(base64.urlsafe_b64decode(pad(head))), {"alg": "RS256", "typ": "JWT"}
         )
