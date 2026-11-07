@@ -3,6 +3,13 @@ name: BenchBox upstream controller
 on:
   schedule:
     - cron: '41 5 * * *'
+  workflow_run:
+    workflows:
+      - BenchBox distribution
+      - BenchBox real engines
+      - Run tests and linter checks
+    types: [completed]
+    branches: ['refresh/upstream-*']
   workflow_dispatch:
     inputs:
       dry_run:
@@ -29,7 +36,17 @@ env:
 jobs:
   prepare:
     name: prepare
-    if: github.repository == 'BenchBox-dev/benchbox-sqlglot' && github.ref == 'refs/heads/main'
+    # A workflow_run event only nudges a merge retry: its data is untrusted and
+    # selects nothing but the live pull request the controller re-reads itself.
+    if: >-
+      github.repository == 'BenchBox-dev/benchbox-sqlglot' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_branch, 'refresh/upstream-') &&
+      github.event.workflow_run.repository.full_name == github.repository &&
+      github.event.workflow_run.head_repository.full_name == github.repository))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -56,6 +73,14 @@ jobs:
           BENCHBOX_UPSTREAM_APP_SLUG: ${{ vars.BENCHBOX_UPSTREAM_APP_SLUG }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
           RETRY: ${{ github.event_name == 'workflow_dispatch' && inputs.retry }}
+          EVENT: ${{ github.event_name }}
+          EVENT_WORKFLOW: ${{ github.event.workflow_run.name }}
+          EVENT_TYPE: ${{ github.event.workflow_run.event }}
+          EVENT_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          EVENT_REPOSITORY: ${{ github.event.workflow_run.repository.full_name }}
+          EVENT_HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          EVENT_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          EVENT_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           GIT_AUTHOR_NAME: benchbox-bot
           GIT_AUTHOR_EMAIL: bot@benchbox.dev
           GIT_COMMITTER_NAME: benchbox-bot
@@ -70,15 +95,45 @@ jobs:
             ${{ runner.temp }}/upstream/refresh.bundle
           retention-days: 7
           if-no-files-found: ignore
+  readiness:
+    name: readiness
+    needs: prepare
+    # Isolated and trusted: checks out main only, never downloads the plan or runs
+    # refresh output. Probes with the App credential use authentication and GETs only.
+    if: >-
+      !cancelled() &&
+      github.repository == 'BenchBox-dev/benchbox-sqlglot' &&
+      github.ref == 'refs/heads/main' &&
+      (needs.prepare.outputs.mutate == 'true' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+        with:
+          python-version: '3.12'
+      - env:
+          APP_ID: ${{ secrets.BENCHBOX_UPSTREAM_APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.BENCHBOX_UPSTREAM_APP_PRIVATE_KEY }}
+          ENABLED: ${{ vars.BENCHBOX_UPSTREAM_ENABLED }}
+          BENCHBOX_UPSTREAM_APP_SLUG: ${{ vars.BENCHBOX_UPSTREAM_APP_SLUG }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: uv run --no-project -- python -m downstream.controller readiness
   publish:
     name: publish
-    needs: prepare
+    needs: [prepare, readiness]
     if: >-
       !cancelled() &&
       github.repository == 'BenchBox-dev/benchbox-sqlglot' &&
       github.ref == 'refs/heads/main' &&
       vars.BENCHBOX_UPSTREAM_ENABLED == 'true' &&
-      needs.prepare.outputs.mutate == 'true'
+      needs.prepare.outputs.mutate == 'true' &&
+      needs.readiness.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

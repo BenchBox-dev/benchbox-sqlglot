@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -42,6 +43,12 @@ PR_MARKER = re.compile(r"<!-- benchbox-upstream (\{[^\n]*?\}) -->")
 ISSUE_MARKER = re.compile(r"<!-- benchbox-upstream-issue (\{[^\n]*?\}) -->")
 TAG = re.compile(r"^v\d+\.\d+\.\d+$")
 CHECK_PASS = {"success"}
+MERGEABLE_POLLS = (2, 4, 8)
+UNSETTLED = frozenset({"unknown", "blocked"})
+EVENT_WORKFLOWS = frozenset(
+    {"BenchBox distribution", "BenchBox real engines", "Run tests and linter checks"}
+)
+MERGE_ONLY = frozenset({"merge_pr"})
 
 
 class ControllerError(Exception):
@@ -369,6 +376,46 @@ def targets_main(api: Client, pull: dict) -> bool:
     return base.get("ref") == "main" and (base.get("repo") or {}).get("full_name") == api.repository
 
 
+def event_from_env(env: Any = os.environ) -> dict | None:
+    """The workflow_run facts passed by the workflow, or None outside that trigger.
+
+    Every value is untrusted: it only selects which live pull request to look at.
+    """
+    if env.get("EVENT", "") != "workflow_run":
+        return None
+    return {
+        "workflow": env.get("EVENT_WORKFLOW", ""),
+        "type": env.get("EVENT_TYPE", ""),
+        "conclusion": env.get("EVENT_CONCLUSION", ""),
+        "repository": env.get("EVENT_REPOSITORY", ""),
+        "head_repository": env.get("EVENT_HEAD_REPOSITORY", ""),
+        "branch": env.get("EVENT_BRANCH", ""),
+        "head": env.get("EVENT_HEAD_SHA", ""),
+    }
+
+
+def event_refusal(event: dict, repository: str) -> str | None:
+    """Why a workflow_run event must not drive the controller, or None when it may."""
+    if event.get("workflow") not in EVENT_WORKFLOWS:
+        return f"workflow {event.get('workflow')!r} is not one of the required workflows"
+    if event.get("type") != "pull_request":
+        return f"the run was triggered by {event.get('type')!r}, not a pull request"
+    if event.get("conclusion") != "success":
+        return (
+            f"the run concluded {event.get('conclusion')!r}; only a passing run can unblock a merge"
+        )
+    if event.get("repository") != repository or event.get("head_repository") != repository:
+        return "the run is not from this repository's own branch"
+    branch = event.get("branch") or ""
+    if not branch.startswith(BRANCH_PREFIX) or not TAG.fullmatch(
+        "v" + branch[len(BRANCH_PREFIX) :]
+    ):
+        return f"branch {branch!r} is not a canonical refresh branch"
+    if not _sha(event.get("head")):
+        return "the run has no valid head commit"
+    return None
+
+
 def merge_gate(api: Client, number: int, head: str, base: str) -> tuple[str, list[str]]:
     pull = api.get(f"pulls/{number}")
     live = api.get("branches/main")["commit"]["sha"]
@@ -388,6 +435,13 @@ def merge_gate(api: Client, number: int, head: str, base: str) -> tuple[str, lis
         return "failed", failed
     if waiting:
         return "wait", waiting
+    for delay in MERGEABLE_POLLS:
+        if pull.get("mergeable") is not None and pull.get("mergeable_state") not in UNSETTLED:
+            break
+        time.sleep(delay)
+        pull = api.get(f"pulls/{number}")
+        if pull["head"]["sha"] != head:
+            return "blocked", ["the pull request head is not the proven head"]
     if pull.get("mergeable") is not True or pull.get("mergeable_state") != "clean":
         return "wait", [f"merge state is {pull.get('mergeable_state')}"]
     return "ready", []
@@ -406,6 +460,7 @@ class Controller:
     refresher: Callable[..., Result] = refresh_at
     cache: dict = field(default_factory=dict)
     app_slug: str = ""
+    event: dict | None = None
 
     def controller_issues(self) -> list[dict]:
         found = []
@@ -429,6 +484,26 @@ class Controller:
         return self.cache[(tag, base)]
 
     def plan(self) -> dict:
+        """Plan one pass. A workflow_run event narrows it to merging the pull request."""
+        if self.event is None:
+            return self.full_plan()
+        refusal = event_refusal(self.event, self.api.repository)
+        if refusal:
+            return {
+                "schema": SCHEMA,
+                "repository": self.api.repository,
+                "base": git(self.root, "rev-parse", "HEAD"),
+                "run_url": self.run_url,
+                "outcome": "ignored",
+                "actions": [],
+                "notes": [f"Ignored the triggering event: {refusal}"],
+            }
+        out = self.full_plan()
+        out["event"] = {k: self.event[k] for k in ("workflow", "branch", "head")}
+        out["actions"] = [a for a in out["actions"] if a["op"] in MERGE_ONLY]
+        return out
+
+    def full_plan(self) -> dict:
         base = git(self.root, "rev-parse", "HEAD")
         out: dict = {
             "schema": SCHEMA,
@@ -560,6 +635,13 @@ class Controller:
             )
             if pull["head"]["ref"] == branch
         ]
+        if self.event and (self.event["branch"] != branch or not pulls):
+            out["outcome"] = "ignored"
+            out["notes"].append(
+                f"The event is for {self.event['branch']}; this pass only merges the open "
+                f"refresh pull request on {branch}, and the scheduled run handles the rest"
+            )
+            return
         remote = self.remote.fetch(self.root, branch)
         if len(pulls) > 1:
             return self.problem(
@@ -618,6 +700,13 @@ class Controller:
     ) -> None:
         number, head = pull["number"], pull["head"]["sha"]
         out["pull_request"] = number
+        if self.event and self.event["head"] != head:
+            out["outcome"] = "ignored"
+            out["notes"].append(
+                f"#{number} head is {head}, not the event's {self.event['head']}; the checks of "
+                "its own head trigger their own pass"
+            )
+            return
         repository = self.api.repository
         if pull["state"] != "open":
             return self.refuse(out, issues, tag, base, "closed", f"#{number} is {pull['state']}")
@@ -686,6 +775,10 @@ class Controller:
         canonical: dict,
     ) -> None:
         out["notes"].append(f"#{number} was prepared on {canonical['base']}; refreshing again")
+        if self.event:
+            out["outcome"] = "waiting"
+            out["notes"].append("An event never refreshes; the scheduled run does")
+            return
         if self.known_failure(issues, tag, base):
             out["outcome"] = "skipped"
             out["notes"].append("An unchanged failed input is skipped; set retry to re-attempt")
@@ -779,6 +872,248 @@ class Controller:
             out["actions"].append(self.open_op(tag, branch, base, remote, tree))
             return self.finish(out, "refreshed", issues, tag)
         self.fresh(out, issues, tag, base, branch, remote)
+
+
+APP_PERMISSIONS = {
+    "contents": "write",
+    "pull_requests": "write",
+    "issues": "write",
+    "checks": "read",
+    "statuses": "read",
+    "actions": "read",
+}
+LEVELS = {"read": 1, "write": 2, "admin": 3}
+API_ROOT = "https://api.github.com"
+
+
+def b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def openssl_sign(key_pem: str, message: bytes) -> bytes:
+    with tempfile.TemporaryDirectory() as scratch:
+        key = Path(scratch) / "key.pem"
+        key.touch(mode=0o600)
+        key.write_text(key_pem if key_pem.endswith("\n") else key_pem + "\n")
+        try:
+            done = subprocess.run(
+                ["openssl", "dgst", "-sha256", "-sign", str(key)],
+                input=message,
+                capture_output=True,
+                check=False,
+            )
+        except OSError as error:
+            raise ControllerError(f"openssl could not run: {type(error).__name__}") from error
+    if done.returncode or not done.stdout:
+        raise ControllerError("the private key could not sign a request (is it a PEM RSA key?)")
+    return done.stdout
+
+
+def app_jwt(
+    app_id: str,
+    key_pem: str,
+    sign: Callable[[str, bytes], bytes] = openssl_sign,
+    now: float | None = None,
+) -> str:
+    issued = int(time.time() if now is None else now)
+    head = b64url(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
+    claims = b64url(json.dumps({"iat": issued - 60, "exp": issued + 540, "iss": app_id}).encode())
+    signing = f"{head}.{claims}"
+    return f"{signing}.{b64url(sign(key_pem, signing.encode()))}"
+
+
+class AppApi:
+    """GitHub App reads. The only POST is the credential exchange that authenticates."""
+
+    def request(
+        self, method: str, path: str, credential: str, jwt: bool, body: dict | None = None
+    ) -> Any:
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Authorization": ("Bearer " if jwt else "token ") + credential,
+        }
+        data = json.dumps(body).encode() if body is not None else None
+        if data:
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(API_ROOT + path, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                text = response.read().decode()
+            return json.loads(text) if text else None
+        except urllib.error.HTTPError as error:
+            raise ControllerError(f"{method} {path} answered {error.code}") from error
+        except TRANSPORT as error:
+            raise ControllerError(f"{method} {path} failed: {type(error).__name__}") from error
+
+    def get(self, path: str, credential: str, jwt: bool = False) -> Any:
+        return self.request("GET", path, credential, jwt)
+
+    def exchange(self, installation: int, jwt_credential: str) -> dict:
+        """Authenticate as the installation with a read-only token on all its repositories."""
+        return self.request(
+            "POST",
+            f"/app/installations/{installation}/access_tokens",
+            jwt_credential,
+            True,
+            {"permissions": {"issues": "read"}},
+        )
+
+    def revoke(self, token: str) -> None:
+        self.request("DELETE", "/installation/token", token, False)
+
+
+def permission_gaps(granted: dict, wanted: dict = APP_PERMISSIONS) -> tuple[list[str], list[str]]:
+    missing = [
+        f"{name}:{level}"
+        for name, level in wanted.items()
+        if LEVELS.get(granted.get(name, ""), 0) < LEVELS[level]
+    ]
+    extra = [
+        f"{name}:{level}"
+        for name, level in sorted(granted.items())
+        if name != "metadata" and name not in wanted
+    ] + [
+        f"{name}:{granted[name]}"
+        for name, level in wanted.items()
+        if LEVELS.get(granted.get(name, ""), 0) > LEVELS[level]
+    ]
+    return missing, extra
+
+
+def readiness(
+    api: AppApi,
+    repository: str,
+    app_id: str,
+    key: str,
+    slug: str,
+    sign: Callable[[str, bytes], bytes] = openssl_sign,
+    mask: Callable[[str], None] = lambda _: None,
+) -> dict:
+    """Read-only proof that the configured App can publish for this repository.
+
+    The App JWT reads the exact installation permissions; the installation token is
+    used only for GETs of its own scope and is revoked afterwards. Exact permissions come
+    from the App JWT, never from a downscoped token.
+    """
+    owner, _, name = repository.partition("/")
+    checks: list[dict] = []
+    warnings: list[str] = []
+
+    def record(item: str, ok: bool, detail: str) -> bool:
+        checks.append({"check": item, "ok": ok, "detail": detail})
+        return ok
+
+    configured = [
+        ("secret BENCHBOX_UPSTREAM_APP_ID", bool(app_id)),
+        ("secret BENCHBOX_UPSTREAM_APP_PRIVATE_KEY", bool(key)),
+        ("variable BENCHBOX_UPSTREAM_APP_SLUG", bool(slug)),
+    ]
+    absent = [label for label, present in configured if not present]
+    if absent:
+        record("configuration", False, "not configured: " + ", ".join(absent))
+        return {"ready": False, "state": "missing", "checks": checks, "warnings": warnings}
+    record("configuration", True, "App id, private key and slug are configured")
+    token = ""
+    try:
+        credential = app_jwt(app_id, key, sign)
+        app = api.get("/app", credential, True)
+        record("authentication", True, f"authenticated as {app.get('slug')!r} (id {app.get('id')})")
+        if str(app.get("id")) != app_id.strip():
+            record(
+                "app identity", False, f"the key authenticates App id {app.get('id')}, not {app_id}"
+            )
+        elif app.get("slug") != slug:
+            record(
+                "app identity",
+                False,
+                f"the App slug is {app.get('slug')!r}, not the configured {slug!r}",
+            )
+        else:
+            record("app identity", True, "the App id and slug match the configuration")
+        installation = api.get(f"/repos/{repository}/installation", credential, True)
+        owner_ok = (installation.get("account") or {}).get("login") == owner
+        record(
+            "installation",
+            owner_ok
+            and installation.get("app_id") == app.get("id")
+            and not installation.get("suspended_at"),
+            f"installation {installation.get('id')} on {(installation.get('account') or {}).get('login')!r}"
+            + (", suspended" if installation.get("suspended_at") else ""),
+        )
+        missing, extra = permission_gaps(installation.get("permissions") or {})
+        record(
+            "installation permissions",
+            not missing,
+            "missing " + ", ".join(missing)
+            if missing
+            else "the installation grants the required set",
+        )
+        if extra:
+            warnings.append(
+                "the installation grants more than the controller uses: " + ", ".join(extra)
+            )
+        token = api.exchange(installation["id"], credential)["token"]
+        mask(token)
+        record("installation token", True, "authenticated as the installation (read-only token)")
+        listing = api.get("/installation/repositories?per_page=100", token)
+        repositories = [item["full_name"] for item in listing.get("repositories", [])]
+        total = listing.get("total_count", len(repositories))
+        scoped = repositories == [repository] and total == 1
+        record(
+            "repository scope",
+            scoped,
+            "the installation covers only this repository"
+            if scoped
+            else f"the installation covers {total} repositories: {', '.join(sorted(repositories)) or 'none'}",
+        )
+        details = api.get(f"/repos/{repository}", token)
+        issues_on = bool(details.get("has_issues"))
+        record(
+            "fork issues",
+            issues_on and not details.get("archived") and not details.get("disabled"),
+            "Issues are enabled" if issues_on else "Issues are disabled on the repository",
+        )
+        if details.get("full_name") != repository or name != details.get("name"):
+            record("repository", False, f"the API names {details.get('full_name')!r}")
+    except (ControllerError, KeyError, TypeError, AttributeError) as error:
+        record("probe", False, f"{type(error).__name__}: {error}")
+    finally:
+        if token:
+            try:
+                api.revoke(token)
+            except ControllerError as error:
+                warnings.append(
+                    f"the temporary token was not revoked ({error}); it expires in an hour"
+                )
+    ready = all(item["ok"] for item in checks)
+    return {
+        "ready": ready,
+        "state": "ready" if ready else "failed",
+        "checks": checks,
+        "warnings": warnings,
+    }
+
+
+def readiness_summary(result: dict, mode: str) -> str:
+    verdict = {
+        "ready": "ready: the App can publish",
+        "missing": "NOT CONFIGURED: the controller cannot publish until configured",
+        "failed": "NOT READY: the controller cannot publish",
+    }[result["state"]]
+    lines = [
+        "## BenchBox upstream App readiness",
+        "",
+        f"- mode: `{mode}`",
+        f"- result: **{verdict}**",
+    ]
+    if mode != "enabled" and result["state"] != "ready":
+        lines.append("- this run mutates nothing, so the result is informational")
+    for item in result["checks"]:
+        lines.append(f"- {'ok' if item['ok'] else 'FAIL'} {item['check']}: {item['detail']}")
+    for warning in result["warnings"]:
+        lines.append(f"- warning: {warning}")
+    return "\n".join(lines) + "\n"
 
 
 def summary(plan: dict, mode: str) -> str:
@@ -956,7 +1291,7 @@ def report_publication(
     controller: Controller, plan: dict, outcome: str, detail: str, result: dict
 ) -> None:
     tag = plan.get("tag")
-    if not tag:
+    if not tag or plan.get("event"):
         return
     key = {"base": plan["base"], "outcome": outcome, "tag": tag}
     op = {
@@ -1050,16 +1385,44 @@ def build(args: argparse.Namespace, token: str) -> Controller:
         run_url=args.run_url,
         retry=truthy("RETRY"),
         app_slug=os.environ.get("BENCHBOX_UPSTREAM_APP_SLUG", "").strip(),
+        event=event_from_env(),
     )
+
+
+def check_readiness(args: argparse.Namespace) -> None:
+    mode = run_mode(truthy("ENABLED"), truthy("DRY_RUN"))
+    mask = (
+        (lambda value: print(f"::add-mask::{value}"))
+        if os.environ.get("GITHUB_ACTIONS")
+        else (lambda _: None)
+    )
+    result = readiness(
+        AppApi(),
+        args.repository,
+        os.environ.get("APP_ID", "").strip(),
+        os.environ.get("APP_PRIVATE_KEY", ""),
+        os.environ.get("BENCHBOX_UPSTREAM_APP_SLUG", "").strip(),
+        mask=mask,
+    )
+    text = readiness_summary(result, mode)
+    write_summary(text)
+    write_output("ready", "true" if result["ready"] else "false")
+    print(text)
+    if mode == "enabled" and not result["ready"]:
+        sys.exit("The GitHub App is not ready; refusing to publish before any mutation")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["prepare", "publish"])
-    parser.add_argument("--out-dir", type=Path, required=True)
+    parser.add_argument("action", choices=["prepare", "publish", "readiness"])
+    parser.add_argument("--out-dir", type=Path)
     parser.add_argument("--repository", default=REPOSITORY)
     parser.add_argument("--run-url", default="")
     args = parser.parse_args()
+    if args.action == "readiness":
+        return check_readiness(args)
+    if args.out_dir is None:
+        parser.error("--out-dir is required for prepare and publish")
     token = os.environ.get("GH_TOKEN", "")
     if not token:
         sys.exit("GH_TOKEN is required")

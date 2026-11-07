@@ -5,6 +5,8 @@ from pathlib import Path
 
 import yaml
 
+CREDENTIAL_JOBS = {("benchbox-upstream.yml", "publish"), ("benchbox-upstream.yml", "readiness")}
+
 
 class TestDownstreamContract(unittest.TestCase):
     def test_manifest_source_boundaries(self):
@@ -152,12 +154,45 @@ class TestDownstreamContract(unittest.TestCase):
                     if use.startswith("actions/create-github-app-token@"):
                         minting.append((path.name, name))
                         self.assertRegex(use, r"@[0-9a-f]{40}$")
-                if (path.name, name) != ("benchbox-upstream.yml", "publish"):
+                if (path.name, name) not in CREDENTIAL_JOBS:
                     self.assertNotIn("secrets.", text.replace("secrets.GITHUB_TOKEN", ""))
+                if (path.name, name) == ("benchbox-upstream.yml", "readiness"):
+                    # The probe is isolated: no plan artifact, no write permission.
+                    self.assertFalse(
+                        [u for u in uses if u.startswith("actions/download-artifact@")]
+                    )
+                    self.assertEqual(job.get("permissions"), {"contents": "read"})
             for scope in scopes:
                 if isinstance(scope, dict):
                     self.assertNotIn("write", scope.values(), path.name)
         self.assertEqual(minting, [("benchbox-upstream.yml", "publish")])
+
+    def test_upstream_controller_event_and_readiness_wiring(self):
+        from downstream.controller import EVENT_WORKFLOWS
+
+        root = Path(__file__).resolve().parents[1]
+        workflow = yaml.safe_load((root / ".github/workflows/benchbox-upstream.yml").read_text())
+        triggers = workflow.get("on", workflow.get(True))
+        run = triggers["workflow_run"]
+        self.assertEqual(set(run["workflows"]), EVENT_WORKFLOWS)
+        self.assertEqual(run["types"], ["completed"])
+        self.assertEqual(run["branches"], ["refresh/upstream-*"])
+        jobs = workflow["jobs"]
+        gate = " ".join(jobs["prepare"]["if"].split())
+        for required in (
+            "github.event.workflow_run.event == 'pull_request'",
+            "github.event.workflow_run.conclusion == 'success'",
+            "github.event.workflow_run.repository.full_name == github.repository",
+            "github.event.workflow_run.head_repository.full_name == github.repository",
+            "github.ref == 'refs/heads/main'",
+        ):
+            self.assertIn(required, gate)
+        self.assertEqual(jobs["readiness"]["needs"], "prepare")
+        self.assertIn("workflow_dispatch", jobs["readiness"]["if"])
+        self.assertIn("needs.prepare.outputs.mutate == 'true'", jobs["readiness"]["if"])
+        self.assertEqual(set(jobs["publish"]["needs"]), {"prepare", "readiness"})
+        self.assertIn("needs.readiness.result == 'success'", jobs["publish"]["if"])
+        self.assertIn("vars.BENCHBOX_UPSTREAM_ENABLED == 'true'", jobs["publish"]["if"])
 
     def test_artifact_ci_is_bounded_and_retained(self):
         root = Path(__file__).resolve().parents[1]
