@@ -167,6 +167,33 @@ class TestDownstreamContract(unittest.TestCase):
                     self.assertNotIn("write", scope.values(), path.name)
         self.assertEqual(minting, [("benchbox-upstream.yml", "publish")])
 
+    def test_upstream_controller_event_and_readiness_wiring(self):
+        from downstream.controller import EVENT_WORKFLOWS
+
+        root = Path(__file__).resolve().parents[1]
+        workflow = yaml.safe_load((root / ".github/workflows/benchbox-upstream.yml").read_text())
+        triggers = workflow.get("on", workflow.get(True))
+        run = triggers["workflow_run"]
+        self.assertEqual(set(run["workflows"]), EVENT_WORKFLOWS)
+        self.assertEqual(run["types"], ["completed"])
+        self.assertEqual(run["branches"], ["refresh/upstream-*"])
+        jobs = workflow["jobs"]
+        gate = " ".join(jobs["prepare"]["if"].split())
+        for required in (
+            "github.event.workflow_run.event == 'pull_request'",
+            "github.event.workflow_run.conclusion == 'success'",
+            "github.event.workflow_run.repository.full_name == github.repository",
+            "github.event.workflow_run.head_repository.full_name == github.repository",
+            "github.ref == 'refs/heads/main'",
+        ):
+            self.assertIn(required, gate)
+        self.assertEqual(jobs["readiness"]["needs"], "prepare")
+        self.assertIn("workflow_dispatch", jobs["readiness"]["if"])
+        self.assertIn("needs.prepare.outputs.mutate == 'true'", jobs["readiness"]["if"])
+        self.assertEqual(set(jobs["publish"]["needs"]), {"prepare", "readiness"})
+        self.assertIn("needs.readiness.result == 'success'", jobs["publish"]["if"])
+        self.assertIn("vars.BENCHBOX_UPSTREAM_ENABLED == 'true'", jobs["publish"]["if"])
+
     def test_artifact_ci_is_bounded_and_retained(self):
         root = Path(__file__).resolve().parents[1]
         workflow = yaml.safe_load((root / ".github/workflows/benchbox-candidate.yml").read_text())

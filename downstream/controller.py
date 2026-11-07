@@ -44,6 +44,7 @@ ISSUE_MARKER = re.compile(r"<!-- benchbox-upstream-issue (\{[^\n]*?\}) -->")
 TAG = re.compile(r"^v\d+\.\d+\.\d+$")
 CHECK_PASS = {"success"}
 MERGEABLE_POLLS = (2, 4, 8)
+UNSETTLED = frozenset({"unknown", "blocked"})
 EVENT_WORKFLOWS = frozenset(
     {"BenchBox distribution", "BenchBox real engines", "Run tests and linter checks"}
 )
@@ -417,11 +418,6 @@ def event_refusal(event: dict, repository: str) -> str | None:
 
 def merge_gate(api: Client, number: int, head: str, base: str) -> tuple[str, list[str]]:
     pull = api.get(f"pulls/{number}")
-    for delay in MERGEABLE_POLLS:
-        if pull.get("mergeable") is not None:
-            break
-        time.sleep(delay)
-        pull = api.get(f"pulls/{number}")
     live = api.get("branches/main")["commit"]["sha"]
     if not targets_main(api, pull):
         return "blocked", ["the pull request does not target main of this repository"]
@@ -439,6 +435,13 @@ def merge_gate(api: Client, number: int, head: str, base: str) -> tuple[str, lis
         return "failed", failed
     if waiting:
         return "wait", waiting
+    for delay in MERGEABLE_POLLS:
+        if pull.get("mergeable") is not None and pull.get("mergeable_state") not in UNSETTLED:
+            break
+        time.sleep(delay)
+        pull = api.get(f"pulls/{number}")
+        if pull["head"]["sha"] != head:
+            return "blocked", ["the pull request head is not the proven head"]
     if pull.get("mergeable") is not True or pull.get("mergeable_state") != "clean":
         return "wait", [f"merge state is {pull.get('mergeable_state')}"]
     return "ready", []
@@ -892,12 +895,15 @@ def openssl_sign(key_pem: str, message: bytes) -> bytes:
         key = Path(scratch) / "key.pem"
         key.touch(mode=0o600)
         key.write_text(key_pem if key_pem.endswith("\n") else key_pem + "\n")
-        done = subprocess.run(
-            ["openssl", "dgst", "-sha256", "-sign", str(key)],
-            input=message,
-            capture_output=True,
-            check=False,
-        )
+        try:
+            done = subprocess.run(
+                ["openssl", "dgst", "-sha256", "-sign", str(key)],
+                input=message,
+                capture_output=True,
+                check=False,
+            )
+        except OSError as error:
+            raise ControllerError(f"openssl could not run: {type(error).__name__}") from error
     if done.returncode or not done.stdout:
         raise ControllerError("the private key could not sign a request (is it a PEM RSA key?)")
     return done.stdout
@@ -1285,7 +1291,7 @@ def report_publication(
     controller: Controller, plan: dict, outcome: str, detail: str, result: dict
 ) -> None:
     tag = plan.get("tag")
-    if not tag:
+    if not tag or plan.get("event"):
         return
     key = {"base": plan["base"], "outcome": outcome, "tag": tag}
     op = {

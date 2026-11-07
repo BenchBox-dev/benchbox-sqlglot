@@ -1114,6 +1114,37 @@ class TestEventDrivenMerge(unittest.TestCase):
         self.assertEqual((got["branch"], got["head"], got["type"]), (BRANCH, "a" * 40, ""))
         self.assertIsNotNone(event_refusal(got, REPOSITORY))
 
+    def test_an_event_merge_failure_at_publication_raises_no_issue(self):
+        env, head = self.ready()
+        env.pass_checks(head)
+        plan = env.plan(event=refresh_event(head=head))
+        env.api.pulls[1]["body"] = "edited by a human"
+        result = env.apply(plan)
+        self.assertIn("no longer the proven controller head", result["halted"])
+        self.assertNotIn("issue", result)
+        self.assertEqual([w for w in env.api.writes if w[1].startswith("issues")], [])
+
+    def test_a_not_yet_settled_merge_state_is_polled_before_waiting(self):
+        env, head = self.ready()
+        env.pass_checks(head)
+        env.api.pulls[1]["mergeable_state"] = "blocked"
+        original = env.api.get
+        reads = []
+
+        def get(path, params=None):
+            pull = original(path, params)
+            if path == "pulls/1":
+                reads.append(path)
+                if len(reads) >= 2:
+                    pull["mergeable_state"] = "clean"
+            return pull
+
+        env.api.get = get
+        with mock.patch.object(controller_module.time, "sleep") as sleep:
+            plan = env.plan(event=refresh_event(head=head))
+        self.assertEqual(ops(plan), ["merge_pr"])
+        self.assertEqual(sleep.call_count, 1)
+
     def test_a_not_yet_computed_merge_state_is_polled_before_waiting(self):
         env, head = self.ready()
         env.pass_checks(head)
@@ -1426,6 +1457,11 @@ class TestAppReadiness(unittest.TestCase):
         self.assertEqual(verify.stdout.strip(), "Verified OK")
         with self.assertRaises(ControllerError):
             openssl_sign("not a key", b"message")
+        with (
+            mock.patch.object(controller_module.subprocess, "run", side_effect=FileNotFoundError),
+            self.assertRaises(ControllerError),
+        ):
+            openssl_sign("key", b"message")
 
 
 if __name__ == "__main__":
