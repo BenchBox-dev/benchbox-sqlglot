@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index 8262190f..9151bf2d 100644
+index 759d7ee30..7f560b643 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
 @@ -16,6 +16,8 @@ from sqlglot.dialects.dialect import (

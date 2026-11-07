@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index 088afa41..5bfb0c3c 100644
+index 744d4a397..7c183435b 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
 @@ -1,5 +1,6 @@
@@ -163,7 +163,7 @@ index 088afa41..5bfb0c3c 100644
          if expression.is_type("date"):
              return self.func("DATE", expression.this)
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index b1cbc671..b70146d3 100644
+index b4e5d41cf..9e6a8065e 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
 @@ -2,6 +2,8 @@ import sqlite3

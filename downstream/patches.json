@@ -2,11 +2,11 @@
   "schema": 1,
   "distribution": "benchbox-sqlglot",
   "import_package": "benchbox._vendor.sqlglot",
-  "version": "30.29.0.1",
+  "version": "30.30.0.1",
   "upstream": {
     "repository": "https://github.com/tobymao/sqlglot",
-    "tag": "v30.29.0",
-    "sha": "2fe25297af5b0f44f5c9e5d03e1b296424b7acbe"
+    "tag": "v30.30.0",
+    "sha": "848688117ba6c5a74f9bf4f1b87b522c693ced22"
   },
   "infrastructure": [
     {

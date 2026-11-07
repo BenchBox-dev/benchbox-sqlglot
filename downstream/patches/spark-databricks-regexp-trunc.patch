@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/spark2.py b/sqlglot/generators/spark2.py
-index ddfef971..da1c9ff9 100644
+index 146464b1e..965f805b1 100644
 --- a/sqlglot/generators/spark2.py
 +++ b/sqlglot/generators/spark2.py
 @@ -1,5 +1,6 @@
@@ -50,7 +50,7 @@ index ddfef971..da1c9ff9 100644
  def _map_sql(self: Spark2Generator, expression: exp.Map) -> str:
      keys = expression.args.get("keys")
      values = expression.args.get("values")
-@@ -179,9 +214,7 @@ class Spark2Generator(HiveGenerator):
+@@ -180,9 +215,7 @@ class Spark2Generator(HiveGenerator):
                  ]
              ),
              exp.DateFromParts: rename_func("MAKE_DATE"),
@@ -61,7 +61,7 @@ index ddfef971..da1c9ff9 100644
              exp.DayOfMonth: rename_func("DAYOFMONTH"),
              exp.DayOfWeek: rename_func("DAYOFWEEK"),
              # (DAY_OF_WEEK(datetime) % 7) + 1 is equivalent to DAYOFWEEK_ISO(datetime)
-@@ -198,13 +231,7 @@ class Spark2Generator(HiveGenerator):
+@@ -199,13 +232,7 @@ class Spark2Generator(HiveGenerator):
              exp.Map: _map_sql,
              exp.Pivot: transforms.preprocess([transforms.unqualify_pivot_fields]),
              exp.Reduce: rename_func("AGGREGATE"),
@@ -77,10 +77,10 @@ index ddfef971..da1c9ff9 100644
                  [
                      transforms.eliminate_qualify,
 diff --git a/tests/dialects/test_databricks.py b/tests/dialects/test_databricks.py
-index 11a5396d..072fcee5 100644
+index 669a1cc81..6fc72e2bc 100644
 --- a/tests/dialects/test_databricks.py
 +++ b/tests/dialects/test_databricks.py
-@@ -649,3 +649,26 @@ class TestDatabricks(Validator):
+@@ -679,3 +679,26 @@ class TestDatabricks(Validator):
          self.validate_identity("DECLARE x, y, z INT DEFAULT 1", "DECLARE x, y, z INT = 1")
          self.validate_identity("DECLARE x INT = 1")
          self.validate_identity("DECLARE OR REPLACE x INT = 1")
@@ -108,7 +108,7 @@ index 11a5396d..072fcee5 100644
 +                    read={"clickhouse": f"DATE_TRUNC('{unit.lower()}', x)"},
 +                )
 diff --git a/tests/dialects/test_exasol.py b/tests/dialects/test_exasol.py
-index f150de65..3969834b 100644
+index f150de659..3969834b6 100644
 --- a/tests/dialects/test_exasol.py
 +++ b/tests/dialects/test_exasol.py
 @@ -554,7 +554,11 @@ class TestExasol(Validator):
@@ -125,7 +125,7 @@ index f150de65..3969834b 100644
                  )
  
 diff --git a/tests/dialects/test_oracle.py b/tests/dialects/test_oracle.py
-index f358588a..913d338d 100644
+index f358588ac..913d338db 100644
 --- a/tests/dialects/test_oracle.py
 +++ b/tests/dialects/test_oracle.py
 @@ -1202,7 +1202,11 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""

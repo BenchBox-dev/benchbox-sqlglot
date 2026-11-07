@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index aa530d06..a4c107e0 100644
+index 78e2a00b9..aaa94d0ae 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
 @@ -17,7 +17,6 @@ from sqlglot.dialects.dialect import (
@@ -153,7 +153,7 @@ index aa530d06..a4c107e0 100644
  
      def _annotated(self, node: exp.Expr) -> exp.Expr:
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index fdbe0d20..1389fd96 100644
+index 4f39ae49d..8bde8bafa 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
 @@ -196,6 +196,10 @@ class TestSQLite(Validator):

@@ -210,6 +210,10 @@ class IcebergProperty(Property):
     arg_types = {}
 
 
+class IgnoreGrantsProperty(Property):
+    arg_types = {}
+
+
 class InheritsProperty(Property):
     arg_types = {"expressions": True}
 
@@ -332,6 +336,10 @@ class OnProperty(Property):
 
 class OnCommitProperty(Property):
     arg_types = {"delete": False}
+
+
+class OptionsProperty(Property):
+    arg_types = {"expressions": True}
 
 
 class PartitionedByProperty(Property):

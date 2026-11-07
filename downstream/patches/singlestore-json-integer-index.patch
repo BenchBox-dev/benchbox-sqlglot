@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/singlestore.py b/sqlglot/generators/singlestore.py
-index 8ac5cb17..dc7ee502 100644
+index 8ac5cb17d..dc7ee502e 100644
 --- a/sqlglot/generators/singlestore.py
 +++ b/sqlglot/generators/singlestore.py
 @@ -155,8 +155,8 @@ class SingleStoreGenerator(MySQLGenerator):
@@ -29,7 +29,7 @@ index 8ac5cb17..dc7ee502 100644
      def jsonextractarray_sql(self, expression: exp.JSONExtractArray) -> str:
          self.unsupported("Arrays are not supported in SingleStore")
 diff --git a/tests/dialects/test_singlestore.py b/tests/dialects/test_singlestore.py
-index c44ffdd3..9ae848a5 100644
+index c44ffdd37..9ae848a55 100644
 --- a/tests/dialects/test_singlestore.py
 +++ b/tests/dialects/test_singlestore.py
 @@ -164,9 +164,9 @@ class TestSingleStore(Validator):
