@@ -51,6 +51,15 @@
       "op": "update",
       "op_id": "54183afdde5a4b3895cd163be1e265b7",
       "session_id": "51736d554d1c49f7945160d7c14304aa"
+    },
+    {
+      "actor": "omp:sqlglot-controller-gates-20261108:259d3605ad3148d1aff55dcc980b46ac",
+      "at": "2026-11-08T17:46:08Z",
+      "client": "mcp",
+      "generation": "2141b978c57244d59c1e44627b414d94",
+      "op": "finish",
+      "op_id": "12eea0764f6140b38e33e8a467a1ce09",
+      "session_id": "d9a3b810e66548448df3c33513c3644d"
     }
   ]
 }
