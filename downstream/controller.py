@@ -417,31 +417,32 @@ def event_refusal(event: dict, repository: str) -> str | None:
 
 
 def merge_gate(api: Client, number: int, head: str, base: str) -> tuple[str, list[str]]:
-    pull = api.get(f"pulls/{number}")
-    live = api.get("branches/main")["commit"]["sha"]
-    if not targets_main(api, pull):
-        return "blocked", ["the pull request does not target main of this repository"]
-    if pull["state"] != "open" or pull.get("draft") or labels(pull) & HOLD_LABELS:
-        return "blocked", ["the pull request is not open, is draft or is held"]
-    if pull["head"]["sha"] != head:
-        return "blocked", ["the pull request head is not the proven head"]
-    if live != base:
-        return "blocked", ["main moved since the plan"]
-    try:
-        failed, waiting = required_state(api, head)
-    except DeliveryError as error:
-        return "wait", [str(error)]
-    if failed:
-        return "failed", failed
-    if waiting:
-        return "wait", waiting
-    for delay in MERGEABLE_POLLS:
-        if pull.get("mergeable") is not None and pull.get("mergeable_state") not in UNSETTLED:
-            break
-        time.sleep(delay)
+    for attempt in range(len(MERGEABLE_POLLS) + 1):
+        if attempt:
+            time.sleep(MERGEABLE_POLLS[attempt - 1])
         pull = api.get(f"pulls/{number}")
+        live = api.get("branches/main")["commit"]["sha"]
+        if not targets_main(api, pull):
+            return "blocked", ["the pull request does not target main of this repository"]
+        if pull["state"] != "open" or pull.get("draft") or labels(pull) & HOLD_LABELS:
+            return "blocked", ["the pull request is not open, is draft or is held"]
         if pull["head"]["sha"] != head:
             return "blocked", ["the pull request head is not the proven head"]
+        marker = parse_marker(pull.get("body"))
+        if marker is None or claim(marker, head) is None:
+            return "blocked", ["the pull request no longer carries the proven controller marker"]
+        if live != base:
+            return "blocked", ["main moved since the plan"]
+        try:
+            failed, waiting = required_state(api, head)
+        except DeliveryError as error:
+            return "wait", [str(error)]
+        if failed:
+            return "failed", failed
+        if waiting:
+            return "wait", waiting
+        if pull.get("mergeable") is not None and pull.get("mergeable_state") not in UNSETTLED:
+            break
     if pull.get("mergeable") is not True or pull.get("mergeable_state") != "clean":
         return "wait", [f"merge state is {pull.get('mergeable_state')}"]
     return "ready", []

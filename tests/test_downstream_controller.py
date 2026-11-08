@@ -625,6 +625,59 @@ class TestUpstreamController(unittest.TestCase):
         self.assertFalse(env.api.pulls[1]["merged"])
         self.assertNotIn("PUT", [w[0] for w in env.api.writes])
 
+    def test_publish_rechecks_authority_after_mergeability_wait(self):
+        for change, expected in (
+            ("no-auto-merge", "blocked"),
+            ("hold", "blocked"),
+            ("draft", "blocked"),
+            ("closed", "blocked"),
+            ("target", "blocked"),
+            ("repository", "blocked"),
+            ("main", "blocked"),
+            ("head", "blocked"),
+            ("marker", "blocked"),
+            ("failed", "failed"),
+            ("pending", "wait"),
+        ):
+            with self.subTest(change):
+                env = Env(self)
+                env.publish()
+                head = env.remote_sha(BRANCH)
+                env.pass_checks(head)
+                plan = env.plan()
+                pull = env.api.pulls[1]
+                pull["mergeable"] = None
+
+                def settle(_delay):
+                    pull["mergeable"] = True
+                    pull["mergeable_state"] = "clean"
+                    if change in ("no-auto-merge", "hold"):
+                        pull["labels"] = [{"name": change}]
+                    elif change == "draft":
+                        pull["draft"] = True
+                    elif change == "closed":
+                        pull["state"] = "closed"
+                    elif change == "target":
+                        pull["base"]["ref"] = "another-branch"
+                    elif change == "repository":
+                        pull["base"]["repo"]["full_name"] = "someone/another-repository"
+                    elif change == "main":
+                        env.api.main = "0" * 40
+                    elif change == "head":
+                        env.human_push(BRANCH)
+                    elif change == "marker":
+                        pull["body"] = "changed by a person"
+                    elif change == "failed":
+                        env.pass_checks(head, conclusion="failure")
+                    elif change == "pending":
+                        env.pass_checks(head, status="in_progress", conclusion=None)
+
+                with mock.patch.object(controller_module.time, "sleep", side_effect=settle):
+                    result = env.apply(plan)
+                self.assertEqual(result["performed"][0]["status"], expected)
+                self.assertFalse(pull["merged"])
+                self.assertNotIn("PUT", [write[0] for write in env.api.writes])
+
     def test_dry_run_and_a_disabled_kill_switch_mutate_nothing(self):
         self.assertEqual(run_mode(False, False), "disabled")
         self.assertEqual(run_mode(False, True), "disabled")
