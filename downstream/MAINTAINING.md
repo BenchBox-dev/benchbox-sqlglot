@@ -442,7 +442,9 @@ stale, held, draft or unproven plans nothing; the daily run still reconciles. An
 event pass honors the kill switch and the publication-failure suppression, and
 `publish` re-checks the pull request, head, base and checks before the head-bound
 merge. A merge state that GitHub has not yet computed is polled for a few seconds
-before the pass waits.
+before the pass waits. Each retry revalidates the pull request's target, open and
+draft state, holds, head and ownership marker, the current main commit and all
+required checks; becoming mergeable never overrides a changed authority check.
 
 **App readiness.** The `readiness` job is isolated and trusted: it checks out
 `main`, has `contents: read` only, never downloads the plan and never runs refresh
@@ -450,9 +452,11 @@ output. It runs on a dispatch (so a dry run reports it) and before any enabled
 publish. It uses the App credential only to authenticate and to GET: it signs an
 App JWT with `openssl` and reads `/app` (the id and slug match the configuration),
 `/repos/{repository}/installation` (installed on this repository's owner, not
-suspended, and the exact installation permissions grant at least contents,
-pull-requests and issues write and checks, statuses and actions read; extra
-permissions are warned about, not blocking), then exchanges it for a read-only installation token on all of the installation's
+suspended, and the installation grants only contents, pull-requests and issues
+write, checks, statuses and actions read, and GitHub's mandatory metadata read).
+Missing permissions, excess permissions and higher-than-intended levels block
+readiness; explicit no-access entries do not grant a capability. The probe then
+exchanges the JWT for a read-only installation token on all of the installation's
 repositories (an authentication POST; a downscoped token would not prove what the
 installation grants), reads `/installation/repositories` (exactly this repository)
 and the repository (`has_issues` on, not archived), and revokes the token. The summary names

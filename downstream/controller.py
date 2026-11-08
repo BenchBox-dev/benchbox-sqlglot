@@ -417,31 +417,32 @@ def event_refusal(event: dict, repository: str) -> str | None:
 
 
 def merge_gate(api: Client, number: int, head: str, base: str) -> tuple[str, list[str]]:
-    pull = api.get(f"pulls/{number}")
-    live = api.get("branches/main")["commit"]["sha"]
-    if not targets_main(api, pull):
-        return "blocked", ["the pull request does not target main of this repository"]
-    if pull["state"] != "open" or pull.get("draft") or labels(pull) & HOLD_LABELS:
-        return "blocked", ["the pull request is not open, is draft or is held"]
-    if pull["head"]["sha"] != head:
-        return "blocked", ["the pull request head is not the proven head"]
-    if live != base:
-        return "blocked", ["main moved since the plan"]
-    try:
-        failed, waiting = required_state(api, head)
-    except DeliveryError as error:
-        return "wait", [str(error)]
-    if failed:
-        return "failed", failed
-    if waiting:
-        return "wait", waiting
-    for delay in MERGEABLE_POLLS:
-        if pull.get("mergeable") is not None and pull.get("mergeable_state") not in UNSETTLED:
-            break
-        time.sleep(delay)
+    for attempt in range(len(MERGEABLE_POLLS) + 1):
+        if attempt:
+            time.sleep(MERGEABLE_POLLS[attempt - 1])
         pull = api.get(f"pulls/{number}")
+        live = api.get("branches/main")["commit"]["sha"]
+        if not targets_main(api, pull):
+            return "blocked", ["the pull request does not target main of this repository"]
+        if pull["state"] != "open" or pull.get("draft") or labels(pull) & HOLD_LABELS:
+            return "blocked", ["the pull request is not open, is draft or is held"]
         if pull["head"]["sha"] != head:
             return "blocked", ["the pull request head is not the proven head"]
+        marker = parse_marker(pull.get("body"))
+        if marker is None or claim(marker, head) is None:
+            return "blocked", ["the pull request no longer carries the proven controller marker"]
+        if live != base:
+            return "blocked", ["main moved since the plan"]
+        try:
+            failed, waiting = required_state(api, head)
+        except DeliveryError as error:
+            return "wait", [str(error)]
+        if failed:
+            return "failed", failed
+        if waiting:
+            return "wait", waiting
+        if pull.get("mergeable") is not None and pull.get("mergeable_state") not in UNSETTLED:
+            break
     if pull.get("mergeable") is not True or pull.get("mergeable_state") != "clean":
         return "wait", [f"merge state is {pull.get('mergeable_state')}"]
     return "ready", []
@@ -964,6 +965,7 @@ class AppApi:
 
 
 def permission_gaps(granted: dict, wanted: dict = APP_PERMISSIONS) -> tuple[list[str], list[str]]:
+    allowed = {**wanted, "metadata": "read"}
     missing = [
         f"{name}:{level}"
         for name, level in wanted.items()
@@ -972,11 +974,8 @@ def permission_gaps(granted: dict, wanted: dict = APP_PERMISSIONS) -> tuple[list
     extra = [
         f"{name}:{level}"
         for name, level in sorted(granted.items())
-        if name != "metadata" and name not in wanted
-    ] + [
-        f"{name}:{granted[name]}"
-        for name, level in wanted.items()
-        if LEVELS.get(granted.get(name, ""), 0) > LEVELS[level]
+        if level != "none"
+        and (name not in allowed or level not in LEVELS or LEVELS[level] > LEVELS[allowed[name]])
     ]
     return missing, extra
 
@@ -1042,17 +1041,16 @@ def readiness(
             + (", suspended" if installation.get("suspended_at") else ""),
         )
         missing, extra = permission_gaps(installation.get("permissions") or {})
+        problems = []
+        if missing:
+            problems.append("missing " + ", ".join(missing))
+        if extra:
+            problems.append("excess " + ", ".join(extra))
         record(
             "installation permissions",
-            not missing,
-            "missing " + ", ".join(missing)
-            if missing
-            else "the installation grants the required set",
+            not problems,
+            "; ".join(problems) or "the installation grants exactly the required set",
         )
-        if extra:
-            warnings.append(
-                "the installation grants more than the controller uses: " + ", ".join(extra)
-            )
         token = api.exchange(installation["id"], credential)["token"]
         mask(token)
         record("installation token", True, "authenticated as the installation (read-only token)")

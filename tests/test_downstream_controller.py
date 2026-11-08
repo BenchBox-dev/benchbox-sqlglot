@@ -625,6 +625,59 @@ class TestUpstreamController(unittest.TestCase):
         self.assertFalse(env.api.pulls[1]["merged"])
         self.assertNotIn("PUT", [w[0] for w in env.api.writes])
 
+    def test_publish_rechecks_authority_after_mergeability_wait(self):
+        for change, expected in (
+            ("no-auto-merge", "blocked"),
+            ("hold", "blocked"),
+            ("draft", "blocked"),
+            ("closed", "blocked"),
+            ("target", "blocked"),
+            ("repository", "blocked"),
+            ("main", "blocked"),
+            ("head", "blocked"),
+            ("marker", "blocked"),
+            ("failed", "failed"),
+            ("pending", "wait"),
+        ):
+            with self.subTest(change):
+                env = Env(self)
+                env.publish()
+                head = env.remote_sha(BRANCH)
+                env.pass_checks(head)
+                plan = env.plan()
+                pull = env.api.pulls[1]
+                pull["mergeable"] = None
+
+                def settle(_delay):
+                    pull["mergeable"] = True
+                    pull["mergeable_state"] = "clean"
+                    if change in ("no-auto-merge", "hold"):
+                        pull["labels"] = [{"name": change}]
+                    elif change == "draft":
+                        pull["draft"] = True
+                    elif change == "closed":
+                        pull["state"] = "closed"
+                    elif change == "target":
+                        pull["base"]["ref"] = "another-branch"
+                    elif change == "repository":
+                        pull["base"]["repo"]["full_name"] = "someone/another-repository"
+                    elif change == "main":
+                        env.api.main = "0" * 40
+                    elif change == "head":
+                        env.human_push(BRANCH)
+                    elif change == "marker":
+                        pull["body"] = "changed by a person"
+                    elif change == "failed":
+                        env.pass_checks(head, conclusion="failure")
+                    elif change == "pending":
+                        env.pass_checks(head, status="in_progress", conclusion=None)
+
+                with mock.patch.object(controller_module.time, "sleep", side_effect=settle):
+                    result = env.apply(plan)
+                self.assertEqual(result["performed"][0]["status"], expected)
+                self.assertFalse(pull["merged"])
+                self.assertNotIn("PUT", [write[0] for write in env.api.writes])
+
     def test_dry_run_and_a_disabled_kill_switch_mutate_nothing(self):
         self.assertEqual(run_mode(False, False), "disabled")
         self.assertEqual(run_mode(False, True), "disabled")
@@ -1317,14 +1370,20 @@ class TestAppReadiness(unittest.TestCase):
                 self.assertIn("installation permissions", failing(result))
         self.assertEqual(permission_gaps({"contents": "read"})[0][0], "contents:write")
 
-    def test_extra_permissions_warn_without_blocking(self):
+    def test_excess_installation_permissions_block_readiness(self):
+        for name in ("administration", "actions", "metadata"):
+            with self.subTest(name):
+                api = FakeAppApi()
+                api.installation["permissions"] = {**GRANTED, name: "write"}
+                result = probe(api)
+                self.assertFalse(result["ready"])
+                self.assertIn("installation permissions", failing(result))
+                self.assertIn(f"{name}:write", readiness_summary(result, "enabled"))
+
+    def test_an_explicit_no_access_grant_does_not_block_readiness(self):
         api = FakeAppApi()
-        api.installation["permissions"] = {**GRANTED, "administration": "write", "checks": "write"}
-        result = probe(api)
-        self.assertTrue(result["ready"])
-        self.assertIn("administration:write", result["warnings"][0])
-        self.assertIn("checks:write", result["warnings"][0])
-        self.assertIn("warning:", readiness_summary(result, "enabled"))
+        api.installation["permissions"] = {**GRANTED, "administration": "none"}
+        self.assertTrue(probe(api)["ready"])
 
     def test_the_temporary_token_is_revoked_even_when_a_later_check_fails(self):
         api = FakeAppApi(errors={f"/repos/{REPOSITORY}": 500})
@@ -1412,6 +1471,27 @@ class TestAppReadiness(unittest.TestCase):
         code, text, _ = self.run_cli(FakeAppApi(), APP_PRIVATE_KEY="")
         self.assertIn("not ready", code)
         self.assertIn("APP_PRIVATE_KEY", text)
+
+    def test_excess_permissions_refuse_enabled_publication_but_dry_runs_only_report(self):
+        for enabled, dry_run, refused in (
+            ("true", "false", True),
+            ("true", "true", False),
+            ("false", "false", False),
+        ):
+            with self.subTest(enabled=enabled, dry_run=dry_run):
+                api = FakeAppApi()
+                api.installation["permissions"] = {**GRANTED, "administration": "write"}
+                code, summary, output = self.run_cli(api, ENABLED=enabled, DRY_RUN=dry_run)
+                self.assertEqual(code is not None, refused)
+                self.assertIn("ready=false", output)
+                self.assertIn("administration:write", summary)
+                self.assertEqual(
+                    [(method, path) for method, path, _ in api.calls if method != "GET"],
+                    [
+                        ("POST", "/app/installations/77/access_tokens"),
+                        ("DELETE", "/installation/token"),
+                    ],
+                )
 
     @unittest.skipUnless(shutil.which("openssl"), "openssl is required")
     def test_the_app_jwt_is_a_verifiable_rs256_token(self):
