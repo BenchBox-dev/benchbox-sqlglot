@@ -1,0 +1,23 @@
+{
+  "acceptance": [
+    "A no-auto-merge or hold label applied during a mergeability retry blocks merge and no merge API call occurs.",
+    "Drafting, closing, changing the target repository/base, moving main/head, or newly failing required checks during the retry refuse or defer the merge as appropriate.",
+    "An initially unknown PR that becomes clean with all live preconditions unchanged still merges; behavioral regression tests cover both outcomes."
+  ],
+  "context": "Read-only reproducer run against /Users/joe/Developer/sqlglot.wt-controller-event/downstream/controller.py:419-447. Implementation and PR belong in the fork; core tracker holds the task. Existing controller event-delay item is complete; this is a new defect introduced by its polling change.\n\nMigrated from BenchBox-dev/BenchBox#todo-state on 2026-11-08 at source revision 13dce27e016d2cf393ad39eef822a6a4286ef1e8. Original audit history remains at https://github.com/BenchBox-dev/BenchBox/blob/13dce27e016d2cf393ad39eef822a6a4286ef1e8/items/sqlglot-controller-mergeability-retry-misses-new-hold-20261107.json. This fork tracker is now authoritative for outstanding implementation; preceding references to core tracker ownership are historical. Source lifecycle was open; no claims, dependencies or batch receipts were transferred.",
+  "description": "New defect in BenchBox-dev/benchbox-sqlglot PR #86, merged 4e518548051506fa0fb793c605eb7effbf82464f. downstream/controller.py merge_gate checks open/draft/hold/base/required checks before waiting for GitHub mergeability. Its MERGEABLE_POLLS loop sleeps 2/4/8 seconds and re-reads the PR but validates only that head SHA is unchanged. If a person applies no-auto-merge during the wait and GitHub then reports clean, merge_gate returns ready and merge_pr can issue the merge mutation despite the hold. The same stale validation applies to draft/open/base state and required checks changing while waiting. Reproduced directly against the merged implementation: first PR read unknown with no labels, second read clean with no-auto-merge, same head; required checks successful; merge_gate returned (ready, []). No real PR was mutated.\n\nChange in the fork: after every mergeability refresh, revalidate all live authority and merge preconditions, and recheck main and required checks after the wait before returning ready. Preserve exact-head merge and existing hold semantics; do not bypass protection or change polling budgets.",
+  "links": [
+    "https://github.com/BenchBox-dev/benchbox-sqlglot/pull/86",
+    "https://github.com/BenchBox-dev/BenchBox/blob/13dce27e016d2cf393ad39eef822a6a4286ef1e8/items/sqlglot-controller-mergeability-retry-misses-new-hold-20261107.json"
+  ],
+  "sessions": [
+    {
+      "actor": "mcp:mcp:joe@joe-mac-mini.local:85d945b463149736da3d02cd",
+      "at": "2026-11-08T15:39:50Z",
+      "client": "mcp",
+      "op": "create",
+      "op_id": "77b9067402dd4de19d483a99cfb8dec8",
+      "session_id": "9c55b5b32c1b491ca7933eed6ba074c8"
+    }
+  ]
+}

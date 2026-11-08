@@ -1,5 +1,13 @@
 {
   "batches": {},
-  "items": {},
+  "items": {
+    "sqlglot-controller-mergeability-retry-misses-new-hold-20261107": {
+      "claim": null,
+      "needs": [],
+      "priority": "high",
+      "status": "open",
+      "title": "Fork controller can merge after a hold is applied during its mergeability retry"
+    }
+  },
   "schema_version": 3
 }
