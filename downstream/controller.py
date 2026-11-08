@@ -965,6 +965,7 @@ class AppApi:
 
 
 def permission_gaps(granted: dict, wanted: dict = APP_PERMISSIONS) -> tuple[list[str], list[str]]:
+    allowed = {**wanted, "metadata": "read"}
     missing = [
         f"{name}:{level}"
         for name, level in wanted.items()
@@ -973,11 +974,8 @@ def permission_gaps(granted: dict, wanted: dict = APP_PERMISSIONS) -> tuple[list
     extra = [
         f"{name}:{level}"
         for name, level in sorted(granted.items())
-        if name != "metadata" and name not in wanted
-    ] + [
-        f"{name}:{granted[name]}"
-        for name, level in wanted.items()
-        if LEVELS.get(granted.get(name, ""), 0) > LEVELS[level]
+        if level != "none"
+        and (name not in allowed or level not in LEVELS or LEVELS[level] > LEVELS[allowed[name]])
     ]
     return missing, extra
 
@@ -1043,17 +1041,16 @@ def readiness(
             + (", suspended" if installation.get("suspended_at") else ""),
         )
         missing, extra = permission_gaps(installation.get("permissions") or {})
+        problems = []
+        if missing:
+            problems.append("missing " + ", ".join(missing))
+        if extra:
+            problems.append("excess " + ", ".join(extra))
         record(
             "installation permissions",
-            not missing,
-            "missing " + ", ".join(missing)
-            if missing
-            else "the installation grants the required set",
+            not problems,
+            "; ".join(problems) or "the installation grants exactly the required set",
         )
-        if extra:
-            warnings.append(
-                "the installation grants more than the controller uses: " + ", ".join(extra)
-            )
         token = api.exchange(installation["id"], credential)["token"]
         mask(token)
         record("installation token", True, "authenticated as the installation (read-only token)")

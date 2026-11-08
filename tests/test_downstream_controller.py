@@ -1370,14 +1370,20 @@ class TestAppReadiness(unittest.TestCase):
                 self.assertIn("installation permissions", failing(result))
         self.assertEqual(permission_gaps({"contents": "read"})[0][0], "contents:write")
 
-    def test_extra_permissions_warn_without_blocking(self):
+    def test_excess_installation_permissions_block_readiness(self):
+        for name in ("administration", "actions", "metadata"):
+            with self.subTest(name):
+                api = FakeAppApi()
+                api.installation["permissions"] = {**GRANTED, name: "write"}
+                result = probe(api)
+                self.assertFalse(result["ready"])
+                self.assertIn("installation permissions", failing(result))
+                self.assertIn(f"{name}:write", readiness_summary(result, "enabled"))
+
+    def test_an_explicit_no_access_grant_does_not_block_readiness(self):
         api = FakeAppApi()
-        api.installation["permissions"] = {**GRANTED, "administration": "write", "checks": "write"}
-        result = probe(api)
-        self.assertTrue(result["ready"])
-        self.assertIn("administration:write", result["warnings"][0])
-        self.assertIn("checks:write", result["warnings"][0])
-        self.assertIn("warning:", readiness_summary(result, "enabled"))
+        api.installation["permissions"] = {**GRANTED, "administration": "none"}
+        self.assertTrue(probe(api)["ready"])
 
     def test_the_temporary_token_is_revoked_even_when_a_later_check_fails(self):
         api = FakeAppApi(errors={f"/repos/{REPOSITORY}": 500})
@@ -1465,6 +1471,27 @@ class TestAppReadiness(unittest.TestCase):
         code, text, _ = self.run_cli(FakeAppApi(), APP_PRIVATE_KEY="")
         self.assertIn("not ready", code)
         self.assertIn("APP_PRIVATE_KEY", text)
+
+    def test_excess_permissions_refuse_enabled_publication_but_dry_runs_only_report(self):
+        for enabled, dry_run, refused in (
+            ("true", "false", True),
+            ("true", "true", False),
+            ("false", "false", False),
+        ):
+            with self.subTest(enabled=enabled, dry_run=dry_run):
+                api = FakeAppApi()
+                api.installation["permissions"] = {**GRANTED, "administration": "write"}
+                code, summary, output = self.run_cli(api, ENABLED=enabled, DRY_RUN=dry_run)
+                self.assertEqual(code is not None, refused)
+                self.assertIn("ready=false", output)
+                self.assertIn("administration:write", summary)
+                self.assertEqual(
+                    [(method, path) for method, path, _ in api.calls if method != "GET"],
+                    [
+                        ("POST", "/app/installations/77/access_tokens"),
+                        ("DELETE", "/installation/token"),
+                    ],
+                )
 
     @unittest.skipUnless(shutil.which("openssl"), "openssl is required")
     def test_the_app_jwt_is_a_verifiable_rs256_token(self):
