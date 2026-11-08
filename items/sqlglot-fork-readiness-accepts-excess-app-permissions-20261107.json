@@ -1,0 +1,23 @@
+{
+  "acceptance": [
+    "Readiness returns not ready for administration:write, an unexpected writable permission, or a higher-than-intended level on a read-only permission.",
+    "The intended permission set with mandatory metadata read passes; missing required permissions still fail.",
+    "An enabled run with excess permissions cannot reach publish; dry runs report the mismatch without repository mutations."
+  ],
+  "context": "Direct read-only reproduction used actual readiness with stubbed GitHub responses and throwaway signing: ready=True with administration:write. Source permission_gaps near line966 and readiness installation-permissions handling near1044-1055. Core readiness implementation is still unlanded and already refuses extras; this item covers only the merged fork implementation.\n\nMigrated from BenchBox-dev/BenchBox#todo-state on 2026-11-08 at source revision 13dce27e016d2cf393ad39eef822a6a4286ef1e8. Original audit history remains at https://github.com/BenchBox-dev/BenchBox/blob/13dce27e016d2cf393ad39eef822a6a4286ef1e8/items/sqlglot-fork-readiness-accepts-excess-app-permissions-20261107.json. This fork tracker is now authoritative for outstanding implementation; preceding references to core tracker ownership are historical. Source lifecycle was open; no claims, dependencies or batch receipts were transferred.",
+  "description": "Gap in BenchBox-dev/benchbox-sqlglot PR #86, merged 4e518548. downstream/controller.py permission_gaps correctly detects excess installation permissions, but readiness records installation permissions successful whenever required permissions are present and puts excess permissions only in warnings. The final ready calculation ignores warnings. Reproduced against merged code with the exact intended permission set plus administration:write: readiness returned ready=True and a warning. Enabled publishing therefore proceeds despite broader privileges than the configured fork-only least-privilege boundary. The App JWT already supplies full installation permissions, so this is not a limitation of downscoped token inspection.\n\nChange in the fork: make readiness fail for grants outside the intended permission set and for higher levels on allowed permissions. Treat GitHub mandatory metadata read and any documented no-access values appropriately. Report the excess grants clearly and keep credentials isolated; no automatic App reconfiguration.",
+  "links": [
+    "https://github.com/BenchBox-dev/benchbox-sqlglot/pull/86",
+    "https://github.com/BenchBox-dev/BenchBox/blob/13dce27e016d2cf393ad39eef822a6a4286ef1e8/items/sqlglot-fork-readiness-accepts-excess-app-permissions-20261107.json"
+  ],
+  "sessions": [
+    {
+      "actor": "mcp:mcp:joe@joe-mac-mini.local:85d945b463149736da3d02cd",
+      "at": "2026-11-08T15:39:53Z",
+      "client": "mcp",
+      "op": "create",
+      "op_id": "b1182295256649158f2733fb774bf4fe",
+      "session_id": "9c55b5b32c1b491ca7933eed6ba074c8"
+    }
+  ]
+}
