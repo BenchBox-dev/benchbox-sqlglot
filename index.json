@@ -2,10 +2,15 @@
   "batches": {},
   "items": {
     "sqlglot-controller-mergeability-retry-misses-new-hold-20261107": {
-      "claim": null,
+      "claim": {
+        "expires_at": "2026-11-09T17:08:04Z",
+        "generation": "5aaac4401943404eb5ab7c66aa43756f",
+        "renewals": 0,
+        "worker": "omp:sqlglot-controller-gates-20261108:259d3605ad3148d1aff55dcc980b46ac"
+      },
       "needs": [],
       "priority": "high",
-      "status": "open",
+      "status": "active",
       "title": "Fork controller can merge after a hold is applied during its mergeability retry"
     },
     "sqlglot-fork-readiness-accepts-excess-app-permissions-20261107": {
