@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generator.py b/sqlglot/generator.py
-index d694bf437..ab4e60092 100644
+index 3e7a4392..4bc211c4 100644
 --- a/sqlglot/generator.py
 +++ b/sqlglot/generator.py
 @@ -8,6 +8,7 @@ from decimal import Decimal
@@ -10,7 +10,7 @@ index d694bf437..ab4e60092 100644
  from sqlglot.errors import ErrorLevel, UnsupportedError, concat_messages
  from sqlglot.expressions import apply_index_offset
  from sqlglot.expressions.core import maybe_parse
-@@ -366,6 +367,9 @@ class Generator:
+@@ -367,6 +368,9 @@ class Generator:
      # Whether GROUP BY () is accepted
      SUPPORTS_EMPTY_GROUP_BY = True
  
@@ -20,18 +20,18 @@ index d694bf437..ab4e60092 100644
      # The string used for creating an index on a table
      INDEX_ON = "ON"
  
-@@ -4713,6 +4717,9 @@ class Generator:
-         return self.binary(expression, "||")
+@@ -4730,6 +4734,9 @@ class Generator:
+             divisor.replace(exp.Nullif(this=divisor.copy(), expression=exp.Literal.number(0)))
  
      def div_sql(self, expression: exp.Div) -> str:
 +        if self.EXACT_MARKED_DIVISION and self.dialect.TYPED_DIVISION:
 +            make_quotients_exact(expression, self.EXACT_DIVISION_TYPE)
 +
          l, r = expression.left, expression.right
+         self.nullif_zero_divisor(expression)
  
-         if not self.dialect.SAFE_DIVISION and expression.args.get("safe"):
 diff --git a/sqlglot/generators/postgres.py b/sqlglot/generators/postgres.py
-index 8664d8a43..381e3e70b 100644
+index ebf706b8..e20c792d 100644
 --- a/sqlglot/generators/postgres.py
 +++ b/sqlglot/generators/postgres.py
 @@ -276,6 +276,7 @@ class PostgresGenerator(generator.Generator):
@@ -43,7 +43,7 @@ index 8664d8a43..381e3e70b 100644
      AFTER_HAVING_MODIFIER_TRANSFORMS = generator.AFTER_HAVING_MODIFIER_TRANSFORMS
  
 diff --git a/sqlglot/generators/redshift.py b/sqlglot/generators/redshift.py
-index c88c0522e..ba1540545 100644
+index f6210e5e..1e892249 100644
 --- a/sqlglot/generators/redshift.py
 +++ b/sqlglot/generators/redshift.py
 @@ -18,6 +18,7 @@ from sqlglot.helper import seq_get

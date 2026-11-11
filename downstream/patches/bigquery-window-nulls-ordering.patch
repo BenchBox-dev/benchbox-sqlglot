@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/bigquery.py b/sqlglot/generators/bigquery.py
-index 766e0790c..b11de51ad 100644
+index 0e5645d2..dfe00620 100644
 --- a/sqlglot/generators/bigquery.py
 +++ b/sqlglot/generators/bigquery.py
 @@ -384,6 +384,10 @@ class BigQueryGenerator(generator.Generator):
@@ -13,7 +13,7 @@ index 766e0790c..b11de51ad 100644
      TS_OR_DS_TYPES: t.ClassVar = (
          exp.TsOrDsToDatetime,
          exp.TsOrDsToTimestamp,
-@@ -917,6 +921,44 @@ class BigQueryGenerator(generator.Generator):
+@@ -918,6 +922,44 @@ class BigQueryGenerator(generator.Generator):
  
          return super().cast_sql(expression, safe_prefix=safe_prefix)
  
@@ -59,7 +59,7 @@ index 766e0790c..b11de51ad 100644
          if expression.this:
              self.unsupported(f"Unsupported CLUSTER BY {self.sql(expression, 'this')}")
 diff --git a/tests/dialects/test_bigquery.py b/tests/dialects/test_bigquery.py
-index 3a25f1c6a..6b2ca2f12 100644
+index 6a9818d6..5bf25416 100644
 --- a/tests/dialects/test_bigquery.py
 +++ b/tests/dialects/test_bigquery.py
 @@ -3096,6 +3096,46 @@ OPTIONS (

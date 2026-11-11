@@ -1,8 +1,8 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index e7ff35314..78e2a00b9 100644
+index b79d77b2..79954e1c 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
-@@ -444,7 +444,9 @@ class SQLiteGenerator(generator.Generator):
+@@ -464,7 +464,9 @@ class SQLiteGenerator(generator.Generator):
          unit = interval.unit.name.upper()
          if unit in ("DAY", "HOUR", "MINUTE", "SECOND"):
              modifier = exp.Literal.string(f"{amount} {unit}")
@@ -14,10 +14,10 @@ index e7ff35314..78e2a00b9 100644
              # SQLite carries an overflowing month end into the next month, while the
              # source engines clamp it, so only inputs that cannot overflow are lowered:
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index 2e204ee74..4f39ae49d 100644
+index 6127d27d..5225d140 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
-@@ -230,19 +230,20 @@ class TestSQLite(Validator):
+@@ -265,19 +265,20 @@ class TestSQLite(Validator):
      def test_date_interval_arithmetic(self):
          for operator, amount in (("+", "5"), ("-", "-5")):
              for unit in ("DAY", "HOUR", "MINUTE", "SECOND"):
@@ -41,7 +41,7 @@ index 2e204ee74..4f39ae49d 100644
              read={"postgres": "SELECT CAST(d AS DATE) - INTERVAL '-1' DAY FROM t"},
          )
          for source in (
-@@ -300,7 +301,7 @@ class TestSQLite(Validator):
+@@ -335,7 +336,7 @@ class TestSQLite(Validator):
          )
          # The function form of a DATE is typed like a DATE literal.
          self.validate_all(
@@ -50,7 +50,7 @@ index 2e204ee74..4f39ae49d 100644
              read={"duckdb": "SELECT DATE('1998-09-01') + INTERVAL '10' DAY FROM t"},
          )
  
-@@ -487,7 +488,11 @@ class TestSQLite(Validator):
+@@ -522,7 +523,11 @@ class TestSQLite(Validator):
                  ):
                      for amount in (-5, 0, 5):
                          query = f"SELECT DATE '2024-02-29' + INTERVAL '{amount}' {unit}"
@@ -63,7 +63,7 @@ index 2e204ee74..4f39ae49d 100644
                          sql = parse_one(query, read=dialect).sql(
                              "sqlite", unsupported_level=ErrorLevel.RAISE
                          )
-@@ -1386,3 +1391,92 @@ class TestSQLite(Validator):
+@@ -1492,3 +1497,92 @@ class TestSQLite(Validator):
              (row,) = connection.execute(node.sql("sqlite"))
              (expected,) = connection.execute("SELECT DATE('now', '-30 days')")
          self.assertEqual(row, (expected[0], "2024-02-15"))

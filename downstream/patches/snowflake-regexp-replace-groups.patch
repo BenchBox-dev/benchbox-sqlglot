@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/snowflake.py b/sqlglot/generators/snowflake.py
-index 7c8c1f40e..8ddccc578 100644
+index 7c8c1f40..8ddccc57 100644
 --- a/sqlglot/generators/snowflake.py
 +++ b/sqlglot/generators/snowflake.py
 @@ -1,5 +1,6 @@
@@ -102,10 +102,10 @@ index 7c8c1f40e..8ddccc578 100644
          # Snowflake's MODE doesn't support the ordered-set syntax, i.e. it only
          # accepts the value to aggregate as an argument: MODE(<expr>)
 diff --git a/tests/dialects/test_snowflake.py b/tests/dialects/test_snowflake.py
-index fb1a94c45..116c6ef06 100644
+index 1d0af65b..e35355e9 100644
 --- a/tests/dialects/test_snowflake.py
 +++ b/tests/dialects/test_snowflake.py
-@@ -7461,3 +7461,51 @@ FROM SEMANTIC_VIEW(
+@@ -7471,3 +7471,51 @@ FROM SEMANTIC_VIEW(
          self.validate_identity("UNDROP TABLE db.schema.my_table")
          self.validate_identity("UNDROP SNAPSHOT IDENTIFIER('my_snap')")
          self.validate_identity("UNDROP SNAPSHOT my_snap RENAME TO new_snap")

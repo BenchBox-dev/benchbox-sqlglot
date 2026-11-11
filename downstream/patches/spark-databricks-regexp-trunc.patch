@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/spark2.py b/sqlglot/generators/spark2.py
-index 146464b1e..965f805b1 100644
+index 2b99a4e1..5d10e071 100644
 --- a/sqlglot/generators/spark2.py
 +++ b/sqlglot/generators/spark2.py
 @@ -1,5 +1,6 @@
@@ -42,7 +42,7 @@ index 146464b1e..965f805b1 100644
 +        "REGEXP_REPLACE",
 +        expression.this,
 +        expression.expression,
-+        _java_replacement(expression.args["replacement"]),
++        _java_replacement(expression.args.get("replacement") or exp.Literal.string("")),
 +        expression.args.get("position"),
 +    )
 +
@@ -69,7 +69,7 @@ index 146464b1e..965f805b1 100644
 -                "REGEXP_REPLACE",
 -                e.this,
 -                e.expression,
--                e.args["replacement"],
+-                e.args.get("replacement") or exp.Literal.string(""),
 -                e.args.get("position"),
 -            ),
 +            exp.RegexpReplace: _regexp_replace_sql,
@@ -77,10 +77,10 @@ index 146464b1e..965f805b1 100644
                  [
                      transforms.eliminate_qualify,
 diff --git a/tests/dialects/test_databricks.py b/tests/dialects/test_databricks.py
-index 669a1cc81..6fc72e2bc 100644
+index 5a5c1e38..bcafc3a9 100644
 --- a/tests/dialects/test_databricks.py
 +++ b/tests/dialects/test_databricks.py
-@@ -679,3 +679,26 @@ class TestDatabricks(Validator):
+@@ -691,3 +691,26 @@ class TestDatabricks(Validator):
          self.validate_identity("DECLARE x, y, z INT DEFAULT 1", "DECLARE x, y, z INT = 1")
          self.validate_identity("DECLARE x INT = 1")
          self.validate_identity("DECLARE OR REPLACE x INT = 1")
@@ -108,7 +108,7 @@ index 669a1cc81..6fc72e2bc 100644
 +                    read={"clickhouse": f"DATE_TRUNC('{unit.lower()}', x)"},
 +                )
 diff --git a/tests/dialects/test_exasol.py b/tests/dialects/test_exasol.py
-index f150de659..3969834b6 100644
+index f150de65..3969834b 100644
 --- a/tests/dialects/test_exasol.py
 +++ b/tests/dialects/test_exasol.py
 @@ -554,7 +554,11 @@ class TestExasol(Validator):
@@ -125,10 +125,10 @@ index f150de659..3969834b6 100644
                  )
  
 diff --git a/tests/dialects/test_oracle.py b/tests/dialects/test_oracle.py
-index f358588ac..913d338db 100644
+index 5d2585ff..3e82f0d0 100644
 --- a/tests/dialects/test_oracle.py
 +++ b/tests/dialects/test_oracle.py
-@@ -1202,7 +1202,11 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""
+@@ -1215,7 +1215,11 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""
                          "bigquery": f"DATE_TRUNC(CAST(x AS DATE), {unit})",
                          "duckdb": f"DATE_TRUNC('{unit}', CAST(x AS DATE))",
                          "tsql": f"DATE_TRUNC('{unit}', CAST(x AS DATE))",
@@ -141,7 +141,7 @@ index f358588ac..913d338db 100644
                      },
                  )
  
-@@ -1217,7 +1221,11 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""
+@@ -1230,7 +1234,11 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""
                          "postgres": f"DATE_TRUNC('{unit}', CAST(x AS TIMESTAMP))",
                          "duckdb": f"DATE_TRUNC('{unit}', CAST(x AS TIMESTAMP))",
                          "tsql": f"DATE_TRUNC('{unit}', CAST(x AS DATETIME2))",

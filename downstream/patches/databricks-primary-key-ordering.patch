@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/databricks.py b/sqlglot/generators/databricks.py
-index 4550f7e11..c384f4f2d 100644
+index 4550f7e1..c384f4f2 100644
 --- a/sqlglot/generators/databricks.py
 +++ b/sqlglot/generators/databricks.py
 @@ -115,6 +115,11 @@ class DatabricksGenerator(SparkGenerator):
@@ -15,7 +15,7 @@ index 4550f7e11..c384f4f2d 100644
          return f"{self.sql(expression, 'this')} TIMESERIES"
  
 diff --git a/sqlglot/parsers/databricks.py b/sqlglot/parsers/databricks.py
-index f46fa8edb..1f5a97e11 100644
+index f46fa8ed..1f5a97e1 100644
 --- a/sqlglot/parsers/databricks.py
 +++ b/sqlglot/parsers/databricks.py
 @@ -68,6 +68,11 @@ class DatabricksParser(SparkParser):
@@ -31,10 +31,10 @@ index f46fa8edb..1f5a97e11 100644
  
      def _parse_cluster_property(self):
 diff --git a/tests/dialects/test_databricks.py b/tests/dialects/test_databricks.py
-index 7e915199d..669a1cc81 100644
+index ddf723c0..5a5c1e38 100644
 --- a/tests/dialects/test_databricks.py
 +++ b/tests/dialects/test_databricks.py
-@@ -643,6 +643,35 @@ class TestDatabricks(Validator):
+@@ -655,6 +655,35 @@ class TestDatabricks(Validator):
              },
          )
  
