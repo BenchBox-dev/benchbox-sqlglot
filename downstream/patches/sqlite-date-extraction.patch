@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index b0895d484..3bc318120 100644
+index 8b9eebb9..62776b4c 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
 @@ -16,6 +16,7 @@ from sqlglot.dialects.dialect import (
@@ -10,7 +10,7 @@ index b0895d484..3bc318120 100644
  from sqlglot.tokens import TokenType
  
  
-@@ -229,6 +230,99 @@ class SQLiteGenerator(generator.Generator):
+@@ -234,6 +235,99 @@ class SQLiteGenerator(generator.Generator):
          self.unsupported("SQLite AUTOINCREMENT requires an INTEGER PRIMARY KEY")
          return ""
  
@@ -110,19 +110,8 @@ index b0895d484..3bc318120 100644
      def insert_sql(self, expression: exp.Insert) -> str:
          if expression.args.get("ignore"):
              expression.set("ignore", False)
-@@ -287,6 +381,10 @@ class SQLiteGenerator(generator.Generator):
-         modifier = f"{modifier} {unit.name}" if unit else modifier
-         return self.func("DATE", expression.this, exp.Literal.string(modifier))
- 
-+
-+
-+
-+
-     def cast_sql(self, expression: exp.Cast, safe_prefix: str | None = None) -> str:
-         if expression.is_type("date"):
-             return self.func("DATE", expression.this)
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index a6aa5b432..bc9afd99d 100644
+index 093df27c..b053365b 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
 @@ -1,3 +1,5 @@
@@ -131,7 +120,7 @@ index a6aa5b432..bc9afd99d 100644
  from sqlglot import ErrorLevel, UnsupportedError, exp, parse_one
  from sqlglot.generator import logger as generator_logger
  from sqlglot.helper import logger as helper_logger
-@@ -149,6 +151,79 @@ class TestSQLite(Validator):
+@@ -184,6 +186,79 @@ class TestSQLite(Validator):
              },
          )
  

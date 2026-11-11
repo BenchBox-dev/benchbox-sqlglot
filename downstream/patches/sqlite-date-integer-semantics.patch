@@ -1,8 +1,8 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index aaa94d0ae..759d7ee30 100644
+index 56a0ecae..c3190f60 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
-@@ -472,11 +472,47 @@ class SQLiteGenerator(generator.Generator):
+@@ -492,11 +492,47 @@ class SQLiteGenerator(generator.Generator):
                  return self.func("DATE", literal, modifier)
          return None
  
@@ -52,7 +52,7 @@ index aaa94d0ae..759d7ee30 100644
  
      def interval_sql(self, expression: exp.Interval) -> str:
          self.unsupported("SQLite does not support this INTERVAL expression")
-@@ -497,6 +533,47 @@ class SQLiteGenerator(generator.Generator):
+@@ -517,6 +553,47 @@ class SQLiteGenerator(generator.Generator):
          )
          return self.function_fallback_sql(expression)
  
@@ -101,10 +101,10 @@ index aaa94d0ae..759d7ee30 100644
          return self._truncate_sql(expression)
  
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index 8bde8bafa..d72307a10 100644
+index 950c088d..406e30c3 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
-@@ -1573,3 +1573,141 @@ class TestSQLite(Validator):
+@@ -1679,3 +1679,141 @@ class TestSQLite(Validator):
              connection.execute("INSERT INTO ev VALUES ('1998-04-08 13:45:10')")
              sql = parse_one("SELECT DATE_TRUNC('day', ts) FROM ev", read="postgres").sql("sqlite")
              self.assertEqual(connection.execute(sql), [("1998-04-08 00:00:00",)])

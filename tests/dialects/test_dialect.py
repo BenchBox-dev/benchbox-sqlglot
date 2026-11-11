@@ -231,6 +231,11 @@ class TestDialect(Validator):
         lowercase_mysql = Dialect.get_or_raise("mysql, normalization_strategy = lowercase")
         self.assertEqual(lowercase_mysql.normalization_strategy.value, "LOWERCASE")
 
+        self.assertEqual(
+            Dialect.get_or_raise("bigquery").normalization_strategy,
+            "CASE_INSENSITIVE_EXCEPT_TABLES",
+        )
+
         with self.assertRaises(AttributeError) as cm:
             Dialect.get_or_raise("mysql, normalization_strategy")
 
@@ -3802,10 +3807,21 @@ SELECT
             "LAG(AVG(AGG(revenue) PER (customer))) OVER (ORDER BY year)",
             "SUM(SUM(AGG(revenue) PER (customer))) OVER (ORDER BY year)",
             "AVG(AVG(AGG(x) PER (c)) PER (d))",
-            "SUM(x) FILTER(WHERE y > 0) PER (c)",
-            "SUM(x) OVER w PER (c)",
+            "AVG(SUM(x) FILTER(WHERE y > 0) PER (c))",
+            "AVG(SUM(x) OVER w PER (c))",
+            "AVG(SUM(x) - SUM(y) PER (c))",
+            "COUNT(DISTINCT SUM(x) - SUM(y) PER (c))",
+            "AVG((SUM(x) - SUM(y)) * 2 PER (c))",
+            "ARG_MAX(COUNT(DISTINCT u) PER (ds WITH FILL), ds)",
+            "AVG(SUM(x) PER (c, ds WITH FILL))",
+            "AVG(SUM(x) PER (ds WITH FILL FROM 1 TO 10 STEP 1))",
         ):
             self.validate_identity(sql)
+
+        key = parse_one("AVG(SUM(x) PER (c, ds WITH FILL))").find(exp.Per).expressions[1]
+        self.assertIsInstance(key, exp.Ordered)
+        self.assertIsInstance(key.args["with_fill"], exp.WithFill)
+        self.assertEqual(key.this, exp.column("ds"))
 
         per = self.validate_identity(
             "AVG(LAG(AGG(revenue)) OVER (PARTITION BY customer ORDER BY year) PER (customer))"
@@ -3818,6 +3834,12 @@ SELECT
         )
         self.assertIsInstance(window, exp.Window)
         self.assertIsInstance(window.this.this.this, exp.Per)
+
+        # PER applies to the whole argument, not the last function in it.
+        per = self.validate_identity("MAX(LAG(SUM(x)) OVER (ORDER BY ds) - SUM(x) PER (ds))").this
+        self.assertIsInstance(per, exp.Per)
+        self.assertIsInstance(per.this, exp.Sub)
+        self.assertIsInstance(per.this.this, exp.Window)
 
         nested = self.validate_identity("AVG(AVG(AGG(x) PER (c)) PER (d))").this
         self.assertIsInstance(nested, exp.Per)
@@ -5690,11 +5712,12 @@ FROM subquery2""",
         def assert_custom_duckdb_sql(
             query: str,
             *,
+            read_dialects: Iterable[str] = ("bigquery", "snowflake"),
             includes: t.Optional[Iterable[str]] = None,
             excludes: t.Optional[Iterable[str]] = None,
             chr_chars: t.Optional[Iterable[str]] = None,
         ) -> None:
-            for dialect in ("bigquery", "snowflake"):
+            for dialect in read_dialects:
                 with self.subTest(f"DuckDB generation for {query} from {dialect}"):
                     expression = parse_one(query, read=dialect)
                     self.assert_duckdb_sql(
@@ -5704,7 +5727,6 @@ FROM subquery2""",
         assert_custom_duckdb_sql(
             "INITCAP(col, '')", includes=("UPPER(LEFT(",), excludes=("REGEXP_MATCHES(",)
         )
-        assert_custom_duckdb_sql("INITCAP(col, NULL)", includes=("REGEXP_MATCHES(", "REPLACE("))
         assert_custom_duckdb_sql("INITCAP(col, ' ')", includes=("' '",))
         assert_custom_duckdb_sql("INITCAP(col, '@')", includes=("'@'",), excludes=("CHR(",))
         assert_custom_duckdb_sql("INITCAP(col, '_@')", includes=("'_@'",))
@@ -5716,6 +5738,29 @@ FROM subquery2""",
         assert_custom_duckdb_sql(
             "INITCAP(col, (SELECT delimiter FROM settings LIMIT 1))",
             includes=("SELECT delimiter FROM settings", "REPLACE("),
+        )
+        assert_custom_duckdb_sql(
+            "INITCAP(NULL)",
+            read_dialects=("", "postgres", "snowflake", "bigquery", "duckdb"),
+            includes=("REGEXP_MATCHES(LEFT(NULL, 1),",),
+        )
+        assert_custom_duckdb_sql(
+            "INITCAP(col, NULL)",
+            includes=("REGEXP_MATCHES(", "REPLACE(NULL,"),
+            excludes=("CONCAT(",),
+        )
+        assert_custom_duckdb_sql(
+            "INITCAP(INITCAP(col))",
+            read_dialects=("", "postgres", "snowflake", "bigquery", "duckdb"),
+            includes=(
+                "REGEXP_MATCHES(LEFT(ARRAY_TO_STRING(CASE WHEN REGEXP_MATCHES(LEFT(col, 1),",
+                "LIST_TRANSFORM(REGEXP_EXTRACT_ALL(ARRAY_TO_STRING(",
+            ),
+        )
+        assert_custom_duckdb_sql(
+            "INITCAP(INITCAP(col, NULL))",
+            includes=("REGEXP_MATCHES(LEFT(ARRAY_TO_STRING(", "REPLACE(NULL,"),
+            excludes=("CONCAT(",),
         )
 
     def test_initcap_custom_delimiter_warning(self):
@@ -5740,7 +5785,7 @@ FROM subquery2""",
         self.assertEqual(parsed_expr.this.args.get("zone").sql("postgres"), "INTERVAL '3 HOURS'")
 
     def test_underscore_scientific_notation(self):
-        for dialect in ("duckdb", "clickhouse"):
+        for dialect in ("duckdb", "clickhouse", "sqlite"):
             for notation in ("e", "E"):
                 for sign in ("", "-", "+"):
                     with self.subTest(f"Testing notation: {notation}, sign: {sign} for {dialect}"):

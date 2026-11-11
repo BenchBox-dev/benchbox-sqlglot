@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index 7f560b643..a303d6122 100644
+index ae12fbda..d6b5a685 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
 @@ -1,5 +1,6 @@
@@ -69,7 +69,7 @@ index 7f560b643..a303d6122 100644
          exp.TimeToStr: lambda self, e: self.func("STRFTIME", e.args.get("format"), e.this),
          exp.TryCast: no_trycast_sql,
          exp.TsOrDsToTimestamp: lambda self, e: self.sql(e, "this"),
-@@ -474,7 +510,7 @@ class SQLiteGenerator(generator.Generator):
+@@ -494,7 +530,7 @@ class SQLiteGenerator(generator.Generator):
              # SQLite carries an overflowing month end into the next month, while the
              # source engines clamp it, so only inputs that cannot overflow are lowered:
              # a NULL, or a literal whose day of month is at most 28.
@@ -78,7 +78,7 @@ index 7f560b643..a303d6122 100644
              if isinstance(literal, exp.Null) or (
                  isinstance(literal, exp.Literal)
                  and literal.is_string
-@@ -557,33 +593,31 @@ class SQLiteGenerator(generator.Generator):
+@@ -577,33 +613,31 @@ class SQLiteGenerator(generator.Generator):
                  node.replace(exp.Anonymous(this="DATETIME", expressions=[node.copy()]))
  
      def eq_sql(self, expression: exp.EQ) -> str:
@@ -119,7 +119,7 @@ index 7f560b643..a303d6122 100644
          return super().between_sql(expression)
  
      def datetrunc_sql(self, expression: exp.DateTrunc) -> str:
-@@ -592,11 +626,51 @@ class SQLiteGenerator(generator.Generator):
+@@ -612,11 +646,51 @@ class SQLiteGenerator(generator.Generator):
      def timestamptrunc_sql(self, expression: exp.TimestampTrunc) -> str:
          return self._truncate_sql(expression)
  
@@ -174,10 +174,10 @@ index 7f560b643..a303d6122 100644
              return self.func("TIME", expression.this)
  
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index 1ad913edf..46340bd71 100644
+index c095fd6a..cfbf7c3e 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
-@@ -1763,3 +1763,97 @@ class TestSQLite(Validator):
+@@ -1869,3 +1869,97 @@ class TestSQLite(Validator):
                          ]
                  with self.subTest(dialect=dialect, query=query):
                      self.assertEqual(outputs["sqlite"], outputs["duckdb"])

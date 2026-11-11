@@ -6,11 +6,46 @@ from tests import engines
 from tests.engines import requires_engine
 from sqlglot.generator import logger as generator_logger
 from sqlglot.helper import logger as helper_logger
+from sqlglot.optimizer.annotate_types import annotate_types
 from tests.dialects.test_dialect import Validator
 
 
 class TestSQLite(Validator):
     dialect = "sqlite"
+
+    def test_safe_div(self):
+        self.validate_all(
+            "SELECT CAST(a AS INTEGER) / CAST(b AS INTEGER) FROM t",
+            write={
+                "duckdb": "SELECT CAST(a AS INT) // NULLIF(CAST(b AS INT), 0) FROM t",
+                "snowflake": "SELECT CAST(TRUNC(CAST(a AS INT) / NULLIF(CAST(b AS INT), 0)) AS BIGINT) FROM t",
+                "bigquery": "SELECT DIV(CAST(a AS INT64), NULLIF(CAST(b AS INT64), 0)) FROM t",
+            },
+        )
+        for sql, expected in (
+            (
+                "SELECT 7 / 0",
+                {
+                    "duckdb": "SELECT 7 // NULLIF(0, 0)",
+                    "snowflake": "SELECT CAST(TRUNC(7 / NULLIF(0, 0)) AS BIGINT)",
+                    "bigquery": "SELECT DIV(7, NULLIF(0, 0))",
+                },
+            ),
+            (
+                "SELECT t.a / t.b FROM t",
+                {
+                    "duckdb": "SELECT CAST(TRUNC(t.a / NULLIF(t.b, 0)) AS BIGINT) FROM t",
+                    "snowflake": "SELECT CAST(TRUNC(t.a / NULLIF(t.b, 0)) AS BIGINT) FROM t",
+                    "bigquery": "SELECT CAST(TRUNC(t.a / NULLIF(t.b, 0)) AS INT64) FROM t",
+                },
+            ),
+        ):
+            expression = annotate_types(
+                self.parse_one(sql), schema={"t": {"a": "INT", "b": "INT"}}, dialect="sqlite"
+            )
+            for dialect, output in expected.items():
+                with self.subTest(sql=sql, dialect=dialect):
+                    self.assertEqual(expression.sql(dialect), output)
 
     def test_subquery_modifiers(self):
         for source, expected in (
@@ -759,6 +794,49 @@ class TestSQLite(Validator):
                 "duckdb": "SELECT DATE_ADD(d, INTERVAL (NULL) DAY) FROM t",
             },
         )
+        self.validate_all(
+            "SELECT DATE(d, '-1 MONTH') FROM t",
+            read={
+                "bigquery": "SELECT DATE_SUB(d, INTERVAL 1 MONTH) FROM t",
+                "mysql": "SELECT DATE_SUB(d, INTERVAL 1 MONTH) FROM t",
+            },
+        )
+        self.validate_all(
+            "SELECT DATE(d, '2 DAY') FROM t",
+            read={
+                "mysql": "SELECT DATE_SUB(d, INTERVAL -2 DAY) FROM t",
+            },
+        )
+        self.validate_all(
+            "SELECT DATE(d, '-2 DAY') FROM t",
+            read={"mysql": "SELECT DATE_SUB(d, INTERVAL '+2' DAY) FROM t"},
+        )
+        self.validate_all(
+            "SELECT DATE(d, (-n) || ' DAY') FROM t",
+            read={
+                "mysql": "SELECT DATE_SUB(d, INTERVAL n DAY) FROM t",
+            },
+        )
+        self.validate_all(
+            "SELECT DATE(d, (-(n + 1)) || ' DAY') FROM t",
+            read={
+                "mysql": "SELECT DATE_SUB(d, INTERVAL (n + 1) DAY) FROM t",
+            },
+        )
+        self.validate_all(
+            "SELECT DATE(d, (n) || ' DAY') FROM t",
+            read={
+                "mysql": "SELECT DATE_SUB(d, INTERVAL -n DAY) FROM t",
+            },
+        )
+        self.validate_all(
+            "SELECT DATE(d, (-(SELECT 1)) || ' DAY') FROM t",
+            read={"mysql": "SELECT DATE_SUB(d, INTERVAL (SELECT 1) DAY) FROM t"},
+        )
+        self.validate_all(
+            "SELECT DATE_SUB(d, '1'') ; SELECT 1; --')",
+            write={"sqlite": "SELECT DATE(d, '-1'') ; SELECT 1; --')"},
+        )
         self.validate_identity("SELECT DATETIME(1092941466, 'unixepoch')")
         self.validate_identity("SELECT DATETIME(1092941466, 'auto')")
         self.validate_identity("SELECT DATETIME(1092941466, 'unixepoch', 'localtime')")
@@ -1203,6 +1281,12 @@ class TestSQLite(Validator):
         )
         self.validate_identity("SELECT X'0a', 0x0a", "SELECT x'0a', 10")
 
+    def test_digit_separators(self):
+        self.validate_identity("SELECT 1_000", "SELECT 1000")
+        self.validate_identity("SELECT 1_000_000 AS x", "SELECT 1000000 AS x")
+        self.validate_identity("SELECT 1_0.2_5", "SELECT 10.25")
+        self.validate_identity("SELECT .5_5", "SELECT 0.55")
+
     def test_window_null_treatment(self):
         self.validate_all(
             "SELECT FIRST_VALUE(Name) OVER (PARTITION BY AlbumId ORDER BY Bytes DESC) AS LargestTrack FROM tracks",
@@ -1448,9 +1532,31 @@ class TestSQLite(Validator):
             "CREATE TABLE store (store_id INTEGER PRIMARY KEY AUTOINCREMENT, mgr_id INTEGER NOT NULL UNIQUE REFERENCES staff ON UPDATE CASCADE)"
         )
 
+    def test_table_options(self):
+        self.validate_identity("CREATE TABLE t (a INTEGER PRIMARY KEY, b TEXT) STRICT")
+        self.validate_identity("CREATE TABLE t (a INTEGER PRIMARY KEY, b TEXT) WITHOUT ROWID")
+        self.validate_identity(
+            "CREATE TABLE t (a INTEGER PRIMARY KEY, b TEXT) WITHOUT ROWID, STRICT"
+        )
+        self.validate_identity(
+            "CREATE TABLE t (a INTEGER PRIMARY KEY, b TEXT) STRICT, WITHOUT ROWID"
+        )
+        self.validate_all(
+            "CREATE TABLE t (a INTEGER PRIMARY KEY) WITHOUT ROWID",
+            write={
+                "sqlite": "CREATE TABLE t (a INTEGER PRIMARY KEY) WITHOUT ROWID",
+                "duckdb": "CREATE TABLE t (a INT PRIMARY KEY)",
+            },
+        )
+
     def test_analyze(self):
         self.validate_identity("ANALYZE tbl")
         self.validate_identity("ANALYZE schma.tbl")
+
+    def test_reindex(self):
+        self.validate_identity("REINDEX tbl", check_command_warning=True)
+        self.validate_identity("REINDEX schma.idx", check_command_warning=True)
+        self.validate_identity("SELECT reindex FROM t")
 
     def test_create_trigger(self):
         """Test that SQLite CREATE TRIGGER statements fall back to Command parsing."""
@@ -1514,7 +1620,7 @@ class TestSQLite(Validator):
             (exp.Literal.number(30), "DAY", "DATE(CURRENT_DATE, '-30 DAY')"),
             (exp.Literal.number(2), "MONTH", "DATE(CURRENT_DATE, '-2 MONTH')"),
             (exp.Literal.number(1), "YEAR", "DATE(CURRENT_DATE, '-1 YEAR')"),
-            (exp.Paren(this=exp.column("n")), "DAY", "DATE(CURRENT_DATE, (-(n)) || ' DAY')"),
+            (exp.Paren(this=exp.column("n")), "DAY", "DATE(CURRENT_DATE, (-n) || ' DAY')"),
         ):
             with self.subTest(amount=amount.sql(), unit=unit):
                 node = exp.DateSub(this=exp.CurrentDate(), expression=amount, unit=exp.var(unit))

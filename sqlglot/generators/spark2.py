@@ -92,7 +92,7 @@ def _regexp_replace_sql(self: Spark2Generator, expression: exp.RegexpReplace) ->
         "REGEXP_REPLACE",
         expression.this,
         expression.expression,
-        _java_replacement(expression.args["replacement"]),
+        _java_replacement(expression.args.get("replacement") or exp.Literal.string("")),
         expression.args.get("position"),
     )
 

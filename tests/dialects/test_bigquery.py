@@ -3635,7 +3635,7 @@ OPTIONS (
             qualified = qualify(ast.copy(), dialect="bigquery,normalization_strategy=uppercase")
             self.assertEqual(qualified.sql("bigquery"), "SELECT * FROM `P`.`D`.`T` AS `T`")
         finally:
-            BigQuery.NORMALIZATION_STRATEGY = NormalizationStrategy.CASE_INSENSITIVE
+            BigQuery.NORMALIZATION_STRATEGY = NormalizationStrategy.CASE_INSENSITIVE_EXCEPT_TABLES
 
     def test_array(self):
         for sql in (

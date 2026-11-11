@@ -1,24 +1,8 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index 7c183435b..e7ff35314 100644
+index 55dac3f2..b79d77b2 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
-@@ -417,6 +417,15 @@ class SQLiteGenerator(generator.Generator):
-         modifier = f"{modifier} {unit.name}" if unit else modifier
-         return self.func("DATE", expression.this, exp.Literal.string(modifier))
- 
-+    def datesub_sql(self, expression: exp.DateSub) -> str:
-+        return self.dateadd_sql(
-+            exp.DateAdd(
-+                this=expression.this,
-+                expression=exp.Neg(this=expression.expression),
-+                unit=expression.args.get("unit"),
-+            )
-+        )
-+
-     def _date_interval_sql(self, expression: exp.Add | exp.Sub) -> str | None:
-         date, interval = expression.this, expression.expression
-         if isinstance(expression, exp.Add) and isinstance(date, exp.Interval):
-@@ -533,7 +542,9 @@ class SQLiteGenerator(generator.Generator):
+@@ -562,7 +562,9 @@ class SQLiteGenerator(generator.Generator):
  
          sql = f"(JULIANDAY({self.sql(expression, 'this')}) - JULIANDAY({self.sql(expression, 'expression')}))"
  
@@ -30,10 +14,10 @@ index 7c183435b..e7ff35314 100644
          elif unit == "YEAR":
              sql = f"{sql} / 365.0"
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index 9e6a8065e..2e204ee74 100644
+index 88207a7d..6127d27d 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
-@@ -1349,3 +1349,40 @@ class TestSQLite(Validator):
+@@ -1455,3 +1455,40 @@ class TestSQLite(Validator):
                      self.validate_all(sql, write={"sqlite": expected, "duckdb": expected})
                      expression = self.parse_one(sql).expressions[0]
                      self.assertIsInstance(expression.this if negate else expression, exp.Is)
@@ -52,7 +36,7 @@ index 9e6a8065e..2e204ee74 100644
 +            (exp.Literal.number(30), "DAY", "DATE(CURRENT_DATE, '-30 DAY')"),
 +            (exp.Literal.number(2), "MONTH", "DATE(CURRENT_DATE, '-2 MONTH')"),
 +            (exp.Literal.number(1), "YEAR", "DATE(CURRENT_DATE, '-1 YEAR')"),
-+            (exp.Paren(this=exp.column("n")), "DAY", "DATE(CURRENT_DATE, (-(n)) || ' DAY')"),
++            (exp.Paren(this=exp.column("n")), "DAY", "DATE(CURRENT_DATE, (-n) || ' DAY')"),
 +        ):
 +            with self.subTest(amount=amount.sql(), unit=unit):
 +                node = exp.DateSub(this=exp.CurrentDate(), expression=amount, unit=exp.var(unit))
