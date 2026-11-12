@@ -15,6 +15,13 @@
       "status": "open",
       "title": "A refresh that stops on conflict leaves the controller run green"
     },
+    "not-offered-patches-lack-upstream-follow-up-20261112": {
+      "claim": null,
+      "needs": [],
+      "priority": "medium",
+      "status": "open",
+      "title": "Carried patches marked as upstream candidates are never offered upstream"
+    },
     "sqlglot-controller-mergeability-retry-misses-new-hold-20261107": {
       "claim": null,
       "needs": [],
