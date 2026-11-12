@@ -1,0 +1,18 @@
+{
+  "acceptance": [
+    "Merged refresh branches are deleted, either by enabling delete-branch-on-merge or by the controller deleting a branch it owns once its pull request is merged.",
+    "The existing stale branches are removed after confirming each is merged into main.",
+    "The chosen behaviour is stated in MAINTAINING.md."
+  ],
+  "description": "refresh/upstream-30.25.0, -30.27.0, -30.29.0 and -30.30.0 remain on BenchBox-dev/benchbox-sqlglot after their pull requests merged. The repository has delete_branch_on_merge off and the controller never deletes a branch. Stale branches clutter the namespace the controller and its ownership proof reason about.",
+  "sessions": [
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:78d80e6d2be037cd62f52f56",
+      "at": "2026-11-12T16:53:20Z",
+      "client": "omp-coding-agent",
+      "op": "create",
+      "op_id": "dfc3e3e837aa4767bc738ec608c36f26",
+      "session_id": "082b1aaecda94f48a3b2cd12255fdde0"
+    }
+  ]
+}
