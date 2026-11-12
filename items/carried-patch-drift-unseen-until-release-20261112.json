@@ -1,0 +1,24 @@
+{
+  "acceptance": [
+    "A scheduled job applies the carried patches in manifest order to upstream main (and the latest tag) and reports each patch that no longer applies or applies with no change, naming the patch, its files and git's error.",
+    "A drift finding opens or updates one fork issue keyed by patch and upstream commit, closed when the patch applies again, using the controller's existing issue conventions.",
+    "The job has no write capability beyond issues and runs nothing from upstream code.",
+    "A test covers a patch that stops applying because upstream changed its context."
+  ],
+  "description": "The controller applies the carried patches to upstream only when it refreshes onto a new tag. Upstream v30.31.0 added SQLiteGenerator.datesub_sql (tobymao/sqlglot#8931, merged 2026-11-10) at the spot where carried patches sqlite-date-day-arithmetic and sqlite-date-extraction insert, so the scheduled refresh stopped with outcome conflict (issue #88) on release day and needed a hand refresh (#89). The overlap was visible on upstream main before the tag, but nothing checks carried patches against unreleased upstream commits. With 24 carried patches, many on sqlglot/generators/sqlite.py, an active upstream file, each release risks the same stop.",
+  "links": [
+    "https://github.com/BenchBox-dev/benchbox-sqlglot/issues/88",
+    "https://github.com/BenchBox-dev/benchbox-sqlglot/pull/89",
+    "https://github.com/tobymao/sqlglot/pull/8931"
+  ],
+  "sessions": [
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:78d80e6d2be037cd62f52f56",
+      "at": "2026-11-12T16:53:08Z",
+      "client": "omp-coding-agent",
+      "op": "create",
+      "op_id": "f57a7c28178a4dad9764eec95983bf7b",
+      "session_id": "082b1aaecda94f48a3b2cd12255fdde0"
+    }
+  ]
+}
