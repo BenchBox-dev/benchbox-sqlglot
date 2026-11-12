@@ -22,6 +22,13 @@
       "status": "open",
       "title": "Carried patches marked as upstream candidates are never offered upstream"
     },
+    "refresh-normalization-blank-only-hunk-20261112": {
+      "claim": null,
+      "needs": [],
+      "priority": "low",
+      "status": "open",
+      "title": "Patch normalization emitted a hunk that adds only blank lines"
+    },
     "sqlglot-controller-mergeability-retry-misses-new-hold-20261107": {
       "claim": null,
       "needs": [],
