@@ -22,6 +22,13 @@
       "status": "open",
       "title": "Carried patches marked as upstream candidates are never offered upstream"
     },
+    "refresh-candidate-crashes-on-existing-workdir-20261112": {
+      "claim": null,
+      "needs": [],
+      "priority": "low",
+      "status": "open",
+      "title": "refresh candidate crashes with a traceback and leaves its branch when the worktree path exists"
+    },
     "refresh-normalization-blank-only-hunk-20261112": {
       "claim": null,
       "needs": [],

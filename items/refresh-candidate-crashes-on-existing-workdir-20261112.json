@@ -1,0 +1,18 @@
+{
+  "acceptance": [
+    "candidate and integrate check the destination path and branch before creating anything and exit with a clear message naming them.",
+    "A failure after the branch is created removes what the command created.",
+    "A refresh test covers an existing destination path."
+  ],
+  "description": "Running 'python -m downstream.refresh candidate --tag v30.31.0 --path ../sqlglot.refresh-candidate --branch refresh/candidate-30.31.0' (the MAINTAINING.md example path) in a clean clone, while ../sqlglot.refresh-candidate already held an older candidate worktree, ended in an unhandled subprocess.CalledProcessError from 'git worktree add' (exit 128). The branch refresh/candidate-30.31.0 was left behind at the tag commit, so a rerun fails on the existing branch. MAINTAINING.md says auto refuses to start, removing nothing, when its branch or work directory exists; candidate and integrate have no such pre-check.",
+  "sessions": [
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:78d80e6d2be037cd62f52f56",
+      "at": "2026-11-12T16:53:18Z",
+      "client": "omp-coding-agent",
+      "op": "create",
+      "op_id": "3ce05c09e9aa48ef8c77d4dd61edf2c5",
+      "session_id": "082b1aaecda94f48a3b2cd12255fdde0"
+    }
+  ]
+}
