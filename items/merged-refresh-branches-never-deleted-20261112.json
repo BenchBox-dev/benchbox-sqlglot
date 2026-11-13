@@ -1,9 +1,11 @@
 {
   "acceptance": [
-    "Merged refresh branches are deleted, either by enabling delete-branch-on-merge or by the controller deleting a branch it owns once its pull request is merged.",
-    "The existing stale branches are removed after confirming each is merged into main.",
-    "The chosen behaviour is stated in MAINTAINING.md."
+    "The owner's choice of mechanism is recorded in context before any change.",
+    "After a refresh pull request merges, its refresh/upstream-* branch is deleted by the chosen mechanism.",
+    "The existing stale branches are removed only after each is confirmed merged into main with no open pull request.",
+    "MAINTAINING.md states the behaviour, and controller tests (if the controller deletes) cover merged, unmerged and open-PR branches."
   ],
+  "context": "Decision gate (owner, before any change): (a) enable the repository's delete-branch-on-merge setting (a hosted settings change the owner makes or approves; it affects every branch in the fork), or (b) the controller deletes a refresh branch it owns once its pull request is merged (code change; the App already has contents write). Deleting the four existing remote branches is destructive and needs explicit owner approval.\n\nVerification rubric: (1) for each deleted branch, record its SHA and the merge commit proving it is on main; (2) after the next refresh merges, the branch is gone; (3) the controller's no-pull-request branch adoption path still adopts an interrupted push (test).\n\nGuardrails: never delete a branch that is not merged into main, has an open pull request, or is the current refresh branch; never delete non-refresh branches; record deleted SHAs in context so they can be restored.",
   "description": "refresh/upstream-30.25.0, -30.27.0, -30.29.0 and -30.30.0 remain on BenchBox-dev/benchbox-sqlglot after their pull requests merged. The repository has delete_branch_on_merge off and the controller never deletes a branch. Stale branches clutter the namespace the controller and its ownership proof reason about.",
   "sessions": [
     {
@@ -12,6 +14,14 @@
       "client": "omp-coding-agent",
       "op": "create",
       "op_id": "dfc3e3e837aa4767bc738ec608c36f26",
+      "session_id": "082b1aaecda94f48a3b2cd12255fdde0"
+    },
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:78d80e6d2be037cd62f52f56",
+      "at": "2026-11-13T16:51:51Z",
+      "client": "omp-coding-agent",
+      "op": "update",
+      "op_id": "5bcd1fecb6ef4b19998a4936126d0578",
       "session_id": "082b1aaecda94f48a3b2cd12255fdde0"
     }
   ]
