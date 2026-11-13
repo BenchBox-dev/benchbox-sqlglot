@@ -1,9 +1,10 @@
 {
   "acceptance": [
-    "The step that writes normalized patches is identified and fixed so it does not emit blank-only hunks.",
-    "The downstream contract check refuses a carried patch with a hunk whose added lines are all blank.",
-    "A refresh test reproduces the old output and passes after the fix."
+    "The downstream contract check refuses a carried patch that has a hunk whose added lines are all blank, and passes on every patch currently on main.",
+    "The check refuses the old patch downstream/patches/sqlite-date-extraction.patch from commit 860a2bce7.",
+    "Either the step that wrote the hunk is identified and fixed with a refresh test reproducing it, or the context records that it could not be reproduced within the time-box and what was tried."
   ],
+  "context": "Decision gate: time-box the root-cause search (about half a day of effort) by rebuilding the v30.30.0 refresh from its recorded inputs. If it does not reproduce, ship the contract check alone and record the attempt; no owner decision is needed for that path.\n\nVerification rubric: (1) the new check fails on the 860a2bce7 patch and passes on main; (2) downstream refresh and contract tests pass; (3) if a cause is fixed, a refresh test that produced the blank-only hunk passes after the fix.\n\nGuardrails: do not hand-edit normalized patches on main to satisfy the check; the check must not reject hunks that add blank lines alongside real changes; no change to patch application order or the manifest schema.",
   "description": "After the v30.30.0 refresh (860a2bce7), downstream/patches/sqlite-date-extraction.patch ended with hunk '@@ -287,6 +381,10 @@' that adds four blank lines after dateadd_sql and nothing else; source commit 34cd3e9f has no such hunk. It anchored the patch on the lines where upstream v30.31.0 later added datesub_sql and was the first conflict git reported in issue #88. The hand refresh (#89) regenerated the patch without it, so main is clean now, but the cause was not traced and a later refresh can produce it again.",
   "links": [
     "https://github.com/BenchBox-dev/benchbox-sqlglot/issues/88"
@@ -15,6 +16,14 @@
       "client": "omp-coding-agent",
       "op": "create",
       "op_id": "487651bf27a34cee825b534507aaee5a",
+      "session_id": "082b1aaecda94f48a3b2cd12255fdde0"
+    },
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:78d80e6d2be037cd62f52f56",
+      "at": "2026-11-13T16:51:45Z",
+      "client": "omp-coding-agent",
+      "op": "update",
+      "op_id": "c7ea4d8e6ac34b399abdedface57de5f",
       "session_id": "082b1aaecda94f48a3b2cd12255fdde0"
     }
   ]
