@@ -1,10 +1,13 @@
 {
   "acceptance": [
-    "Each not_offered candidate is either offered upstream (state offered with its tobymao/sqlglot link) or reclassified declined with a reason.",
-    "The manifest or contract check makes a long-lived not_offered candidate visible (for example a recorded since-date and a check or report that flags it).",
-    "Patches upstream has since replaced are retired through the documented refresh retirement path with equivalence evidence."
+    "A decision table in context lists all 16 not_offered patches with: offer now, offer after a named prerequisite, reduce first, or decline, each with its reason and the dependency it waits on.",
+    "The owner approves the table (recorded in context with date) before any manifest change or upstream contact.",
+    "patches.json records the decisions: declined entries get upstream_state declined with the reason; deferred entries keep not_offered with a reason naming what they wait on.",
+    "One follow-up item per approved offer exists, each naming the patch, its upstream-ready reduction and the upstream rules it must meet.",
+    "Patches upstream has already replaced are listed for retirement through the documented refresh --retire path with equivalence evidence, not retired in this item."
   ],
-  "description": "16 carried patches have upstream_state not_offered; 11 say they are upstream candidates (postgres-extract-return-types, duckdb-order-by-all-keyword, databricks-primary-key-ordering, sqlite-date-day-arithmetic, snowflake-regexp-replace-groups, empty-group-by-generator, bigquery-window-nulls-ordering, sqlite-set-operation-operands, spark-databricks-regexp-trunc, sqlite-empty-group-by, sqlite-index-null-ordering). Nothing records when a patch became a candidate or prompts an offer. sqlite-date-day-arithmetic carried a DATE_SUB lowering marked 'a candidate'; upstream built its own (tobymao/sqlglot#8931) and the overlap stopped the v30.31.0 refresh. Every carried patch that upstream takes is one less that can conflict.",
+  "context": "Purpose: lowers the risk that the next upstream release stops on a conflict, which would fail the core item sqlglot-e2e-first-release-certification (BenchBox-dev/BenchBox tracker; cross-tracker needs are not possible).\n\nDecision gate (owner): approve the per-patch table before any manifest edit, and approve each upstream offer individually before any pull request or issue is opened on tobymao/sqlglot. Declining a patch is also an owner decision because it keeps maintenance cost in the fork.\n\nVerification rubric: (1) the table covers exactly the not_offered set on main at review time (recount before approval); (2) downstream contract tests pass after the patches.json edits (upstream_state/upstream/upstream_reason rules in MAINTAINING.md, Manifest entries); (3) every follow-up offer item names upstream's requirements: Conventional Commits title ending with the agent model ([CLAUDE], [CODEX]), tests in tests/dialects that run on the real engine, minimal scope per AGENTS.md.\n\nGuardrails: no pull request, issue or comment on tobymao/sqlglot from this item; never offer a patch that reads the fork's benchbox package or depends on one; never change carried patch content or order here; upstream links in patches.json must be tobymao/sqlglot pull request or issue URLs; an offered patch stays carried until upstream merges it and a refresh retires it.",
+  "description": "16 carried patches have upstream_state not_offered and nothing records when one became a candidate or prompts an offer. sqlite-date-day-arithmetic carried a DATE_SUB lowering marked 'a candidate'; upstream built its own (tobymao/sqlglot#8931) and the overlap stopped the v30.31.0 refresh (issue #88). Every carried patch upstream takes is one less that can conflict. This item is triage only: it produces an owner-approved decision per patch and the manifest changes that record it. Each approved upstream offer is a separate follow-up item, because the outcome depends on a repository the fork does not control. Dependency facts on main: offerable on their own (no carried dependency): postgres-extract-return-types, duckdb-order-by-all-keyword, databricks-primary-key-ordering, snowflake-regexp-replace-groups, empty-group-by-generator, bigquery-window-nulls-ordering. Need another patch offered first: sqlite-date-extraction (postgres-extract-return-types), sqlite-date-day-arithmetic (sqlite-temporal-lowering), spark-databricks-regexp-trunc (empty-group-by-generator, databricks-primary-key-ordering), sqlite-index-null-ordering (null-ordering-source-semantics). Depend on patches that read the fork's benchbox package (mark_date_columns) and cannot be offered until those are reduced: sqlite-date-integer-semantics, sqlite-date-literals, sqlite-set-operation-operands, sqlite-empty-group-by. Others: singlestore-json-integer-index (no SingleStore engine in CI), null-ordering-source-semantics (BenchBox semantics choice).",
   "links": [
     "https://github.com/tobymao/sqlglot/pull/8931",
     "https://github.com/BenchBox-dev/benchbox-sqlglot/pull/89"
@@ -16,6 +19,14 @@
       "client": "omp-coding-agent",
       "op": "create",
       "op_id": "079781728c5f4aa29eab164ca62e5083",
+      "session_id": "082b1aaecda94f48a3b2cd12255fdde0"
+    },
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:78d80e6d2be037cd62f52f56",
+      "at": "2026-11-13T16:52:14Z",
+      "client": "omp-coding-agent",
+      "op": "update",
+      "op_id": "9470c53804d447afb038179134d8b532",
       "session_id": "082b1aaecda94f48a3b2cd12255fdde0"
     }
   ]

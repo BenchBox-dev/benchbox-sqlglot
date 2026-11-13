@@ -27,7 +27,7 @@
       "needs": [],
       "priority": "medium",
       "status": "open",
-      "title": "Carried patches marked as upstream candidates are never offered upstream"
+      "title": "Triage the not_offered carried patches into owner-approved upstream offers or recorded declines"
     },
     "refresh-candidate-crashes-on-existing-workdir-20261112": {
       "claim": null,
