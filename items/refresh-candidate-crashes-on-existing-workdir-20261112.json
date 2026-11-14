@@ -4,7 +4,7 @@
     "A failure after creation removes only the worktree and branch this invocation created.",
     "Refresh tests cover an existing destination path, an existing branch, and a failure after the branch is created."
   ],
-  "context": "Decision gate: none; the behaviour mirrors what MAINTAINING.md already documents for auto.\n\nVerification rubric: (1) new tests fail before and pass after; (2) reproduce the original crash: in a clean clone with an existing ../sqlglot.refresh-candidate worktree, 'python -m downstream.refresh candidate --tag v30.31.0 --path ../sqlglot.refresh-candidate --branch refresh/candidate-30.31.0' now exits with a clear message and leaves no new branch; (3) downstream test suite passes.\n\nGuardrails: never delete or modify a worktree, directory or branch that existed before the invocation; never force-remove a worktree with uncommitted changes; auto's existing refusal behaviour is unchanged.",
+  "context": "Decision gate: none; the behaviour mirrors what MAINTAINING.md already documents for auto.\n\nVerification rubric: (1) new tests fail before and pass after; (2) reproduce the original crash: in a clean clone with an existing ../sqlglot.refresh-candidate worktree, 'python -m downstream.refresh candidate --tag v30.31.0 --path ../sqlglot.refresh-candidate --branch refresh/candidate-30.31.0' now exits with a clear message and leaves no new branch; (3) downstream test suite passes.\n\nGuardrails: never delete or modify a worktree, directory or branch that existed before the invocation; never force-remove a worktree with uncommitted changes; auto's existing refusal behaviour is unchanged.\n\nDelivered in https://github.com/BenchBox-dev/benchbox-sqlglot/pull/90, merged as 19ddf096438b3a9d1ef815bdb6e59473d463939f (20/20 checks passed). 132 downstream tests pass (controller, refresh, contract, delivery, distribution). candidate and integrate share add_worktree: refuse an existing --path or --branch before creating anything, and remove a branch left by a failed git worktree add; main() exits with a message instead of a traceback. Tests: test_candidate_refuses_an_existing_path_or_branch_and_creates_nothing (existing dir kept intact, existing branch untouched, worktree under a file leaves no branch), test_command_line_reports_a_stopped_candidate_without_a_traceback. A candidate stopping on a carried patch keeps its worktree for manual resolution, as documented.",
   "description": "Running 'python -m downstream.refresh candidate --tag v30.31.0 --path ../sqlglot.refresh-candidate --branch refresh/candidate-30.31.0' (the MAINTAINING.md example path) in a clean clone, while ../sqlglot.refresh-candidate already held an older candidate worktree, ended in an unhandled subprocess.CalledProcessError from 'git worktree add' (exit 128). The branch refresh/candidate-30.31.0 was left behind at the tag commit, so a rerun fails on the existing branch. MAINTAINING.md says auto refuses to start, removing nothing, when its branch or work directory exists; candidate and integrate have no such pre-check.",
   "sessions": [
     {
@@ -30,6 +30,14 @@
       "generation": "b561fb57ea414fec8b14b425ee15f838",
       "op": "take",
       "op_id": "791156b1a17e42ad9d91a2280b1f584c",
+      "session_id": "156c8e4b961b435fb161e0b220a81970"
+    },
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:4bdc683c82f41fadde87e636",
+      "at": "2026-11-14T14:28:15Z",
+      "client": "omp-coding-agent",
+      "op": "update",
+      "op_id": "2f2270ca998e48f0ae86eacad3ddad80",
       "session_id": "156c8e4b961b435fb161e0b220a81970"
     }
   ]
