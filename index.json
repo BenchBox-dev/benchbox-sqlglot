@@ -9,15 +9,10 @@
       "title": "Carried patches are first tested against upstream only when a release is tagged"
     },
     "controller-conflict-outcome-reports-success-20261112": {
-      "claim": {
-        "expires_at": "2026-11-15T14:27:50Z",
-        "generation": "14f93cc566894cc880d2917a3c086d57",
-        "renewals": 0,
-        "worker": "mcp:omp-coding-agent:joe@joe-mac-mini.local:4bdc683c82f41fadde87e636"
-      },
+      "claim": null,
       "needs": [],
       "priority": "medium",
-      "status": "active",
+      "status": "done",
       "title": "A refresh that stops on conflict leaves the controller run green"
     },
     "merged-refresh-branches-never-deleted-20261112": {
