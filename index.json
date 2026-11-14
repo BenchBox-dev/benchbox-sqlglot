@@ -23,10 +23,15 @@
       "title": "Merged refresh/upstream-* branches stay on the fork remote"
     },
     "not-offered-patches-lack-upstream-follow-up-20261112": {
-      "claim": null,
+      "claim": {
+        "expires_at": "2026-11-15T14:28:30Z",
+        "generation": "7a5f6cac25e24ff8b05de13492c17710",
+        "renewals": 0,
+        "worker": "mcp:omp-coding-agent:joe@joe-mac-mini.local:4bdc683c82f41fadde87e636"
+      },
       "needs": [],
       "priority": "medium",
-      "status": "open",
+      "status": "active",
       "title": "Triage the not_offered carried patches into owner-approved upstream offers or recorded declines"
     },
     "offer-upstream-bigquery-window-nulls-ordering-20261114": {
