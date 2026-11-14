@@ -71,6 +71,15 @@
       "status": "open",
       "title": "Offer the snowflake-regexp-replace-groups carried patch upstream"
     },
+    "offer-upstream-sqlite-date-extraction-20261114": {
+      "claim": null,
+      "needs": [
+        "offer-upstream-postgres-extract-return-types-20261114"
+      ],
+      "priority": "low",
+      "status": "open",
+      "title": "Offer the sqlite-date-extraction carried patch upstream"
+    },
     "refresh-candidate-crashes-on-existing-workdir-20261112": {
       "claim": null,
       "needs": [],
