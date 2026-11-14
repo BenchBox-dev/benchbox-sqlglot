@@ -29,6 +29,13 @@
       "status": "open",
       "title": "Triage the not_offered carried patches into owner-approved upstream offers or recorded declines"
     },
+    "offer-upstream-databricks-primary-key-ordering-20261114": {
+      "claim": null,
+      "needs": [],
+      "priority": "low",
+      "status": "open",
+      "title": "Offer the databricks-primary-key-ordering carried patch upstream"
+    },
     "offer-upstream-duckdb-order-by-all-keyword-20261114": {
       "claim": null,
       "needs": [],
