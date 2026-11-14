@@ -98,15 +98,10 @@
       "title": "refresh candidate crashes with a traceback and leaves its branch when the worktree path exists"
     },
     "refresh-normalization-blank-only-hunk-20261112": {
-      "claim": {
-        "expires_at": "2026-11-15T14:28:01Z",
-        "generation": "6f5b9050572f46b9912e110422860083",
-        "renewals": 0,
-        "worker": "mcp:omp-coding-agent:joe@joe-mac-mini.local:4bdc683c82f41fadde87e636"
-      },
+      "claim": null,
       "needs": [],
       "priority": "low",
-      "status": "active",
+      "status": "done",
       "title": "Patch normalization emitted a hunk that adds only blank lines"
     },
     "sqlglot-controller-mergeability-retry-misses-new-hold-20261107": {
