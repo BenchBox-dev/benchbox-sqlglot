@@ -3,9 +3,15 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from downstream import refresh
 from downstream.build import git
-from downstream.refresh import auto, candidate, integrate
+from downstream.refresh import auto, blank_only_hunks, candidate, integrate, probe
+
+BASE_RUNTIME = "VALUE = 'upstream'\nMIDDLE = 1\nOTHER = 'upstream'\n"
+DOWNSTREAM_RUNTIME = "VALUE = 'downstream'\nMIDDLE = 1\nOTHER = 'upstream'\n"
+LONG_RUNTIME = "".join(f"LINE_{i} = {i}\n" for i in range(14))
 
 
 class TestDownstreamRefresh(unittest.TestCase):
@@ -217,17 +223,24 @@ class TestDownstreamRefresh(unittest.TestCase):
             )
             integrate(root, "v1.1.0", "candidate", directory / "integration", "integration", {})
 
-    def automatic_fixture(self, directory, upstream_runtime, upstream_files=None):
+    def automatic_fixture(
+        self,
+        directory,
+        upstream_runtime,
+        upstream_files=None,
+        base_runtime=BASE_RUNTIME,
+        downstream_runtime=DOWNSTREAM_RUNTIME,
+    ):
         root = directory / "source"
         root.mkdir()
         self.command(root, "init", "-q", "-b", "main")
         self.command(root, "config", "user.name", "Test Fixture")
         self.command(root, "config", "user.email", "fixture@example.invalid")
-        (root / "runtime.py").write_text("VALUE = 'upstream'\nMIDDLE = 1\nOTHER = 'upstream'\n")
+        (root / "runtime.py").write_text(base_runtime)
         self.commit(root, ["runtime.py"], "Record upstream runtime")
         self.command(root, "tag", "v1.0.0")
         base = git(root, "rev-parse", "HEAD")
-        (root / "runtime.py").write_text("VALUE = 'downstream'\nMIDDLE = 1\nOTHER = 'upstream'\n")
+        (root / "runtime.py").write_text(downstream_runtime)
         patch = subprocess.check_output(["git", "-C", str(root), "diff", "--binary"])
         downstream = root / "downstream"
         downstream.mkdir()
@@ -407,3 +420,100 @@ class TestDownstreamRefresh(unittest.TestCase):
                 self.command(work, "apply", str(root / patch["patch"]))
             for path in paths:
                 self.assertEqual((work / path).read_bytes(), (root / path).read_bytes(), path)
+
+    def test_probe_reports_a_conflicting_patch_and_leaves_nothing_behind(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            root = self.automatic_fixture(
+                directory, "VALUE = 'rewritten upstream'\nMIDDLE = 1\nOTHER = 'upstream'\n"
+            )
+            upstream = git(root, "rev-parse", "v1.1.0^{commit}")
+            report = probe(root, upstream, directory / "work")
+            self.assertEqual(
+                (report["status"], report["entry"], report["paths"], report["upstream"]),
+                ("conflict", "runtime", ["runtime.py"], upstream),
+            )
+            clean = probe(root, git(root, "rev-parse", "v1.0.0"), directory / "work")
+            self.assertEqual(clean["status"], "applies")
+            self.assertEqual(git(root, "worktree", "list", "--porcelain").count("worktree "), 1)
+            self.assertEqual(git(root, "status", "--porcelain"), "")
+            self.assertEqual(list((directory / "work").iterdir()), [])
+
+    def test_probe_reports_a_patch_that_upstream_already_contains_as_empty(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            root = self.automatic_fixture(directory, DOWNSTREAM_RUNTIME)
+            report = probe(root, git(root, "rev-parse", "v1.1.0^{commit}"), directory / "work")
+            self.assertEqual((report["status"], report["entry"]), ("empty", "runtime"))
+
+    def test_blank_only_hunks_flags_padding_and_keeps_real_changes(self):
+        padded = (
+            b"diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n"
+            b"@@ -1,3 +1,3 @@\n a\n-b\n+c\n d\n"
+            b"@@ -287,6 +381,10 @@ class SQLiteGenerator(generator.Generator):\n"
+            b"         return x\n \n+\n+\n+    \n+\n     def cast_sql(self):\n"
+            b"diff --git a/y.py b/y.py\n--- a/y.py\n+++ b/y.py\n"
+            b"@@ -1,2 +1,4 @@\n a\n+\n+e\n b\n"
+        )
+        self.assertEqual(
+            blank_only_hunks(padded),
+            ["@@ -287,6 +381,10 @@ class SQLiteGenerator(generator.Generator):"],
+        )
+
+    def test_integrate_refuses_a_candidate_commit_that_adds_only_blank_lines(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            root = self.automatic_fixture(
+                directory,
+                LONG_RUNTIME.replace("LINE_13 = 13", "LINE_13 = 'upstream'"),
+                base_runtime=LONG_RUNTIME,
+                downstream_runtime=LONG_RUNTIME.replace("LINE_0 = 0", "LINE_0 = 'downstream'"),
+            )
+            work = directory / "candidate"
+            candidate(root, "v1.1.0", work, "candidate", set())
+            text = (work / "runtime.py").read_text()
+            (work / "runtime.py").write_text(text.replace("LINE_7 = 7\n", "LINE_7 = 7\n\n\n\n"))
+            self.command(work, "commit", "-qa", "--amend", "--no-edit")
+            integration = directory / "integration"
+            with self.assertRaisesRegex(ValueError, "only blank lines.*runtime"):
+                integrate(root, "v1.1.0", "candidate", integration, "integration", {})
+            self.assertFalse(integration.exists())
+            self.assertEqual(git(root, "branch", "--list", "integration"), "")
+
+    def test_candidate_refuses_an_existing_path_or_branch_and_creates_nothing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            root = self.automatic_fixture(
+                directory, "VALUE = 'upstream'\nMIDDLE = 1\nOTHER = 'changed'\n"
+            )
+            branch = "refresh/candidate-1.1.0"
+            existing = directory / "existing"
+            existing.mkdir()
+            (existing / "keep.txt").write_text("mine")
+            with self.assertRaisesRegex(ValueError, "already exist.*existing"):
+                candidate(root, "v1.1.0", existing, branch, set())
+            self.assertEqual((existing / "keep.txt").read_text(), "mine")
+            self.assertEqual(git(root, "branch", "--list", "refresh/*"), "")
+            self.command(root, "branch", branch, "main")
+            with self.assertRaisesRegex(ValueError, f"already exist.*{branch}"):
+                candidate(root, "v1.1.0", directory / "fresh", branch, set())
+            self.assertEqual(git(root, "rev-parse", branch), git(root, "rev-parse", "main"))
+            self.assertFalse((directory / "fresh").exists())
+            self.command(root, "branch", "-D", branch)
+            blocker = directory / "blocker"
+            blocker.write_text("a file, not a directory")
+            with self.assertRaisesRegex(ValueError, "Could not create the worktree"):
+                candidate(root, "v1.1.0", blocker / "nested", branch, set())
+            self.assertEqual(git(root, "branch", "--list", "refresh/*"), "")
+            self.assertEqual(blocker.read_text(), "a file, not a directory")
+
+    def test_command_line_reports_a_stopped_candidate_without_a_traceback(self):
+        argv = ["refresh", "candidate", "--tag", "v1.1.0", "--path", "x", "--branch", "b"]
+        refusal = ValueError("Refusing to start: these already exist: x")
+        with (
+            mock.patch("sys.argv", argv),
+            mock.patch.object(refresh, "candidate", side_effect=refusal),
+        ):
+            with self.assertRaises(SystemExit) as stopped:
+                refresh.main()
+        self.assertEqual(stopped.exception.code, f"candidate stopped: {refusal}")

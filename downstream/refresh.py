@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from downstream.build import ROOT, git
@@ -20,9 +22,10 @@ FOLLOW_UP_EXIT = 3
 
 
 class RefreshConflict(Exception):
-    def __init__(self, entry: str, paths: list[str], detail: str = ""):
+    def __init__(self, entry: str, paths: list[str], detail: str = "", empty: bool = False):
         self.entry = entry
         self.paths = paths
+        self.empty = empty
         message = (
             f"Carried patch {entry} does not apply cleanly: {', '.join(paths) or 'no files merged'}"
         )
@@ -71,12 +74,7 @@ def validate_tag(root: Path, data: dict, tag: str) -> str:
     return git(root, "rev-parse", "refs/tags/" + tag + "^{commit}")
 
 
-def candidate(root: Path, tag: str, destination: Path, branch: str, retired: set[str]) -> None:
-    clean(root)
-    data = manifest(root)
-    sha = validate_tag(root, data, tag)
-    entries = carried(data, retired)
-    head = git(root, "rev-parse", "HEAD")
+def check_originals(root: Path, sha: str, entries: list[dict]) -> None:
     for entry in entries:
         if entry["status"] == "original":
             existing = [
@@ -89,7 +87,9 @@ def candidate(root: Path, tag: str, destination: Path, branch: str, retired: set
                     f"Original files now exist upstream; reconcile {entry['id']} manually: "
                     + ", ".join(existing)
                 )
-    command(root, "worktree", "add", "-b", branch, str(destination), sha)
+
+
+def replay(root: Path, destination: Path, entries: list[dict], head: str) -> None:
     for entry in entries:
         if entry["status"] == "original":
             command(destination, "checkout", head, "--", *entry["paths"])
@@ -112,11 +112,91 @@ def candidate(root: Path, tag: str, destination: Path, branch: str, retired: set
                     [],
                     "The patch changes nothing on this upstream tag, so upstream may already contain it; "
                     "retire it with a reviewed reason instead of carrying an empty patch.",
+                    empty=True,
                 )
         command(destination, "commit", "--allow-empty", "-m", subject(entry))
+
+
+def add_worktree(root: Path, destination: Path, branch: str, start: str) -> None:
+    taken = occupied(root, [destination], [branch])
+    if taken:
+        raise ValueError("Refusing to start: these already exist: " + ", ".join(taken))
+    added = subprocess.run(
+        ["git", "-C", str(root), "worktree", "add", "-b", branch, str(destination), start],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if added.returncode:
+        discard(root, destination, branch)
+        raise ValueError(
+            f"Could not create the worktree {destination} on {branch}: {added.stderr.strip()[-500:]}"
+        )
+
+
+def candidate(root: Path, tag: str, destination: Path, branch: str, retired: set[str]) -> None:
+    clean(root)
+    data = manifest(root)
+    sha = validate_tag(root, data, tag)
+    entries = carried(data, retired)
+    head = git(root, "rev-parse", "HEAD")
+    check_originals(root, sha, entries)
+    add_worktree(root, destination, branch, sha)
+    replay(root, destination, entries, head)
     print(
         f"Candidate source ready at {destination}; resolve any conflicts explicitly and run source checks"
     )
+
+
+def upstream_main(root: Path) -> str:
+    repository = manifest(root)["upstream"]["repository"]
+    command(root, "fetch", "--quiet", "--no-tags", repository, "refs/heads/main")
+    return git(root, "rev-parse", "FETCH_HEAD^{commit}")
+
+
+def probe(root: Path, sha: str, work: Path) -> dict:
+    entries = carried(manifest(root), set())
+    head = git(root, "rev-parse", "HEAD")
+    work.mkdir(parents=True, exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(dir=work))
+    destination = scratch / "probe"
+    report: dict = {"upstream": sha, "status": "applies"}
+    try:
+        check_originals(root, sha, entries)
+        command(root, "worktree", "add", "--quiet", "--detach", str(destination), sha)
+        replay(root, destination, entries, head)
+    except RefreshConflict as conflict:
+        report.update(
+            status="empty" if conflict.empty else "conflict",
+            entry=conflict.entry,
+            paths=conflict.paths,
+            detail=str(conflict),
+        )
+    except (subprocess.CalledProcessError, ValueError) as error:
+        report.update(status="failed", detail=str(error))
+    finally:
+        subprocess.run(
+            ["git", "-C", str(root), "worktree", "remove", "--force", str(destination)],
+            capture_output=True,
+            check=False,
+        )
+        shutil.rmtree(scratch, ignore_errors=True)
+    return report
+
+
+def blank_only_hunks(content: bytes) -> list[str]:
+    found: list[str] = []
+    header: str | None = None
+    added: list[str] = []
+    for line in [*content.decode("utf-8", "replace").splitlines(), "diff --git end"]:
+        if line.startswith(("diff --git", "@@")):
+            if header and added and not any(text.strip() for text in added):
+                found.append(header)
+            header = line if line.startswith("@@") else None
+            added = []
+        elif header and line.startswith("+"):
+            added.append(line[1:])
+    return found
 
 
 def follow_base_version(destination: Path, old_tag: str, new_tag: str) -> None:
@@ -158,7 +238,31 @@ def integrate(
     for entry, commit in zip(entries, commits):
         if git(root, "show", "-s", "--format=%s", commit) != subject(entry):
             raise ValueError("Candidate commit order does not match the manifest")
-    command(root, "worktree", "add", "-b", branch, str(destination), "HEAD")
+    contents = {
+        patch["id"]: subprocess.check_output(
+            [
+                "git",
+                "-C",
+                str(root),
+                "diff",
+                "--binary",
+                commit + "^",
+                commit,
+                "--",
+                *patch["paths"],
+            ]
+        )
+        for patch, commit in zip(entries, commits)
+        if patch["status"] == "carried"
+    }
+    padded = {key: hunks for key, value in contents.items() if (hunks := blank_only_hunks(value))}
+    if padded:
+        raise ValueError(
+            "Candidate commits add hunks of only blank lines, which would anchor carried patches "
+            "on unrelated upstream context; remove them from the candidate: "
+            + "; ".join(f"{key} {', '.join(hunks)}" for key, hunks in padded.items())
+        )
+    add_worktree(root, destination, branch, "HEAD")
     merge = command(destination, "merge", "--no-ff", "--no-commit", sha, check=False)
     conflicts = set(git(destination, "diff", "--name-only", "--diff-filter=U").splitlines())
     if conflicts - set(paths) or (merge.returncode and not conflicts):
@@ -182,23 +286,10 @@ def integrate(
     data["upstream"]["tag"] = tag
     data["upstream"]["sha"] = sha
     data["version"] = tag[1:] + ".1"
-    for patch, commit in zip(entries, commits):
+    for patch in entries:
         if patch["status"] != "carried":
             continue
-        content = subprocess.check_output(
-            [
-                "git",
-                "-C",
-                str(root),
-                "diff",
-                "--binary",
-                commit + "^",
-                commit,
-                "--",
-                *patch["paths"],
-            ]
-        )
-        (destination / patch["patch"]).write_bytes(content)
+        (destination / patch["patch"]).write_bytes(contents[patch["id"]])
         command(destination, "add", "--", patch["patch"])
     for patch in data["patches"]:
         if patch["id"] in retirements:
@@ -359,17 +450,24 @@ def main() -> None:
             sub.add_argument("--candidate", required=True)
     args = parser.parse_args()
     if args.action == "latest":
-        latest(ROOT)
-    elif args.action == "auto":
+        return latest(ROOT)
+    if args.action == "auto":
         report = auto(ROOT, args.tag, args.work_dir.resolve())
         args.report.write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps(report, indent=2))
         sys.exit(0 if report["status"] == "refreshed" else FOLLOW_UP_EXIT)
-    elif args.action == "candidate":
-        candidate(ROOT, args.tag, args.path.resolve(), args.branch, set(args.retire))
-    else:
-        retirements = dict(value.split("=", 1) for value in args.retire)
-        integrate(ROOT, args.tag, args.candidate, args.path.resolve(), args.branch, retirements)
+    try:
+        if args.action == "candidate":
+            candidate(ROOT, args.tag, args.path.resolve(), args.branch, set(args.retire))
+        else:
+            retirements = dict(value.split("=", 1) for value in args.retire)
+            integrate(ROOT, args.tag, args.candidate, args.path.resolve(), args.branch, retirements)
+    except RefreshConflict as conflict:
+        sys.exit(
+            f"{conflict}\nResolve it in {args.path.resolve()}, then continue as MAINTAINING.md describes."
+        )
+    except (subprocess.CalledProcessError, ValueError) as error:
+        sys.exit(f"{args.action} stopped: {error}")
 
 
 if __name__ == "__main__":
