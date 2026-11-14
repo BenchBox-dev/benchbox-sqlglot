@@ -5,7 +5,7 @@
     "The existing stale branches are removed only after each is confirmed merged into main with no open pull request.",
     "MAINTAINING.md states the behaviour, and controller tests (if the controller deletes) cover merged, unmerged and open-PR branches."
   ],
-  "context": "Decision gate (owner, before any change): (a) enable the repository's delete-branch-on-merge setting (a hosted settings change the owner makes or approves; it affects every branch in the fork), or (b) the controller deletes a refresh branch it owns once its pull request is merged (code change; the App already has contents write). Deleting the four existing remote branches is destructive and needs explicit owner approval.\n\nVerification rubric: (1) for each deleted branch, record its SHA and the merge commit proving it is on main; (2) after the next refresh merges, the branch is gone; (3) the controller's no-pull-request branch adoption path still adopts an interrupted push (test).\n\nGuardrails: never delete a branch that is not merged into main, has an open pull request, or is the current refresh branch; never delete non-refresh branches; record deleted SHAs in context so they can be restored.\n\nOwner decision 2026-11-14 (choice dialog): enable the fork's delete-branch-on-merge setting and delete the four merged branches. Done 2026-11-14: delete_branch_on_merge=true; deleted (each verified an ancestor of main, PR merged): refresh/upstream-30.25.0 c3bf37bb07f86e9575bc67c9e1c97962a824fdae (#77), refresh/upstream-30.27.0 5d5b7b204b66b8752a19b4266a13b6b86be035a6 (#79), refresh/upstream-30.29.0 23567d4c6364e2c5a6ec396c23dbec0d3f9a815a (#80), refresh/upstream-30.30.0 860a2bce72be918fe2c56c588a0439ece50ede7c (#85). Remaining: MAINTAINING.md statement (fork PR).",
+  "context": "Decision gate (owner, before any change): (a) enable the repository's delete-branch-on-merge setting (a hosted settings change the owner makes or approves; it affects every branch in the fork), or (b) the controller deletes a refresh branch it owns once its pull request is merged (code change; the App already has contents write). Deleting the four existing remote branches is destructive and needs explicit owner approval.\n\nVerification rubric: (1) for each deleted branch, record its SHA and the merge commit proving it is on main; (2) after the next refresh merges, the branch is gone; (3) the controller's no-pull-request branch adoption path still adopts an interrupted push (test).\n\nGuardrails: never delete a branch that is not merged into main, has an open pull request, or is the current refresh branch; never delete non-refresh branches; record deleted SHAs in context so they can be restored.\n\nOwner decision 2026-11-14 (choice dialog): enable the fork's delete-branch-on-merge setting and delete the four merged branches. Done 2026-11-14: delete_branch_on_merge=true; deleted (each verified an ancestor of main, PR merged): refresh/upstream-30.25.0 c3bf37bb07f86e9575bc67c9e1c97962a824fdae (#77), refresh/upstream-30.27.0 5d5b7b204b66b8752a19b4266a13b6b86be035a6 (#79), refresh/upstream-30.29.0 23567d4c6364e2c5a6ec396c23dbec0d3f9a815a (#80), refresh/upstream-30.30.0 860a2bce72be918fe2c56c588a0439ece50ede7c (#85). Remaining: MAINTAINING.md statement (fork PR).\n\nSetting enabled 2026-11-14 (delete_branch_on_merge=true) and the four merged branches deleted with SHAs recorded above. Proof after merge: PR #90's branch feat/refresh-drift-and-signals was deleted on merge (ls-remote empty). MAINTAINING.md Recovery states the behaviour (Delivered in https://github.com/BenchBox-dev/benchbox-sqlglot/pull/90, merged as 19ddf096438b3a9d1ef815bdb6e59473d463939f (20/20 checks passed). 132 downstream tests pass (controller, refresh, contract, delivery, distribution).) The controller's branch adoption path is unchanged (no controller code touched it; controller tests pass).",
   "description": "refresh/upstream-30.25.0, -30.27.0, -30.29.0 and -30.30.0 remain on BenchBox-dev/benchbox-sqlglot after their pull requests merged. The repository has delete_branch_on_merge off and the controller never deletes a branch. Stale branches clutter the namespace the controller and its ownership proof reason about.",
   "sessions": [
     {
@@ -39,6 +39,14 @@
       "generation": "ed3751ab309a400e9dce6b949c4a8938",
       "op": "take",
       "op_id": "8bb16cfcc3e24b51baa762f8de42dfd5",
+      "session_id": "156c8e4b961b435fb161e0b220a81970"
+    },
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:4bdc683c82f41fadde87e636",
+      "at": "2026-11-14T14:28:24Z",
+      "client": "omp-coding-agent",
+      "op": "update",
+      "op_id": "6b815919de044a4b8e9e6565acab1701",
       "session_id": "156c8e4b961b435fb161e0b220a81970"
     }
   ]
