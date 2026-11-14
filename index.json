@@ -29,6 +29,13 @@
       "status": "open",
       "title": "Triage the not_offered carried patches into owner-approved upstream offers or recorded declines"
     },
+    "offer-upstream-duckdb-order-by-all-keyword-20261114": {
+      "claim": null,
+      "needs": [],
+      "priority": "low",
+      "status": "open",
+      "title": "Offer the duckdb-order-by-all-keyword carried patch upstream"
+    },
     "refresh-candidate-crashes-on-existing-workdir-20261112": {
       "claim": null,
       "needs": [],
