@@ -1,0 +1,19 @@
+{
+  "acceptance": [
+    "The owner approves this offer in context (date, approver) before anything is posted upstream.",
+    "An upstream pull request for the reduced empty-group-by-generator change is opened and linked; patches.json moves empty-group-by-generator to upstream_state offered with that tobymao/sqlglot URL and a reason saying where it stands.",
+    "The upstream PR's tests pass on the real engine locally or in upstream CI, with the evidence recorded in context."
+  ],
+  "context": "Decision gate (owner): approve this offer before any upstream contact.\n\nVerification rubric: (1) the reduced change applies to current upstream main; (2) its dialect tests pass on the real engine; (3) the fork's downstream contract tests pass after the patches.json edit.\n\nGuardrails: no pull request, issue or comment on tobymao/sqlglot until the owner approves this specific offer in this item's context; the offered change must be the fork patch reduced to upstream-only behaviour; the patch stays carried in patches.json until upstream merges and a refresh retires it with equivalence evidence.\n\nUpstream rules (tobymao/sqlglot AGENTS.md): Conventional Commits title ending with the agent model ([CLAUDE], [CODEX]); minimal scope; tests in tests/dialects that run on the real engine; no fork-only behaviour or benchbox package references.",
+  "description": "Generator flag for engines that reject GROUP BY (); no carried dependency. Prerequisite for spark-databricks-regexp-trunc and for the later SQLite empty GROUP BY entries. Approved as an offer candidate in the triage of not-offered-patches-lack-upstream-follow-up-20261112 (owner decision 2026-11-14). Each carried patch upstream merges is one less that can stop a refresh.",
+  "sessions": [
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:4bdc683c82f41fadde87e636",
+      "at": "2026-11-14T14:06:41Z",
+      "client": "omp-coding-agent",
+      "op": "create",
+      "op_id": "b5cd96df93b84cd781ef2cd4eed64235",
+      "session_id": "156c8e4b961b435fb161e0b220a81970"
+    }
+  ]
+}
