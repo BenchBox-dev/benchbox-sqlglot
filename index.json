@@ -91,15 +91,10 @@
       "title": "Offer the sqlite-date-extraction carried patch upstream"
     },
     "refresh-candidate-crashes-on-existing-workdir-20261112": {
-      "claim": {
-        "expires_at": "2026-11-15T14:28:11Z",
-        "generation": "b561fb57ea414fec8b14b425ee15f838",
-        "renewals": 0,
-        "worker": "mcp:omp-coding-agent:joe@joe-mac-mini.local:4bdc683c82f41fadde87e636"
-      },
+      "claim": null,
       "needs": [],
       "priority": "low",
-      "status": "active",
+      "status": "done",
       "title": "refresh candidate crashes with a traceback and leaves its branch when the worktree path exists"
     },
     "refresh-normalization-blank-only-hunk-20261112": {
