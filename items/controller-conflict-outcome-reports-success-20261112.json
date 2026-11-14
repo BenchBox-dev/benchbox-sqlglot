@@ -5,7 +5,7 @@
     "Later runs that skip the unchanged failed input behave as the chosen option specifies, without re-raising or duplicating the issue.",
     "MAINTAINING.md (Issues section) describes the signal, and controller tests cover a conflict run, a skipped-unchanged run, a retry dispatch and a workflow_run nudge."
   ],
-  "context": "Purpose: lowers the risk that the next upstream release stops on a conflict, which would fail the core item sqlglot-e2e-first-release-certification (BenchBox-dev/BenchBox tracker; cross-tracker needs are not possible).\n\nDecision gate (owner, before implementation): choose one: (a) only the run that first records the conflict fails (one notification, then quiet); (b) every scheduled run fails while the issue is open (persistent, noisy, also red on workflow_run nudges unless excluded); (c) runs stay green and the issue gets a label or a commit status that an alert watches. Record the choice here.\n\nVerification rubric: (1) new controller tests fail before and pass after; (2) existing controller and contract tests pass; (3) a dry-run dispatch against a deliberately conflicting fixture or recorded plan shows the chosen signal; (4) the outcome table in MAINTAINING.md matches the code.\n\nGuardrails: no change to issue keying, dedupe, skip-unchanged logic or the publish job's mutation rules; a failing signal must not let publish run or skip readiness; prepare-failed, publish-refused and publish-failed keep their current non-zero exits; no new permission or secret.",
+  "context": "Purpose: lowers the risk that the next upstream release stops on a conflict, which would fail the core item sqlglot-e2e-first-release-certification (BenchBox-dev/BenchBox tracker; cross-tracker needs are not possible).\n\nDecision gate (owner, before implementation): choose one: (a) only the run that first records the conflict fails (one notification, then quiet); (b) every scheduled run fails while the issue is open (persistent, noisy, also red on workflow_run nudges unless excluded); (c) runs stay green and the issue gets a label or a commit status that an alert watches. Record the choice here.\n\nVerification rubric: (1) new controller tests fail before and pass after; (2) existing controller and contract tests pass; (3) a dry-run dispatch against a deliberately conflicting fixture or recorded plan shows the chosen signal; (4) the outcome table in MAINTAINING.md matches the code.\n\nGuardrails: no change to issue keying, dedupe, skip-unchanged logic or the publish job's mutation rules; a failing signal must not let publish run or skip readiness; prepare-failed, publish-refused and publish-failed keep their current non-zero exits; no new permission or secret.\n\nOwner decision 2026-11-14 (choice dialog): option (a): the run that first raises or changes a conflict/failed issue fails; runs that skip the unchanged input stay green; the same rule applies to drift issues.",
   "description": "When downstream.refresh auto exits with status conflict or failed, the controller opens issue-only escalation and the workflow run still concludes success. The v30.31.0 conflict (issue #88, run 43024772570) showed as a green run on 2026-11-11, and the next scheduled runs skipped the unchanged input and were green too; it was noticed only by comparing versions by hand. prepare-failed, publish-refused and publish-failed already exit non-zero (MAINTAINING.md, Issues), so the refresh-stopped outcomes are the quiet exception.",
   "links": [
     "https://github.com/BenchBox-dev/benchbox-sqlglot/issues/88",
@@ -27,6 +27,14 @@
       "op": "update",
       "op_id": "46fa28c8f9ca43d8a2601b57e045b41f",
       "session_id": "082b1aaecda94f48a3b2cd12255fdde0"
+    },
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:4bdc683c82f41fadde87e636",
+      "at": "2026-11-14T13:57:28Z",
+      "client": "omp-coding-agent",
+      "op": "update",
+      "op_id": "46c3122fc24e4259b5a51c3addbfce2e",
+      "session_id": "156c8e4b961b435fb161e0b220a81970"
     }
   ]
 }
