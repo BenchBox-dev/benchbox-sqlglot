@@ -373,7 +373,7 @@
       "source": "a83f3dd0d29fbeda10ea1606e0903461ba1c4abc",
       "status": "carried",
       "upstream_state": "not_offered",
-      "upstream_reason": "SQLite DATEDIFF and DATE_SUB round trip with no BenchBox-specific behavior; a candidate.",
+      "upstream_reason": "SQLite DATEDIFF ... DAY round trip with no BenchBox-specific behavior; upstream v30.31.0 added its own DATE_SUB lowering, so only DATEDIFF remains. Not offered yet: it applies on top of sqlite-temporal-lowering, which the fork declined, so it needs a version independent of that entry first.",
       "depends": [
         "sqlite-temporal-lowering"
       ],
@@ -753,7 +753,7 @@
       "source": "11bbf0319c08bba01fd19af2135a0a3f669ae9e3",
       "status": "carried",
       "upstream_state": "not_offered",
-      "upstream_reason": "SQLite set-operation operand parenthesization fix with no BenchBox-specific behavior; a candidate.",
+      "upstream_reason": "SQLite set-operation operand parenthesization fix with no BenchBox-specific behavior. Not offered yet: it depends on empty-group-by-generator being offered and on sqlite-date-integer-semantics, which reads the fork's benchbox package and needs a typed-only reduction first.",
       "depends": [
         "empty-group-by-generator",
         "sqlite-date-integer-semantics"
@@ -970,8 +970,8 @@
       "id": "singlestore-json-integer-index",
       "source": "c0df323d7df95768e834bf169e1262c6f5379f55",
       "status": "carried",
-      "upstream_state": "not_offered",
-      "upstream_reason": "Not yet offered upstream; SingleStore has no engine in CI to verify the keypath form, so the evidence is the SingleStore keypath documentation and golden text.",
+      "upstream_state": "declined",
+      "upstream_reason": "The fork keeps it: upstream requires dialect tests that run on the real engine, and CI has no SingleStore engine to verify the keypath form, so the evidence is the SingleStore keypath documentation and golden text.",
       "depends": [
         "benchbox-native-dialects"
       ],
@@ -990,8 +990,8 @@
       "id": "null-ordering-source-semantics",
       "source": "7289d835a9d212d83fb9c23854e6a18ce8f88006",
       "status": "carried",
-      "upstream_state": "not_offered",
-      "upstream_reason": "Writes the source dialect's NULL placement where upstream drops the clause with an unsupported warning; BenchBox's cross-engine row-order requirement, so not offered as is.",
+      "upstream_state": "declined",
+      "upstream_reason": "The fork keeps it: it writes the source dialect's NULL placement where upstream drops the clause with an unsupported warning, to meet BenchBox's cross-engine row-order requirement, which is not upstream's behaviour.",
       "depends": [
         "empty-group-by-generator",
         "postgres-exact-division",
@@ -1081,7 +1081,7 @@
       "source": "329cb733961942c521bdd44adc3f7c58fec15837",
       "status": "carried",
       "upstream_state": "not_offered",
-      "upstream_reason": "SQLite generator flag value with no BenchBox-specific behavior; a candidate once empty-group-by-generator is offered.",
+      "upstream_reason": "SQLite generator flag value with no BenchBox-specific behavior. Not offered yet: it depends on empty-group-by-generator being offered and on sqlite-date-literals, which reads the fork's benchbox package and needs a typed-only reduction first.",
       "depends": [
         "empty-group-by-generator",
         "sqlite-date-literals"
@@ -1100,8 +1100,8 @@
       "id": "sqlite-index-null-ordering",
       "source": "dbf8811e8c48766a88c14665b0642ad060567dcd",
       "status": "carried",
-      "upstream_state": "not_offered",
-      "upstream_reason": "SQLite CREATE INDEX null-ordering suppression keyed to the fork's null-ordering-source-semantics emission; a candidate once that entry is offered.",
+      "upstream_state": "declined",
+      "upstream_reason": "The fork keeps it: it suppresses SQLite CREATE INDEX null ordering keyed to the fork's null-ordering-source-semantics emission, which the fork declined, so it has no upstream counterpart.",
       "depends": [
         "null-ordering-source-semantics"
       ],

@@ -5,6 +5,8 @@ from pathlib import Path
 
 import yaml
 
+from downstream.refresh import blank_only_hunks
+
 CREDENTIAL_JOBS = {("benchbox-upstream.yml", "publish"), ("benchbox-upstream.yml", "readiness")}
 
 
@@ -67,6 +69,15 @@ class TestDownstreamContract(unittest.TestCase):
                             f"{path} exists upstream; original entries are limited to new files",
                         )
         self.assertTrue(all(len(kinds) == 1 for kinds in owners.values()))
+
+    def test_carried_patches_have_no_hunks_of_only_blank_lines(self):
+        root = Path(__file__).resolve().parents[1]
+        manifest = json.loads((root / "downstream" / "patches.json").read_text())
+        for patch in manifest["patches"]:
+            if patch["status"] == "carried":
+                with self.subTest(patch=patch["id"]):
+                    content = (root / patch["patch"]).read_bytes()
+                    self.assertEqual(blank_only_hunks(content), [])
 
     def test_every_changed_path_has_an_owner(self):
         root = Path(__file__).resolve().parents[1]

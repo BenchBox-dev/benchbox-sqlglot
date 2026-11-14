@@ -409,6 +409,14 @@ read before anything runs them. In both failing cases it removes the worktrees
 and branches it created. It refuses to start, removing nothing, when either
 `refresh/candidate-X`, `refresh/upstream-X` or its work directory already
 exists, so run it in a clean clone or after deleting your manual branches.
+`candidate` and `integrate` refuse the same way when their `--path` or `--branch`
+already exists, and exit with a message rather than a traceback; a worktree that
+cannot be created leaves no branch behind. A `candidate` that stops on a carried
+patch keeps its worktree so the conflict can be resolved there. `integrate`
+refuses a candidate commit with a hunk that adds only blank lines: such a hunk,
+left by a hand resolution, would be written into the normalized patch and anchor
+it on unrelated upstream lines, and the contract tests refuse it in any carried
+patch.
 
 **Controller jobs.** `prepare` runs with `contents`, `pull-requests`, `issues`,
 `checks` and `statuses` read-only, no secrets, on trusted `main`: it reads GitHub,
@@ -521,11 +529,35 @@ An unchanged failed input is skipped on later runs until the tag or `main`
 changes, `retry` is set, or the issue is closed. A healthy pull request, an
 up-to-date `main` or a successful refresh closes it.
 
+**Run status.** A pass that first raises a `conflict` or `failed` refresh issue,
+or changes its key (a new tag or `main` commit, or a `retry` dispatch), still
+writes its plan and then fails `prepare`, so the run is red once and `publish`
+writes the issue. Passes that skip the unchanged input stay green. An event pass
+never fails on this. With the kill switch off no issue is written, so every
+scheduled pass that finds the problem is red.
+
+**Patch drift.** Every scheduled or dispatched pass (not an event pass) also
+replays the carried patches on upstream `main`, fetched from the manifest's
+upstream repository: `git apply` on a scratch worktree only, nothing from
+upstream is run. When a patch stops applying, or applies but changes nothing
+because upstream may already contain it, the pass opens or updates one
+App-authored issue for that patch with a `benchbox-upstream-drift` marker
+(patch, kind, files and upstream commit), closes drift issues for other patches,
+and closes all of them once every patch applies. Patches apply in order, so only
+the first failing patch is reported. A new drift issue, or a change in the
+patch, kind or files, makes the run red once, by the run status rule above; an
+upstream commit that moves without changing the finding only updates the
+issue body. A probe that cannot run (for example a failed fetch) is a note in
+the summary and does not fail the run. Drift issues never block or change a
+refresh; fix them before upstream tags a release that contains the change.
+
 **Recovery.** To hold a refresh add the `no-auto-merge` label or mark the pull
 request draft. To resolve a conflict, refresh by hand with the steps below on a
 branch with a different name, merge it, and the controller sees `main` current. To
 discard a stuck refresh, close its pull request and delete its branch, close the
-issue, and dispatch with `dry_run: false`. To pause everything, set
+issue, and dispatch with `dry_run: false`. The repository deletes a pull
+request's branch when it merges, so merged `refresh/upstream-X` branches do not
+accumulate. To pause everything, set
 `BENCHBOX_UPSTREAM_ENABLED` to anything but `true`.
 
 1. Fetch the chosen upstream tag and record its commit. Review upstream changes

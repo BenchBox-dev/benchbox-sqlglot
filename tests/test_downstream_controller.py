@@ -239,7 +239,7 @@ class Env:
         )
         return result.stdout.strip() or None
 
-    def controller(self, retry=False, refresher=None, event=None):
+    def controller(self, retry=False, refresher=None, event=None, upstream="v1.0.0"):
         extra = {"refresher": refresher} if refresher else {}
         if event is not None:
             extra["event"] = event
@@ -252,6 +252,7 @@ class Env:
             run_url="https://example.invalid/run/1",
             retry=retry,
             app_slug=SLUG,
+            upstream_head=lambda root: git(root, "rev-parse", f"{upstream}^{{commit}}"),
             **extra,
         )
 
@@ -1545,6 +1546,119 @@ class TestAppReadiness(unittest.TestCase):
             self.assertRaises(ControllerError),
         ):
             openssl_sign("key", b"message")
+
+
+def upstream_main(env, runtime, name="upstream-main"):
+    root = env.source
+    if git(root, "branch", "--list", name):
+        run(root, "switch", "-q", name)
+    else:
+        run(root, "switch", "-qc", name, TAG)
+    (root / "runtime.py").write_text(runtime)
+    env.commit(["runtime.py"], "Change upstream main")
+    run(root, "switch", "-q", "main")
+    return name
+
+
+def drift_issues(env):
+    return [i for i in env.api.issues.values() if "benchbox-upstream-drift" in i["body"]]
+
+
+class TestPatchDriftAndSignals(unittest.TestCase):
+    def test_drift_opens_one_issue_signals_once_and_closes_when_the_patch_applies(self):
+        env = Env(self)
+        moved = upstream_main(env, CONFLICTING)
+        plan = env.plan(upstream=moved)
+        self.assertEqual(plan["outcome"], "refreshed")
+        self.assertEqual((plan["drift"]["status"], plan["drift"]["entry"]), ("conflict", "runtime"))
+        self.assertIn("upsert_drift_issue", ops(plan))
+        self.assertEqual(len(plan["signals"]), 1)
+        self.assertIn("runtime", plan["signals"][0])
+        env.apply(plan)
+        [issue] = drift_issues(env)
+        self.assertIn("runtime", issue["title"])
+        quiet = env.plan(upstream=moved)
+        self.assertNotIn("upsert_drift_issue", ops(quiet))
+        self.assertNotIn("signals", quiet)
+        moved = upstream_main(env, CONFLICTING.replace("MIDDLE = 1", "MIDDLE = 1  # moved"))
+        updated = env.plan(upstream=moved)
+        self.assertIn("upsert_drift_issue", ops(updated))
+        self.assertNotIn("signals", updated)
+        env.apply(updated)
+        self.assertEqual(len(drift_issues(env)), 1)
+        self.assertIn(git(env.source, "rev-parse", moved), drift_issues(env)[0]["body"])
+        healed = env.plan()
+        self.assertIn("close_drift_issues", ops(healed))
+        self.assertNotIn("signals", healed)
+        env.apply(healed)
+        self.assertEqual(drift_issues(env)[0]["state"], "closed")
+
+    def test_a_patch_upstream_main_already_contains_is_reported_for_retirement(self):
+        env = Env(self)
+        moved = upstream_main(env, "VALUE = 'downstream'\nMIDDLE = 1\nOTHER = 'upstream'\n")
+        plan = env.plan(upstream=moved)
+        self.assertEqual(plan["drift"]["status"], "empty")
+        body = next(a["body"] for a in plan["actions"] if a["op"] == "upsert_drift_issue")
+        self.assertIn("retirement", body)
+
+    def test_a_refresh_conflict_signals_only_when_its_issue_is_raised_or_changed(self):
+        env = Env(self, CONFLICTING)
+        plan = env.plan()
+        self.assertEqual(plan["signals"], [f"The refresh to {TAG} stopped: conflict"])
+        env.apply(plan)
+        skipped = env.plan()
+        self.assertEqual(skipped["outcome"], "skipped")
+        self.assertNotIn("signals", skipped)
+        env.advance_main()
+        self.assertEqual(env.plan()["signals"], [f"The refresh to {TAG} stopped: conflict"])
+
+    def test_a_probe_that_cannot_run_is_noted_without_failing_the_run(self):
+        env = Env(self)
+        controller = env.controller()
+
+        def unreachable(root):
+            raise subprocess.CalledProcessError(128, ["git", "fetch"])
+
+        controller.upstream_head = unreachable
+        plan = controller.plan()
+        self.assertEqual(plan["drift"], {"status": "probe-failed"})
+        self.assertTrue(any("drift probe did not run" in note for note in plan["notes"]))
+        self.assertNotIn("signals", plan)
+
+    def test_an_event_pass_runs_no_probe_and_raises_no_signal(self):
+        env = Env(self)
+        env.publish()
+        head = env.remote_sha(BRANCH)
+        env.pass_checks(head)
+        controller = env.controller(event=refresh_event(head=head))
+
+        def forbidden(*args):
+            raise AssertionError("an event pass must not probe upstream main")
+
+        controller.upstream_head = forbidden
+        plan = controller.plan()
+        self.assertEqual(ops(plan), ["merge_pr"])
+        self.assertNotIn("drift", plan)
+        self.assertNotIn("signals", plan)
+
+    def test_prepare_fails_the_run_on_a_signal_after_writing_the_plan(self):
+        env = Env(self)
+        controller = env.controller(upstream=upstream_main(env, CONFLICTING))
+        argv = ["controller", "prepare", "--out-dir", str(env.out)]
+        with (
+            mock.patch("sys.argv", argv),
+            mock.patch.dict(os.environ, {"GH_TOKEN": "token", "ENABLED": "true"}),
+            mock.patch.object(controller_module, "build", return_value=controller),
+            mock.patch.object(controller_module, "write_output") as output,
+            mock.patch.object(controller_module, "write_summary"),
+            mock.patch("builtins.print"),
+            self.assertRaises(SystemExit) as stopped,
+        ):
+            controller_module.main()
+        self.assertIn("Needs follow-up: Carried patch runtime", str(stopped.exception.code))
+        output.assert_called_with("mutate", "true")
+        state = json.loads((env.out / "state.json").read_text())
+        self.assertIn("upsert_drift_issue", ops(state))
 
 
 if __name__ == "__main__":

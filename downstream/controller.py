@@ -40,6 +40,8 @@ STATE_FILE = "state.json"
 RESULT_FILE = "result.json"
 BUNDLE_FILE = "refresh.bundle"
 PR_MARKER = re.compile(r"<!-- benchbox-upstream (\{[^\n]*?\}) -->")
+DRIFT_MARKER = re.compile(r"<!-- benchbox-upstream-drift (\{[^\n]*?\}) -->")
+SIGNALLED = frozenset({"conflict", "failed"})
 ISSUE_MARKER = re.compile(r"<!-- benchbox-upstream-issue (\{[^\n]*?\}) -->")
 TAG = re.compile(r"^v\d+\.\d+\.\d+$")
 CHECK_PASS = {"success"}
@@ -257,6 +259,51 @@ def parse_issue_marker(body: str | None) -> dict | None:
     return data
 
 
+def parse_drift_marker(body: str | None) -> dict | None:
+    found = DRIFT_MARKER.findall(body or "")
+    if len(found) != 1:
+        return None
+    try:
+        data = json.loads(found[0])
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or not all(
+        isinstance(data.get(key), str) for key in ("entry", "kind", "upstream")
+    ):
+        return None
+    if not isinstance(data.get("paths"), list):
+        return None
+    return data
+
+
+def drift_title(entry: str) -> str:
+    return f"Carried patch {entry} no longer applies to upstream main"
+
+
+def drift_body(key: dict, upstream: str, detail: str, run_url: str) -> str:
+    marker = (
+        "<!-- benchbox-upstream-drift "
+        + json.dumps({**key, "upstream": upstream}, sort_keys=True, separators=(",", ":"))
+        + " -->"
+    )
+    meaning = (
+        "applies but changes nothing, so upstream main may already contain it; plan its "
+        "retirement for the next refresh"
+        if key["kind"] == "empty"
+        else "stopped applying; the next refresh onto a tag that contains this upstream change "
+        "will stop on it"
+    )
+    return (
+        f"{marker}\n\nReplaying the carried patches on upstream main `{upstream}`, "
+        f"`{key['entry']}` {meaning}.\n\n```\n{detail[-1500:]}\n```\n\n"
+        "Prepare the fix before upstream tags a release: adapt the patch, offer it upstream, or "
+        "plan its retirement as described under Upstream refresh in downstream/MAINTAINING.md. "
+        "The controller updates this issue as upstream main moves and closes it when the patch "
+        "applies again.\n\n"
+        f"Latest run: {run_url}\n"
+    )
+
+
 def claim(marker: dict, head: str) -> dict | None:
     if head == marker["head"]:
         return {"base": marker["base"], "tree": marker["tree"]}
@@ -459,11 +506,13 @@ class Controller:
     retry: bool = False
     discover: Callable[[Path], tuple[str, str]] = refresh.newest_tag
     refresher: Callable[..., Result] = refresh_at
+    upstream_head: Callable[[Path], str] = refresh.upstream_main
+    prober: Callable[[Path, str, Path], dict] = refresh.probe
     cache: dict = field(default_factory=dict)
     app_slug: str = ""
     event: dict | None = None
 
-    def controller_issues(self) -> list[dict]:
+    def owned_issues(self, parse: Callable[[str | None], dict | None]) -> list[dict]:
         found = []
         for issue in self.api.lists("issues", {"state": "open"}):
             author = issue.get("user") or {}
@@ -474,10 +523,16 @@ class Controller:
                 or author.get("login") != f"{self.app_slug}[bot]"
             ):
                 continue
-            key = parse_issue_marker(issue.get("body"))
+            key = parse(issue.get("body"))
             if key:
                 found.append({"number": issue["number"], "key": key, "body": issue.get("body")})
         return sorted(found, key=lambda item: item["number"])
+
+    def controller_issues(self) -> list[dict]:
+        return self.owned_issues(parse_issue_marker)
+
+    def drift_issues(self) -> list[dict]:
+        return self.owned_issues(parse_drift_marker)
 
     def recomputed(self, tag: str, base: str) -> Result:
         if (tag, base) not in self.cache:
@@ -487,7 +542,10 @@ class Controller:
     def plan(self) -> dict:
         """Plan one pass. A workflow_run event narrows it to merging the pull request."""
         if self.event is None:
-            return self.full_plan()
+            out = self.full_plan()
+            if out.get("outcome") != "main-moved":
+                self.drift(out)
+            return out
         refusal = event_refusal(self.event, self.api.repository)
         if refusal:
             return {
@@ -502,6 +560,7 @@ class Controller:
         out = self.full_plan()
         out["event"] = {k: self.event[k] for k in ("workflow", "branch", "head")}
         out["actions"] = [a for a in out["actions"] if a["op"] in MERGE_ONLY]
+        out.pop("signals", None)
         return out
 
     def full_plan(self) -> dict:
@@ -618,6 +677,47 @@ class Controller:
                 "body": issue_body(tag, base, outcome, detail, self.run_url),
             }
         )
+        if outcome in SIGNALLED:
+            out.setdefault("signals", []).append(f"The refresh to {tag} stopped: {outcome}")
+
+    def drift(self, out: dict) -> None:
+        try:
+            upstream = self.upstream_head(self.root)
+            report = self.prober(self.root, upstream, self.scratch / "drift")
+        except Exception as error:  # noqa: BLE001
+            out["drift"] = {"status": "probe-failed"}
+            out["notes"].append(
+                f"The patch drift probe did not run: {type(error).__name__}: {error}"
+            )
+            return
+        out["drift"] = {k: report[k] for k in ("status", "upstream", "entry") if k in report}
+        issues = self.drift_issues()
+        if report["status"] == "applies":
+            if issues:
+                out["actions"].append({"op": "close_drift_issues", "keep": None})
+            return
+        key = {
+            "entry": report.get("entry") or "manifest",
+            "kind": report["status"],
+            "paths": sorted(report.get("paths", [])),
+        }
+        same = next((i for i in issues if i["key"]["entry"] == key["entry"]), None)
+        if any(i["key"]["entry"] != key["entry"] for i in issues):
+            out["actions"].append({"op": "close_drift_issues", "keep": key["entry"]})
+        body = drift_body(key, upstream, report.get("detail", ""), self.run_url)
+        if same is None or same["body"] != body:
+            out["actions"].append(
+                {
+                    "op": "upsert_drift_issue",
+                    "entry": key["entry"],
+                    "title": drift_title(key["entry"]),
+                    "body": body,
+                }
+            )
+        if same is None or {k: same["key"].get(k) for k in key} != key:
+            out.setdefault("signals", []).append(
+                f"Carried patch {key['entry']} no longer applies to upstream main ({key['kind']})"
+            )
 
     def known_failure(self, issues: list[dict], tag: str, base: str) -> bool:
         key = next((i["key"] for i in issues if i["key"]["tag"] == tag), None)
@@ -1126,8 +1226,16 @@ def summary(plan: dict, mode: str) -> str:
         lines.append(f"- note: {note}")
     if plan.get("detail"):
         lines.append(f"- detail: {plan['detail'][:500]}")
+    if plan.get("drift"):
+        lines.append(f"- patch drift on upstream main: `{json.dumps(plan['drift'])}`")
+    for signal in plan.get("signals", []):
+        lines.append(f"- needs follow-up: {signal}")
     for action in plan.get("actions", []):
-        label = {k: v for k, v in action.items() if k in ("op", "number", "branch", "head", "tag")}
+        label = {
+            k: v
+            for k, v in action.items()
+            if k in ("op", "number", "branch", "head", "tag", "entry")
+        }
         lines.append(f"- {'planned' if mode != 'enabled' else 'to apply'}: `{json.dumps(label)}`")
     return "\n".join(lines) + "\n"
 
@@ -1285,6 +1393,32 @@ def close_issues(controller: Controller, op: dict) -> dict:
     return {"status": "closed" if closed else "unchanged", "numbers": closed}
 
 
+def upsert_drift_issue(controller: Controller, op: dict) -> dict:
+    api = controller.api
+    existing = [i for i in controller.drift_issues() if i["key"]["entry"] == op["entry"]]
+    if not existing:
+        created = api.send("POST", "issues", {"title": op["title"], "body": op["body"]})
+        return {"status": "opened", "number": created["number"]}
+    issue = existing[0]
+    if issue["body"] == op["body"]:
+        return {"status": "unchanged", "number": issue["number"]}
+    api.send("PATCH", f"issues/{issue['number']}", {"title": op["title"], "body": op["body"]})
+    return {"status": "updated", "number": issue["number"]}
+
+
+def close_drift_issues(controller: Controller, op: dict) -> dict:
+    closed = []
+    for issue in controller.drift_issues():
+        if issue["key"]["entry"] != op.get("keep"):
+            controller.api.send(
+                "PATCH",
+                f"issues/{issue['number']}",
+                {"state": "closed", "state_reason": "completed"},
+            )
+            closed.append(issue["number"])
+    return {"status": "closed" if closed else "unchanged", "numbers": closed}
+
+
 def report_publication(
     controller: Controller, plan: dict, outcome: str, detail: str, result: dict
 ) -> None:
@@ -1337,6 +1471,10 @@ def apply(controller: Controller, plan: dict, mode: str, bundle: Path) -> dict:
                 outcome = upsert_issue(controller, op)
             elif op["op"] == "close_issues":
                 outcome = close_issues(controller, op)
+            elif op["op"] == "upsert_drift_issue":
+                outcome = upsert_drift_issue(controller, op)
+            elif op["op"] == "close_drift_issues":
+                outcome = close_drift_issues(controller, op)
             else:
                 raise Refused(f"Unknown action {op['op']}")
         except (Refused, ControllerError, DeliveryError) as error:
@@ -1438,6 +1576,8 @@ def main() -> None:
         print(json.dumps(plan, indent=2))
         if plan.get("fail"):
             sys.exit(f"Preparing the plan failed: {plan.get('detail')}")
+        if plan.get("signals"):
+            sys.exit("Needs follow-up: " + "; ".join(plan["signals"]))
         return
     plan = json.loads(state.read_text())
     result = apply(controller, plan, mode, controller.bundle)
