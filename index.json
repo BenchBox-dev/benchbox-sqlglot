@@ -43,6 +43,13 @@
       "status": "open",
       "title": "Offer the duckdb-order-by-all-keyword carried patch upstream"
     },
+    "offer-upstream-snowflake-regexp-replace-groups-20261114": {
+      "claim": null,
+      "needs": [],
+      "priority": "low",
+      "status": "open",
+      "title": "Offer the snowflake-regexp-replace-groups carried patch upstream"
+    },
     "refresh-candidate-crashes-on-existing-workdir-20261112": {
       "claim": null,
       "needs": [],
