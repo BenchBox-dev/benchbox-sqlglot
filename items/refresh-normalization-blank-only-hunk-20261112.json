@@ -4,7 +4,7 @@
     "The check refuses the old patch downstream/patches/sqlite-date-extraction.patch from commit 860a2bce7.",
     "Either the step that wrote the hunk is identified and fixed with a refresh test reproducing it, or the context records that it could not be reproduced within the time-box and what was tried."
   ],
-  "context": "Decision gate: time-box the root-cause search (about half a day of effort) by rebuilding the v30.30.0 refresh from its recorded inputs. If it does not reproduce, ship the contract check alone and record the attempt; no owner decision is needed for that path.\n\nVerification rubric: (1) the new check fails on the 860a2bce7 patch and passes on main; (2) downstream refresh and contract tests pass; (3) if a cause is fixed, a refresh test that produced the blank-only hunk passes after the fix.\n\nGuardrails: do not hand-edit normalized patches on main to satisfy the check; the check must not reject hunks that add blank lines alongside real changes; no change to patch application order or the manifest schema.",
+  "context": "Decision gate: time-box the root-cause search (about half a day of effort) by rebuilding the v30.30.0 refresh from its recorded inputs. If it does not reproduce, ship the contract check alone and record the attempt; no owner decision is needed for that path.\n\nVerification rubric: (1) the new check fails on the 860a2bce7 patch and passes on main; (2) downstream refresh and contract tests pass; (3) if a cause is fixed, a refresh test that produced the blank-only hunk passes after the fix.\n\nGuardrails: do not hand-edit normalized patches on main to satisfy the check; the check must not reject hunks that add blank lines alongside real changes; no change to patch application order or the manifest schema.\n\nDelivered in https://github.com/BenchBox-dev/benchbox-sqlglot/pull/90, merged as 19ddf096438b3a9d1ef815bdb6e59473d463939f (20/20 checks passed). 132 downstream tests pass (controller, refresh, contract, delivery, distribution). Cause identified (no time-box needed): integrate writes each candidate commit's diff verbatim as the normalized patch, so blank lines left in a hand-resolved candidate commit during the v30.30.0 refresh became the blank-only hunk. integrate now refuses such a candidate commit before creating anything (test_integrate_refuses_a_candidate_commit_that_adds_only_blank_lines). Contract test test_carried_patches_have_no_hunks_of_only_blank_lines passes on every current patch; blank_only_hunks on 860a2bce7:downstream/patches/sqlite-date-extraction.patch returns ['@@ -287,6 +381,10 @@ class SQLiteGenerator(generator.Generator):']. Hunks adding blank lines alongside real changes are not flagged (unit test).",
   "description": "After the v30.30.0 refresh (860a2bce7), downstream/patches/sqlite-date-extraction.patch ended with hunk '@@ -287,6 +381,10 @@' that adds four blank lines after dateadd_sql and nothing else; source commit 34cd3e9f has no such hunk. It anchored the patch on the lines where upstream v30.31.0 later added datesub_sql and was the first conflict git reported in issue #88. The hand refresh (#89) regenerated the patch without it, so main is clean now, but the cause was not traced and a later refresh can produce it again.",
   "links": [
     "https://github.com/BenchBox-dev/benchbox-sqlglot/issues/88"
@@ -33,6 +33,14 @@
       "generation": "6f5b9050572f46b9912e110422860083",
       "op": "take",
       "op_id": "97eb8623b3a341b89539db75d6f566ee",
+      "session_id": "156c8e4b961b435fb161e0b220a81970"
+    },
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:4bdc683c82f41fadde87e636",
+      "at": "2026-11-14T14:28:04Z",
+      "client": "omp-coding-agent",
+      "op": "update",
+      "op_id": "c8363eb4b1eb4c0aae5e4f93cd54172a",
       "session_id": "156c8e4b961b435fb161e0b220a81970"
     }
   ]
