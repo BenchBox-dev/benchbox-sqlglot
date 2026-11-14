@@ -16,10 +16,15 @@
       "title": "A refresh that stops on conflict leaves the controller run green"
     },
     "merged-refresh-branches-never-deleted-20261112": {
-      "claim": null,
+      "claim": {
+        "expires_at": "2026-11-15T14:28:22Z",
+        "generation": "ed3751ab309a400e9dce6b949c4a8938",
+        "renewals": 0,
+        "worker": "mcp:omp-coding-agent:joe@joe-mac-mini.local:4bdc683c82f41fadde87e636"
+      },
       "needs": [],
       "priority": "low",
-      "status": "open",
+      "status": "active",
       "title": "Merged refresh/upstream-* branches stay on the fork remote"
     },
     "not-offered-patches-lack-upstream-follow-up-20261112": {
