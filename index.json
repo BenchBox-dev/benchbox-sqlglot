@@ -2,10 +2,15 @@
   "batches": {},
   "items": {
     "carried-patch-drift-unseen-until-release-20261112": {
-      "claim": null,
+      "claim": {
+        "expires_at": "2026-11-15T14:27:35Z",
+        "generation": "d95bf03d2eb34e84b0420bf9c456c008",
+        "renewals": 0,
+        "worker": "mcp:omp-coding-agent:joe@joe-mac-mini.local:4bdc683c82f41fadde87e636"
+      },
       "needs": [],
       "priority": "high",
-      "status": "open",
+      "status": "active",
       "title": "Carried patches are first tested against upstream only when a release is tagged"
     },
     "controller-conflict-outcome-reports-success-20261112": {
