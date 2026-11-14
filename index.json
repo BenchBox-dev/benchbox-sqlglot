@@ -71,6 +71,16 @@
       "status": "open",
       "title": "Offer the snowflake-regexp-replace-groups carried patch upstream"
     },
+    "offer-upstream-spark-databricks-regexp-trunc-20261114": {
+      "claim": null,
+      "needs": [
+        "offer-upstream-empty-group-by-generator-20261114",
+        "offer-upstream-databricks-primary-key-ordering-20261114"
+      ],
+      "priority": "low",
+      "status": "open",
+      "title": "Offer the spark-databricks-regexp-trunc carried patch upstream"
+    },
     "offer-upstream-sqlite-date-extraction-20261114": {
       "claim": null,
       "needs": [
