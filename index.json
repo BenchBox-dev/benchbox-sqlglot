@@ -147,15 +147,10 @@
       "title": "Fork App readiness reports ready even when the installation has excess write permissions"
     },
     "stage-drift-resolutions-before-upstream-tags-20261117": {
-      "claim": {
-        "expires_at": "2026-11-18T19:16:33Z",
-        "generation": "042d72312936496fa505e3a7f4d0d62a",
-        "renewals": 0,
-        "worker": "mcp:omp-coding-agent:joe@joe-mac-mini.local:bd184ef6cba18bd45c9ce20f"
-      },
+      "claim": null,
       "needs": [],
       "priority": "high",
-      "status": "active",
+      "status": "done",
       "title": "Let a drifting carried patch be fixed before upstream tags the release that breaks it"
     }
   },
