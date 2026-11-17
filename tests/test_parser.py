@@ -10,6 +10,13 @@ from tests.helpers import assert_logger_contains
 
 
 class TestParser(unittest.TestCase):
+    def test_conditionless_join(self):
+        self.assertEqual(parse_one("JOIN b", into=exp.Join).sql(), "CROSS JOIN b")
+        self.assertEqual(
+            parse_one("FROM a |> JOIN b", dialect="bigquery").sql(),
+            "SELECT * FROM a CROSS JOIN b",
+        )
+
     def test_ref_type(self) -> None:
         for dialect, target_sql in (
             ("", "customer"),
@@ -1200,6 +1207,18 @@ class TestParser(unittest.TestCase):
 
         self.assertEqual(ast.find(exp.Interval).this.sql(), "'71'")
         self.assertEqual(ast.find(exp.Interval).unit.assert_is(exp.Var).sql(), "DAYS")
+
+        add_ast = parse_one("SELECT INTERVAL '1 day' + '2024-01-01'::date", read="postgres")
+        add_expr = add_ast.expressions[0].assert_is(exp.Add)
+        add_expr.this.assert_is(exp.Interval)
+        add_expr.expression.assert_is(exp.Cast)
+
+        alias_ast = parse_one("SELECT INTERVAL '1 day' + '2' days", read="postgres")
+        alias_expr = alias_ast.expressions[0].assert_is(exp.Alias)
+        self.assertEqual(alias_expr.alias, "days")
+        alias_add = alias_expr.this.assert_is(exp.Add)
+        alias_add.this.assert_is(exp.Interval)
+        alias_add.expression.assert_is(exp.Literal)
 
     def test_parse_concat_ws(self):
         ast = parse_one("CONCAT_WS(' ', 'John', 'Doe')")

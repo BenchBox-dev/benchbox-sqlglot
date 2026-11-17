@@ -31,6 +31,19 @@ class DatabricksGenerator(SparkGenerator):
     PARSE_JSON_NAME: str | None = "PARSE_JSON"
     SUPPORTS_TEMPORAL_PRECISION = True
 
+    # Known limitation: with no partition keys to order by, CUME_DIST() OVER () becomes
+    # CUME_DIST() OVER (ORDER BY NULL), which Databricks still rejects with
+    # "EvalBatch not supported for window function"
+    WINDOW_FUNCS_REQUIRING_ORDER = (
+        exp.CumeDist,
+        exp.DenseRank,
+        exp.NthValue,
+        exp.Ntile,
+        exp.PercentRank,
+        exp.Rank,
+        exp.RowNumber,
+    )
+
     TRANSFORMS = {
         k: v
         for k, v in {
@@ -52,7 +65,6 @@ class DatabricksGenerator(SparkGenerator):
             exp.Select: transforms.preprocess(
                 [
                     transforms.eliminate_distinct_on,
-                    transforms.unnest_to_explode,
                     transforms.any_to_exists,
                 ]
             ),
@@ -68,6 +80,7 @@ class DatabricksGenerator(SparkGenerator):
             exp.CurrentCatalog: lambda *_: "CURRENT_CATALOG()",
             exp.RegexpLike: None,
             exp.TryCast: None,
+            exp.Unnest: None,
             exp.RegrAvgx: lambda self, e: self._regr_sql(e),
             exp.RegrSxx: lambda self, e: self._regr_sql(e),
             exp.RegrSyy: lambda self, e: self._regr_sql(e),
@@ -79,6 +92,58 @@ class DatabricksGenerator(SparkGenerator):
         **SparkGenerator.TYPE_MAPPING,
         exp.DType.NULL: "VOID",
     }
+
+    def unnest_sql(self, expression: exp.Unnest) -> str:
+        alias = expression.args.get("alias")
+        offset = expression.args.get("offset")
+        multiple = len(expression.expressions) > 1
+        this = (
+            exp.ArraysZip(expressions=expression.expressions)
+            if multiple
+            else expression.expressions[0]
+        )
+        if isinstance(this, exp.ExplodingGenerateSeries):
+            this = exp.GenerateSeries(**this.args)
+
+        table: exp.Expr
+        if offset:
+            offset = (
+                offset if isinstance(offset, exp.Identifier) else exp.to_identifier("ordinality")
+            )
+            position: exp.Expr = exp.column("pos")
+            if expression.args.get("offset_base") != 0:
+                position = exp.cast(position, exp.DType.BIGINT) + 1
+
+            table = (
+                exp.select(
+                    exp.column(exp.Star(), "col")
+                    if multiple
+                    else exp.Star(except_=[exp.column("pos")]),
+                    exp.alias_(position, offset),
+                )
+                .from_(exp.Table(this=exp.Posexplode(this=this)))
+                .subquery()
+            )
+            if alias and alias.columns:
+                alias.append("columns", offset)
+        else:
+            table = exp.Table(this=(exp.Inline if multiple else exp.Explode)(this=this))
+
+        if alias:
+            if alias.columns and not alias.this:
+                alias.set("this", exp.to_identifier(self._next_name()))
+            table.set("alias", alias)
+
+        if isinstance(expression.parent, exp.Join):
+            table = exp.Lateral(this=table)
+
+        return self.sql(table)
+
+    def lateral_sql(self, expression: exp.Lateral) -> str:
+        if isinstance(expression.this, exp.Unnest):
+            expression.this.set("alias", expression.args.pop("alias", None))
+
+        return super().lateral_sql(expression)
 
     def datatype_sql(self, expression: exp.DataType) -> str:
         # Databricks only supports a timestamp precision of 6 (microseconds) or 7 to 9
@@ -152,3 +217,6 @@ class DatabricksGenerator(SparkGenerator):
     def clusterproperty_sql(self, expression):
         this = self.sql(expression, "this") or f"({self.expressions(expression, flat=True)})"
         return f"CLUSTER BY {this}"
+
+    def optimize_sql(self, expression: exp.Optimize) -> str:
+        return f"OPTIMIZE {self.sql(expression, 'this')}"

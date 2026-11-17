@@ -1,8 +1,8 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index c3190f60..ae12fbda 100644
+index 85626ffd..f0114cda 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
-@@ -16,6 +16,8 @@ from sqlglot.dialects.dialect import (
+@@ -17,6 +17,8 @@ from sqlglot.dialects.dialect import (
      rename_func,
      strposition_sql,
  )
@@ -11,7 +11,7 @@ index c3190f60..ae12fbda 100644
  from sqlglot.generator import unsupported_args
  from sqlglot.helper import is_int
  from sqlglot.tokens import TokenType
-@@ -39,6 +41,15 @@ TRUNC_FORMATS = {
+@@ -40,6 +42,15 @@ TRUNC_FORMATS = {
  }
  
  
@@ -27,15 +27,15 @@ index c3190f60..ae12fbda 100644
  def _transform_create(expression: exp.Expr) -> exp.Expr:
      """Move primary key to a column and place auto_increment after it."""
      schema = expression.this
-@@ -184,6 +195,7 @@ class SQLiteGenerator(generator.Generator):
+@@ -185,6 +196,7 @@ class SQLiteGenerator(generator.Generator):
          exp.Pivot: no_pivot_sql,
-         exp.Rand: rename_func("RANDOM"),
+         exp.Rand: lambda self, e: self.func("RANDOM", e.this),
          exp.RegexpLike: lambda self, e: self.binary(e, "REGEXP"),
 +        **{kind: _moments_sql for kind in MOMENT_AGGREGATES},
          exp.Select: transforms.preprocess(
              [
                  transforms.eliminate_distinct_on,
-@@ -713,6 +725,9 @@ class SQLiteGenerator(generator.Generator):
+@@ -733,6 +745,9 @@ class SQLiteGenerator(generator.Generator):
  
          return self.func(name, *coalesces)
  

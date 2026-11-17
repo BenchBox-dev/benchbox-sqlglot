@@ -167,7 +167,7 @@ def simplify_parens(expression: exp.Expr, dialect: DialectType) -> exp.Expr:
         if (
             parent_is_predicate
             # unary operators that bind tighter than the predicate, unlike NOT
-            or isinstance(parent, (exp.Neg, exp.BitwiseNot))
+            or isinstance(parent, (exp.Pos, exp.Neg, exp.BitwiseNot))
             or (isinstance(parent, exp.Binary) and not isinstance(parent, exp.Connector))
         ):
             return expression
@@ -809,6 +809,9 @@ class Simplifier:
             node = self.simplify_literals(node, root)
             node = self.simplify_equality(node)
             node = simplify_parens(node, dialect=self.dialect)
+            # simplify_parens may have unwrapped a Paren, so make sure the following
+            # rules see the real parent and not the Paren that is about to be replaced
+            node.parent = parent
             node = self.simplify_datetrunc(node)
             node = self.sort_comparison(node)
             node = self.simplify_startswith(node)
@@ -826,14 +829,29 @@ class Simplifier:
         """
         if isinstance(expression, exp.Between):
             negate = isinstance(expression.parent, exp.Not)
+            symmetric = expression.args.get("symmetric")
+            this = expression.this
+            low = expression.args["low"]
+            high = expression.args["high"]
 
             expression = exp.and_(
-                exp.GTE(this=expression.this.copy(), expression=expression.args["low"]),
-                exp.LTE(this=expression.this.copy(), expression=expression.args["high"]),
+                exp.GTE(this=this.copy(), expression=low),
+                exp.LTE(this=this.copy(), expression=high),
                 copy=False,
             )
 
-            if negate:
+            if symmetric:
+                expression = exp.or_(
+                    expression,
+                    exp.and_(
+                        exp.GTE(this=this.copy(), expression=high.copy()),
+                        exp.LTE(this=this.copy(), expression=low.copy()),
+                        copy=False,
+                    ),
+                    copy=False,
+                )
+
+            if negate or symmetric:
                 expression = exp.paren(expression, copy=False)
 
         return expression
@@ -998,6 +1016,8 @@ class Simplifier:
                     l = l.to_py()
                     r = r.to_py()
                 elif l.is_string and r.is_string:
+                    if not all(c.is_type(*exp.DataType.TEXT_TYPES) for c in columns):
+                        return None
                     l = l.name
                     r = r.name
                 else:
@@ -1343,15 +1363,25 @@ class Simplifier:
         elif _is_date_literal(a) and isinstance(b, exp.Interval):
             date, b = extract_date(a), extract_interval(b)
             if date and b:
+                target_type = (
+                    expression.type
+                    if expression.is_type(*exp.DataType.TEMPORAL_TYPES)
+                    else extract_type(a)
+                )
                 if isinstance(expression, (exp.Add, exp.DateAdd, exp.DatetimeAdd)):
-                    return date_literal(date + b, extract_type(a))
+                    return date_literal(date + b, target_type)
                 if isinstance(expression, (exp.Sub, exp.DateSub, exp.DatetimeSub)):
-                    return date_literal(date - b, extract_type(a))
+                    return date_literal(date - b, target_type)
         elif isinstance(a, exp.Interval) and _is_date_literal(b):
             a, date = extract_interval(a), extract_date(b)
             # you cannot subtract a date from an interval
             if a and b and isinstance(expression, exp.Add):
-                return date_literal(a + date, extract_type(b))
+                target_type = (
+                    expression.type
+                    if expression.is_type(*exp.DataType.TEMPORAL_TYPES)
+                    else extract_type(b)
+                )
+                return date_literal(a + date, target_type)
         elif _is_date_literal(a) and _is_date_literal(b):
             if isinstance(expression, exp.Predicate):
                 a, b = extract_date(a), extract_date(b)
@@ -1761,7 +1791,7 @@ class Gen:
                 e.args.get("high"),
                 " AND ",
                 e.args.get("low"),
-                " BETWEEN ",
+                " BETWEEN SYMMETRIC " if e.args.get("symmetric") else " BETWEEN ",
                 e.this,
             )
         )
@@ -1855,6 +1885,9 @@ class Gen:
 
     def mul_sql(self, e: exp.Mul) -> None:
         self._binary(e, " * ")
+
+    def pos_sql(self, e: exp.Pos) -> None:
+        self._unary(e, "+")
 
     def neg_sql(self, e: exp.Neg) -> None:
         self._unary(e, "-")

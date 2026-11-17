@@ -63,7 +63,9 @@ def _json_format_sql(self: Spark2Generator, expression: exp.JSONFormat) -> str:
     return self.func("TO_JSON", this, expression.args.get("options"))
 
 
-SPARK_TRUNC_UNITS = frozenset({"YEAR", "YYYY", "YY", "QUARTER", "MONTH", "MON", "MM", "WEEK"})
+SPARK_DATE_TRUNC_ONLY_UNITS = frozenset(
+    {"DAY", "DD", "HOUR", "MINUTE", "SECOND", "MILLISECOND", "MICROSECOND"}
+)
 
 
 def _date_trunc_sql(self: Spark2Generator, expression: exp.DateTrunc) -> str:
@@ -71,7 +73,7 @@ def _date_trunc_sql(self: Spark2Generator, expression: exp.DateTrunc) -> str:
     if (
         isinstance(unit, exp.Literal)
         and unit.is_string
-        and unit.name.upper() not in SPARK_TRUNC_UNITS
+        and unit.name.upper() in SPARK_DATE_TRUNC_ONLY_UNITS
     ):
         return self.func("DATE_TRUNC", unit, expression.this)
     return self.func("TRUNC", expression.this, unit)
@@ -221,7 +223,6 @@ class Spark2Generator(HiveGenerator):
             # (DAY_OF_WEEK(datetime) % 7) + 1 is equivalent to DAYOFWEEK_ISO(datetime)
             exp.DayOfWeekIso: lambda self, e: f"(({self.func('DAYOFWEEK', e.this)} % 7) + 1)",
             exp.DayOfYear: rename_func("DAYOFYEAR"),
-            exp.Format: rename_func("FORMAT_STRING"),
             exp.From: transforms.preprocess([_unalias_pivot]),
             exp.FromTimeZone: lambda self, e: self.func(
                 "TO_UTC_TIMESTAMP", e.this, e.args.get("zone")
@@ -241,8 +242,12 @@ class Spark2Generator(HiveGenerator):
                     transforms.any_to_exists,
                 ]
             ),
-            exp.SHA2Digest: lambda self, e: self.func(
+            exp.SHA1Digest: lambda self, e: self.func("UNHEX", self.func("SHA", e.this)),
+            exp.SHA2: lambda self, e: self.func(
                 "SHA2", e.this, e.args.get("length") or exp.Literal.number(256)
+            ),
+            exp.SHA2Digest: lambda self, e: self.func(
+                "UNHEX", self.func("SHA2", e.this, e.args.get("length") or exp.Literal.number(256))
             ),
             exp.StrToDate: _str_to_date,
             exp.StrToTime: lambda self, e: self.func("TO_TIMESTAMP", e.this, self.format_time(e)),
@@ -263,6 +268,24 @@ class Spark2Generator(HiveGenerator):
 
     WRAP_DERIVED_VALUES = False
     CREATE_FUNCTION_RETURN_AS = False
+
+    def format_sql(self, expression: exp.Format) -> str:
+        if expression.args.get("is_fmt"):
+            return super().format_sql(expression)
+
+        return self.func("FORMAT_STRING", expression.this, *expression.expressions)
+
+    def dateadd_sql(self, expression: exp.DateAdd | exp.DateSub) -> str:
+        if expression.text("unit").upper() in (
+            "HOUR",
+            "MINUTE",
+            "SECOND",
+            "MILLISECOND",
+            "MICROSECOND",
+        ) and not (expression.expression.is_number or expression.expression.is_string):
+            self.unsupported("Spark 2 does not support non-literal sub-day date arithmetic")
+
+        return super().dateadd_sql(expression)
 
     def struct_sql(self, expression: exp.Struct) -> str:
         from sqlglot.generator import Generator

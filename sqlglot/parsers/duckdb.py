@@ -10,6 +10,7 @@ from sqlglot.dialects.dialect import (
     build_formatted_time,
     build_regexp_extract,
     date_trunc_to_time,
+    map_date_part,
     pivot_column_names,
 )
 from sqlglot.helper import seq_get
@@ -45,6 +46,15 @@ def _list_sort_order_name(order: exp.Expr | None, default: str) -> str | None:
 
 def _build_array_prepend(args: list) -> exp.Expr:
     return exp.ArrayPrepend(this=seq_get(args, 1), expression=seq_get(args, 0))
+
+
+def _build_date_trunc(args: list) -> exp.DateTrunc | exp.TimestampTrunc:
+    trunc = date_trunc_to_time(args)
+    unit = trunc.args.get("unit")
+    if isinstance(unit, (exp.Literal, exp.Var)) and map_date_part(unit).name.upper() == "CENTURY":
+        # DuckDB truncates centuries to multiples of 100, rather than years 1, 101, etc.
+        trunc.set("century_from_zero", True)
+    return trunc
 
 
 def _build_date_diff(args: list) -> exp.Expr:
@@ -185,8 +195,8 @@ class DuckDBParser(parser.Parser):
         "CURRENT_LOCALTIMESTAMP": exp.Localtimestamp.from_arg_list,
         "DATEDIFF": _build_date_diff,
         "DATE_DIFF": _build_date_diff,
-        "DATE_TRUNC": date_trunc_to_time,
-        "DATETRUNC": date_trunc_to_time,
+        "DATE_TRUNC": _build_date_trunc,
+        "DATETRUNC": _build_date_trunc,
         "DECODE": lambda args: exp.Decode(
             this=seq_get(args, 0), charset=exp.Literal.string("utf-8")
         ),
@@ -196,6 +206,7 @@ class DuckDBParser(parser.Parser):
         ),
         "EPOCH": exp.TimeToUnix.from_arg_list,
         "EPOCH_MS": lambda args: exp.UnixToTime(this=seq_get(args, 0), scale=exp.UnixToTime.MILLIS),
+        "FORMAT": lambda args: exp.Format(this=seq_get(args, 0), expressions=args[1:], is_fmt=True),
         "FROM_HEX": exp.Unhex.from_arg_list,
         "GENERATE_SERIES": _build_generate_series(),
         "GET_CURRENT_TIME": exp.CurrentTime.from_arg_list,
@@ -228,6 +239,7 @@ class DuckDBParser(parser.Parser):
         "MAKE_DATE": exp.DateFromParts.from_arg_list,
         "MAKE_TIME": exp.TimeFromParts.from_arg_list,
         "MAKE_TIMESTAMP": _build_make_timestamp,
+        "PRINTF": exp.Format.from_arg_list,
         "QUANTILE_CONT": exp.PercentileCont.from_arg_list,
         "QUANTILE_DISC": exp.PercentileDisc.from_arg_list,
         "RANGE": _build_generate_series(end_exclusive=True),
@@ -454,6 +466,8 @@ class DuckDBParser(parser.Parser):
 
         approximate = self._match_text_seq("APPROX", "NEAREST")
         if approximate or self._match_text_seq("NEAREST"):
+            if join.kind == "CROSS":
+                join.set("kind", None)
             count = self._parse_number()
 
             if not self._match_text_seq("BY"):

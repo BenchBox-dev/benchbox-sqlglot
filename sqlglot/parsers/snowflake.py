@@ -11,6 +11,7 @@ from sqlglot.dialects.dialect import (
     build_like,
     build_replace_with_optional_replacement,
     build_timetostr_or_tochar,
+    regexp_capture_group_count,
     build_trunc,
     date_trunc_to_time,
     map_date_part,
@@ -181,7 +182,7 @@ def _build_if_from_div0null(args: list) -> exp.If:
 # https://docs.snowflake.com/en/sql-reference/functions/zeroifnull
 def _build_if_from_zeroifnull(args: list) -> exp.If:
     cond = exp.Is(this=seq_get(args, 0), expression=exp.Null())
-    return exp.If(this=cond, true=exp.Literal.number(0), false=seq_get(args, 0))
+    return exp.If(this=cond, true=exp.Literal.number(0), false=exp.maybe_copy(seq_get(args, 0)))
 
 
 def _build_search(args: list) -> exp.Search:
@@ -196,7 +197,7 @@ def _build_search(args: list) -> exp.Search:
 # https://docs.snowflake.com/en/sql-reference/functions/zeroifnull
 def _build_if_from_nullifzero(args: list) -> exp.If:
     cond = exp.EQ(this=seq_get(args, 0), expression=exp.Literal.number(0))
-    return exp.If(this=cond, true=exp.Null(), false=seq_get(args, 0))
+    return exp.If(this=cond, true=exp.Null(), false=exp.maybe_copy(seq_get(args, 0)))
 
 
 def _build_regexp_replace(args: list) -> exp.RegexpReplace:
@@ -233,13 +234,27 @@ def _build_trunc(args: list, dialect: Dialect) -> exp.DateTrunc | exp.Trunc | ex
 
 def _build_regexp_extract(expr_type: type[E]) -> t.Callable[[list, Dialect], E]:
     def _builder(args: list, dialect: Dialect) -> E:
+        group = seq_get(args, 5)
+        parameters = seq_get(args, 4)
+        inferred_group = False
+
+        if not group:
+            inferred_group = True
+            if parameters and parameters.is_string and "e" in parameters.name:
+                group = exp.Literal.number(
+                    0 if regexp_capture_group_count(seq_get(args, 1)) == 0 else 1
+                )
+            else:
+                group = exp.Literal.number(0)
+
         return expr_type(
             this=seq_get(args, 0),
             expression=seq_get(args, 1),
             position=seq_get(args, 2),
             occurrence=seq_get(args, 3),
-            parameters=seq_get(args, 4),
-            group=seq_get(args, 5) or exp.Literal.number(0),
+            parameters=parameters,
+            group=group,
+            inferred_group=inferred_group,
             **(
                 {
                     "null_if_pos_overflow": dialect.REGEXP_EXTRACT_POSITION_OVERFLOW_RETURNS_NULL,
@@ -589,8 +604,8 @@ class SnowflakeParser(parser.Parser):
         "REGEXP_SUBSTR_ALL": _build_regexp_extract(exp.RegexpExtractAll),
         "RANDOM": lambda args: exp.Rand(
             this=seq_get(args, 0),
-            lower=exp.Literal.number(-9223372036854775808.0),  # -2^63 as float to avoid overflow
-            upper=exp.Literal.number(9223372036854775807.0),  # 2^63-1 as float
+            lower=exp.Literal.number(-9223372036854775808),
+            upper=exp.Literal.number(9223372036854775807),
         ),
         "REPLACE": build_replace_with_optional_replacement,
         "RIGHT": lambda args: exp.Right(

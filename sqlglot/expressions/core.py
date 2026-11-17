@@ -46,6 +46,7 @@ TABLE_PARTS = ("this", "db", "catalog")
 COLUMN_PARTS = ("this", "table", "db", "catalog")
 POSITION_META_KEYS: tuple[str, ...] = ("line", "col", "start", "end")
 UNITTEST: bool = "unittest" in sys.modules or "pytest" in sys.modules
+_IMMUTABLE_META_TYPES: frozenset[type] = frozenset((int, str, bool, float, type(None)))
 
 
 @trait
@@ -1014,7 +1015,11 @@ class Expression(Expr):
             if node._type is not None:
                 copy._type = deepcopy(node._type)
             if node._meta is not None:
-                copy._meta = deepcopy(node._meta)
+                # Positions and flags are immutable, so only other values need a deep copy
+                meta = copy._meta = dict(node._meta)
+                for k, v in meta.items():
+                    if type(v) not in _IMMUTABLE_META_TYPES:
+                        meta[k] = deepcopy(v)
             if node._hash is not None:
                 copy._hash = node._hash
 
@@ -2289,6 +2294,10 @@ class Paren(Unary):
         return self.this.name
 
 
+class Pos(Unary):
+    pass
+
+
 class Neg(Unary):
     def to_py(self) -> int | Decimal:
         if self.is_number:
@@ -2301,7 +2310,8 @@ class AtIndex(Expression):
 
 
 class AtTimeZone(Expression):
-    arg_types = {"this": True, "zone": True}
+    # session_zone: a zoneless operand is read in the session time zone (e.g. Presto, Trino)
+    arg_types = {"this": True, "zone": True, "session_zone": False}
 
 
 class FromTimeZone(Expression):
@@ -2338,6 +2348,12 @@ class TeradataTitle(Expression):
     @property
     def output_name(self) -> str:
         return self.this.output_name
+
+
+class TeradataNamed(Alias):
+    """A Teradata NAMED alias on a subexpression; projections use ordinary Alias."""
+
+    arg_types = {"this": True, "alias": True}
 
 
 class Between(Expression, Predicate):

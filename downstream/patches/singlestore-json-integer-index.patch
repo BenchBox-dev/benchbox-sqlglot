@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/singlestore.py b/sqlglot/generators/singlestore.py
-index 8ac5cb17..dc7ee502 100644
+index 1220c30d..f2d73461 100644
 --- a/sqlglot/generators/singlestore.py
 +++ b/sqlglot/generators/singlestore.py
 @@ -155,8 +155,8 @@ class SingleStoreGenerator(MySQLGenerator):
@@ -13,7 +13,7 @@ index 8ac5cb17..dc7ee502 100644
          exp.JSONPathKey: json_path_key_only_name,
          exp.JSONPathSubscript: lambda self, e: self.json_path_part(e.this),
          exp.JSONPathRoot: lambda *_: "",
-@@ -1432,12 +1432,12 @@ class SingleStoreGenerator(MySQLGenerator):
+@@ -1431,12 +1431,12 @@ class SingleStoreGenerator(MySQLGenerator):
      def jsonextractscalar_sql(self, expression: exp.JSONExtractScalar) -> str:
          json_type = expression.args.get("json_type")
          func_name = "JSON_EXTRACT_JSON" if json_type is None else f"JSON_EXTRACT_{json_type}"

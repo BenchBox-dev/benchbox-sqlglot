@@ -3,6 +3,7 @@ from __future__ import annotations
 import typing as t
 
 from sqlglot import exp, parser
+from sqlglot.helper import seq_get
 from sqlglot.parser import IsPredicatePrecedence, binary_range_parser
 from sqlglot.tokens import Token, TokenType
 
@@ -57,6 +58,13 @@ def _build_json_extract(args: list, dialect: t.Any) -> exp.JSONExtract | exp.JSO
 class SQLiteParser(parser.Parser):
     IS_PREDICATE_PRECEDENCE = IsPredicatePrecedence.EQUALITY
 
+    # Unary + removes SQLite column affinity and must survive SQL generation.
+    # https://www.sqlite.org/datatype3.html#affinity_of_expressions
+    UNARY_PARSERS = {
+        **parser.Parser.UNARY_PARSERS,
+        TokenType.PLUS: lambda self: self.expression(exp.Pos(this=self._parse_unary())),
+    }
+
     PRIMARY_PARSERS = {
         **parser.Parser.PRIMARY_PARSERS,
         TokenType.HEX_STRING: lambda self, token: self._parse_hex_string(token),
@@ -103,9 +111,17 @@ class SQLiteParser(parser.Parser):
         "JSON_GROUP_OBJECT": lambda args: exp.JSONObjectAgg(expressions=args),
         "MAX": _build_max,
         "MIN": _build_min,
+        "RANDOM": lambda args: exp.Rand(
+            lower=exp.Literal.number(-9223372036854775807),
+            upper=exp.Literal.number(9223372036854775807),
+        ),
+        "ROUND": lambda args: exp.Round(
+            this=seq_get(args, 0), decimals=seq_get(args, 1), negative_decimals_are_zero=True
+        ),
         "STRFTIME": _build_strftime,
         "SQLITE_VERSION": exp.CurrentVersion.from_arg_list,
         "TIME": lambda args: exp.Anonymous(this="TIME", expressions=args),
+        "UNICODE": lambda args: exp.Unicode(this=seq_get(args, 0), empty_is_null=True),
     }
 
     FUNCTION_PARSERS = {
@@ -158,6 +174,11 @@ class SQLiteParser(parser.Parser):
                 this = cls(this=is_node.this, expression=is_node.expression)
 
         return this
+
+    def _parse_string_agg(self) -> exp.GroupConcat:
+        expression = super()._parse_string_agg()
+        expression.set("null_separator_is_empty", True)
+        return expression
 
     def _parse_is_rhs(self, distinct: bool = False) -> exp.Expr | None:
         # Ordering comparisons bind above IS, but range predicates bind below it.
@@ -241,10 +262,10 @@ class SQLiteParser(parser.Parser):
         return self.expression(exp.ModuleProperty(this=name, expressions=expressions))
 
     def _parse_pragma(self) -> exp.Pragma:
-        name = self._parse_var(any_token=True)
+        name = self._parse_id_var()
 
         if self._match(TokenType.DOT):
-            name = exp.Dot(this=name, expression=self._parse_var(any_token=True))
+            name = exp.Dot(this=name, expression=self._parse_id_var())
 
         self._match(TokenType.EQ)
 

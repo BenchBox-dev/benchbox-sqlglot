@@ -9,6 +9,7 @@ from sqlglot.dialects.dialect import (
     any_value_to_max_sql,
     arrow_json_extract_sql,
     count_if_to_sum,
+    generate_series_sql,
     groupconcat_sql,
     no_ilike_sql,
     no_tablesample_sql,
@@ -202,7 +203,7 @@ class SQLiteGenerator(generator.Generator):
     # SQLite's indexed-column grammar (CREATE INDEX) has no NULLS FIRST/LAST
     # clause, so index key definitions drop the null ordering ORDER BY keeps.
     INDEX_NULL_ORDERING_SUPPORTED = False
-    SELECT_KINDS: tuple[str, ...] = ()
+    SELECT_KINDS = ()
     TRY_SUPPORTED = False
     SUPPORTS_UESCAPE = False
     SUPPORTS_DECODE_CASE = False
@@ -281,7 +282,7 @@ class SQLiteGenerator(generator.Generator):
         exp.LogicalOr: rename_func("MAX"),
         exp.LogicalAnd: rename_func("MIN"),
         exp.Pivot: reject_pivot_sql,
-        exp.Rand: rename_func("RANDOM"),
+        exp.Rand: lambda self, e: self.func("RANDOM", e.this),
         exp.RegexpLike: lambda self, e: self.binary(e, "REGEXP"),
         **{kind: _moments_sql for kind in MOMENT_AGGREGATES},
         exp.Select: transforms.preprocess(
@@ -515,6 +516,14 @@ class SQLiteGenerator(generator.Generator):
             unit = unit or modifier.unit
             modifier = modifier.this
 
+        if unit and unit.name.upper() == "WEEK":
+            modifier = modifier * 7
+            unit = exp.var("DAY")
+
+        # SQLite DATE deliberately returns only a date, so sub-day units would
+        # silently drop the time; DATETIME retains it.
+        func = "DATETIME" if unit and unit.name.upper() in ("HOUR", "MINUTE", "SECOND") else "DATE"
+
         modifier = modifier.unnest()
         if (
             unit
@@ -522,7 +531,7 @@ class SQLiteGenerator(generator.Generator):
             and not (isinstance(modifier, exp.Neg) and modifier.this.is_number)
         ):
             return self.func(
-                "DATE",
+                func,
                 expression.this,
                 exp.DPipe(
                     this=exp.paren(modifier),
@@ -531,7 +540,7 @@ class SQLiteGenerator(generator.Generator):
             )
         modifier = modifier.name if modifier.is_string else self.sql(modifier)
         modifier = f"{modifier} {unit.name}" if unit else modifier
-        return self.func("DATE", expression.this, exp.Literal.string(modifier))
+        return self.func(func, expression.this, exp.Literal.string(modifier))
 
     def datesub_sql(self, expression: exp.DateSub) -> str:
         # SQLite has no DATE_SUB, so add the negated amount instead
@@ -745,6 +754,8 @@ class SQLiteGenerator(generator.Generator):
             return self.func("DATETIME", self._canonical_literal(expression.this, timestamp=True))
         if expression.is_type("time"):
             return self.func("TIME", expression.this)
+        if expression.is_type("json", "jsonb"):
+            return self.func("JSON", expression.this)
 
         return super().cast_sql(expression)
 
@@ -780,7 +791,7 @@ class SQLiteGenerator(generator.Generator):
                 exp.select(exp.alias_("value", column_alias)).from_(expression).subquery()
             )
         else:
-            sql = self.function_fallback_sql(expression)
+            sql = generate_series_sql("GENERATE_SERIES")(self, expression)
 
         return sql
 
@@ -826,6 +837,15 @@ class SQLiteGenerator(generator.Generator):
                 "SQLite GROUP_CONCAT window functions do not support argument ORDER BY"
             )
             expression.set("this", expression.this.this)
+
+        this = expression.this
+        if isinstance(this, exp.Order):
+            this = this.this
+        if isinstance(this, exp.Distinct) and expression.args.get(
+            "separator"
+        ) == exp.Literal.string(","):
+            # DISTINCT aggregates accept one argument; SQLite already defaults to a comma separator.
+            expression.set("separator", None)
 
         return groupconcat_sql(
             self, expression, func_name="GROUP_CONCAT", sep=None, within_group=False

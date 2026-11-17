@@ -817,6 +817,7 @@ class Parser:
         TokenType.NEXT,
         TokenType.OFFSET,
         TokenType.OPERATOR,
+        TokenType.OPTIMIZE,
         TokenType.ORDINALITY,
         TokenType.OUT,
         TokenType.OVER,
@@ -949,6 +950,7 @@ class Parser:
         TokenType.MERGE,
         TokenType.NEXT,
         TokenType.OFFSET,
+        TokenType.OPTIMIZE,
         TokenType.PRIMARY_KEY,
         TokenType.RANGE,
         TokenType.REPLACE,
@@ -1990,6 +1992,9 @@ class Parser:
     # Whether TIMESTAMP <literal> can produce a zone-aware timestamp
     ZONE_AWARE_TIMESTAMP_CONSTRUCTOR: t.ClassVar = False
 
+    # Whether a zoneless operand of AT TIME ZONE is read in the session time zone
+    AT_TIME_ZONE_READS_SESSION_ZONE: t.ClassVar = False
+
     # Whether map literals support arbitrary expressions as keys.
     # When True, allows complex keys like arrays or literals: {[1, 2]: 3}, {1: 2} (e.g. DuckDB).
     # When False, keys are typically restricted to identifiers.
@@ -2006,6 +2011,10 @@ class Parser:
     # Whether INTERVAL spans with literal format '\d+ hh:[mm:[ss[.ff]]]'
     # can omit the span unit `DAY TO MINUTE` or `DAY TO SECOND`
     SUPPORTS_OMITTED_INTERVAL_SPAN_UNIT: t.ClassVar = False
+
+    # Whether multi-part intervals support addition without repeating the INTERVAL keyword,
+    # e.g. INTERVAL 23 HOUR + 59 MINUTE (Hive, Spark, Databricks)
+    SUPPORTS_MULTI_PART_INTERVAL_ADD: t.ClassVar = False
 
     # Whether adjacent string literals like 'foo' 'bar' require a whitespace or comment between them
     # to be considered valid syntactically. Such expressions evaluate to the strings' concatenation.
@@ -2145,6 +2154,13 @@ class Parser:
 
         if not advance:
             self._retreat(index)
+        elif len(texts) > 1:
+            matched = self._tokens[index : self._index]
+            comments = [comment for token in matched for comment in token.comments]
+            if comments:
+                for token in matched:
+                    token.comments = []
+                self._prev.comments = self._prev_comments = comments
 
         return True
 
@@ -2608,7 +2624,8 @@ class Parser:
         def extend_props(temp_props: exp.Properties | None) -> None:
             nonlocal properties
             if properties and temp_props:
-                properties.expressions.extend(temp_props.expressions)
+                for prop in temp_props.expressions:
+                    properties.append("expressions", prop)
             elif temp_props:
                 properties = temp_props
 
@@ -3081,7 +3098,7 @@ class Parser:
     def _parse_unquoted_field(self) -> exp.Expr | None:
         field = self._parse_field()
         if isinstance(field, exp.Identifier) and not field.quoted:
-            field = exp.var(field)
+            field = self.expression(exp.var(field), comments=field.comments)
 
         return field
 
@@ -3470,6 +3487,8 @@ class Parser:
         if not self._match(TokenType.PARTITION_BY):
             return []
 
+        comments = self._prev_comments
+
         if self._next.token_type in self.ID_VAR_TOKENS and self._match_text_seq("EXCLUDING"):
             return [
                 self.expression(
@@ -3477,7 +3496,10 @@ class Parser:
                 )
             ]
 
-        return self._parse_csv(self._parse_disjunction)
+        expressions = self._parse_csv(self._parse_disjunction)
+        if expressions and comments:
+            expressions[0].add_comments(comments, prepend=True)
+        return expressions
 
     def _parse_partition_bound_spec(self) -> exp.PartitionBoundSpec:
         def _parse_partition_bound_expr() -> exp.Expr | None:
@@ -4932,6 +4954,9 @@ class Parser:
         if directed:
             kwargs["directed"] = directed
 
+        if join and not any(kwargs.get(k) for k in exp.Join.QUALIFIERS):
+            kwargs["kind"] = "CROSS"
+
         return self.expression(exp.Join(**kwargs), comments=comments)
 
     def _parse_opclass(self) -> exp.Expr | None:
@@ -5415,6 +5440,7 @@ class Parser:
 
         expressions = self._parse_wrapped_csv(self._parse_equality)
         offset: bool | exp.Expr = self._match_pair(TokenType.WITH, TokenType.ORDINALITY)
+        offset_base = None
 
         alias = self._parse_table_alias() if with_alias else None
 
@@ -5431,12 +5457,15 @@ class Parser:
                 offset = columns.pop()
 
         if not offset and self._match_pair(TokenType.WITH, TokenType.OFFSET):
+            offset_base = 0
             self._match(TokenType.ALIAS)
             offset = self._parse_id_var(
                 any_token=False, tokens=self.UNNEST_OFFSET_ALIAS_TOKENS
             ) or exp.to_identifier("offset")
 
-        return self.expression(exp.Unnest(expressions=expressions, alias=alias, offset=offset))
+        return self.expression(
+            exp.Unnest(expressions=expressions, alias=alias, offset=offset, offset_base=offset_base)
+        )
 
     def _parse_derived_table_values(self, allow_value_synonym: bool = False) -> exp.Values | None:
         is_derived = self._match_pair(TokenType.L_PAREN, TokenType.VALUES)
@@ -5689,6 +5718,7 @@ class Parser:
 
         if not unpivot:
             names = self._pivot_column_names(t.cast(list[exp.Expr], expressions))
+            has_prefix = bool(names) and self.PREFIXED_PIVOT_COLUMNS
 
             columns: list[exp.Expr] = []
             all_fields = []
@@ -5701,11 +5731,7 @@ class Parser:
 
                 all_fields.append(
                     [
-                        # An explicit `<field> AS <alias>` names the output column directly,
-                        # so it wins over the dialect's string-identifying convention
-                        fld.sql()
-                        if self.IDENTIFY_PIVOT_STRINGS and not isinstance(fld, exp.PivotAlias)
-                        else fld.alias_or_name
+                        self._pivot_column_value_name(fld, has_prefix)
                         for fld in pivot_field_expressions
                     ]
                 )
@@ -5735,6 +5761,13 @@ class Parser:
 
     def _pivot_column_names(self, aggregations: list[exp.Expr]) -> list[str]:
         return [agg.alias for agg in aggregations if agg.alias]
+
+    def _pivot_column_value_name(self, field: exp.Expr, has_prefix: bool) -> str:
+        return (
+            field.sql()
+            if self.IDENTIFY_PIVOT_STRINGS and not isinstance(field, exp.PivotAlias)
+            else field.alias_or_name
+        )
 
     def _parse_prewhere(self, skip_where_token: bool = False) -> exp.PreWhere | None:
         if not skip_where_token and not self._match(TokenType.PREWHERE):
@@ -6608,10 +6641,15 @@ class Parser:
         interval = self._parse_interval_span(this, parse_function_unit=parse_function_unit)
 
         index = self._index
-        self._match(TokenType.PLUS)
+        if self.SUPPORTS_MULTI_PART_INTERVAL_ADD:
+            self._match(TokenType.PLUS)
 
         # Convert INTERVAL 'val_1' unit_1 [+] ... [+] 'val_n' unit_n into a sum of intervals
-        if self._match_set((TokenType.STRING, TokenType.NUMBER), advance=False):
+        if (
+            self._match_set((TokenType.STRING, TokenType.NUMBER), advance=False)
+            and self._next.token_type not in self.TEXT_MATCH_EXCLUDED_TOKENS
+            and self._next.text.upper() in self.dialect.VALID_INTERVAL_UNITS
+        ):
             return self.expression(
                 exp.Add(
                     this=interval,
@@ -7140,9 +7178,10 @@ class Parser:
     def _parse_at_time_zone(self, this: exp.Expr | None) -> exp.Expr | None:
         if not self._match_text_seq("AT", "TIME", "ZONE"):
             return this
-        return self._parse_at_time_zone(
-            self.expression(exp.AtTimeZone(this=this, zone=self._parse_unary()))
-        )
+        at_time_zone = self.expression(exp.AtTimeZone(this=this, zone=self._parse_unary()))
+        if self.AT_TIME_ZONE_READS_SESSION_ZONE:
+            at_time_zone.set("session_zone", True)
+        return self._parse_at_time_zone(at_time_zone)
 
     def _parse_atom(self) -> exp.Expr | None:
         if (
@@ -8540,6 +8579,10 @@ class Parser:
             if not to:
                 to = exp.DType.UNKNOWN.into_expr()
             if to.this in exp.DataType.TEMPORAL_TYPES:
+                if default and any(
+                    e.args.get("is_character") for e in default.find_all(exp.HexString)
+                ):
+                    self.raise_error("Hexadecimal character defaults are not supported with FORMAT")
                 this = self.expression(
                     (exp.StrToDate if to.this == exp.DType.DATE else exp.StrToTime)(
                         this=this,
@@ -10383,8 +10426,8 @@ class Parser:
                 # Snowflake FILE_FORMAT case, Databricks COPY & FORMAT options
                 param.set("expressions", self._parse_wrapped_options())
             elif prev == "FILE_FORMAT":
-                # T-SQL's external file format case
-                param.set("expression", self._parse_field())
+                # T-SQL's external file format case, Snowflake's possibly qualified format name
+                param.set("expression", self._parse_string() or self._parse_table_parts())
             elif (
                 prev == "FORMAT"
                 and self._prev.token_type == TokenType.ALIAS

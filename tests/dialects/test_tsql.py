@@ -1,5 +1,5 @@
 from sqlglot import exp, parse_one
-from sqlglot.errors import ParseError, UnsupportedError
+from sqlglot.errors import ErrorLevel, ParseError, UnsupportedError
 from sqlglot.optimizer.annotate_types import annotate_types
 from sqlglot.optimizer.qualify import qualify
 from tests.dialects.test_dialect import Validator
@@ -7,6 +7,35 @@ from tests.dialects.test_dialect import Validator
 
 class TestTSQL(Validator):
     dialect = "tsql"
+
+    def test_boolean_cast_predicates(self):
+        for cast in ("CAST", "TRY_CAST"):
+            for template in (
+                "SELECT x FROM t WHERE {condition}",
+                "SELECT x FROM t GROUP BY x, y HAVING {condition}",
+                "SELECT CASE WHEN {condition} THEN 1 ELSE 0 END FROM t",
+                "SELECT x FROM t WHERE NOT {condition}",
+                "SELECT x FROM t WHERE {condition} AND z = 1",
+                "SELECT x FROM t WHERE z = 1 OR {condition}",
+            ):
+                sql = template.format(condition=f"{cast}(y AS BOOLEAN)")
+                expected = template.format(condition=f"{cast}(y AS BIT) <> 0")
+                with self.subTest(sql=sql):
+                    self.validate_identity(sql, expected)
+                    self.validate_identity(expected)
+
+    def test_boolean_cast_values(self):
+        for cast in ("CAST", "TRY_CAST"):
+            for template in (
+                "SELECT {value} FROM t",
+                "SELECT x FROM t WHERE {value} = 1",
+                "SELECT CASE {value} WHEN 1 THEN 2 ELSE 3 END FROM t",
+            ):
+                with self.subTest(cast=cast, template=template):
+                    self.validate_identity(
+                        template.format(value=f"{cast}(y AS BOOLEAN)"),
+                        template.format(value=f"{cast}(y AS BIT)"),
+                    )
 
     def test_set_operation_order(self):
         self.validate_identity(
@@ -681,33 +710,34 @@ class TestTSQL(Validator):
         self.validate_all(
             "HASHBYTES('SHA1', x)",
             read={
-                "snowflake": "SHA1(x)",
-                "spark": "SHA(x)",
+                "snowflake": "SHA1_BINARY(x)",
             },
             write={
-                "snowflake": "SHA1(x)",
-                "spark": "SHA(x)",
+                "snowflake": "SHA1_BINARY(x)",
+                "spark": "UNHEX(SHA(x))",
+                "duckdb": "UNHEX(SHA1(x))",
                 "tsql": "HASHBYTES('SHA1', x)",
             },
         )
         self.validate_all(
             "HASHBYTES('SHA2_256', x)",
             read={
-                "spark": "SHA2(x, 256)",
+                "bigquery": "SHA256(x)",
             },
             write={
                 "tsql": "HASHBYTES('SHA2_256', x)",
-                "spark": "SHA2(x, 256)",
+                "spark": "UNHEX(SHA2(x, 256))",
+                "duckdb": "UNHEX(SHA256(x))",
             },
         )
         self.validate_all(
             "HASHBYTES('SHA2_512', x)",
             read={
-                "spark": "SHA2(x, 512)",
+                "bigquery": "SHA512(x)",
             },
             write={
                 "tsql": "HASHBYTES('SHA2_512', x)",
-                "spark": "SHA2(x, 512)",
+                "spark": "UNHEX(SHA2(x, 512))",
             },
         )
         self.validate_all(
@@ -2947,6 +2977,36 @@ FROM OPENJSON(@json) WITH (
                 "tsql": "SELECT DATETRUNC(YEAR, CAST('foo1' AS DATE))",
             },
         )
+        self.validate_all(
+            "SELECT DATETRUNC(MONTH, CAST('2024-05-15' AS DATE))",
+            read={
+                "bigquery": "SELECT DATE_TRUNC(CAST('2024-05-15' AS DATE), MONTH)",
+            },
+            write={
+                "tsql": "SELECT DATETRUNC(MONTH, CAST('2024-05-15' AS DATE))",
+                "duckdb": "SELECT DATE_TRUNC('MONTH', CAST('2024-05-15' AS DATE))",
+            },
+        )
+        self.validate_all(
+            "SELECT DATETRUNC(ISO_WEEK, CAST('2024-05-15' AS DATE))",
+            read={
+                "bigquery": "SELECT DATE_TRUNC(CAST('2024-05-15' AS DATE), WEEK(MONDAY))",
+            },
+            write={
+                "tsql": "SELECT DATETRUNC(ISO_WEEK, CAST('2024-05-15' AS DATE))",
+            },
+        )
+        self.assertEqual(
+            parse_one(
+                "SELECT DATE_TRUNC(CAST('2024-05-15' AS DATE), WEEK(MONDAY))",
+                read="bigquery",
+            ).sql("tsql", unsupported_level=ErrorLevel.RAISE),
+            "SELECT DATETRUNC(ISO_WEEK, CAST('2024-05-15' AS DATE))",
+        )
+        with self.assertRaises(UnsupportedError):
+            parse_one("SELECT DATE_TRUNC(d, MONTH, 'UTC')", read="bigquery").sql(
+                "tsql", unsupported_level=ErrorLevel.RAISE
+            )
 
     def test_numeric_trunc(self):
         # T-SQL doesn't have native TRUNC - uses ROUND with third parameter = 1

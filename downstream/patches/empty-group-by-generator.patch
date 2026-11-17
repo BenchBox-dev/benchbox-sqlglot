@@ -1,8 +1,8 @@
 diff --git a/sqlglot/generator.py b/sqlglot/generator.py
-index 88aef14b..3e7a4392 100644
+index 573d3c15..fae46088 100644
 --- a/sqlglot/generator.py
 +++ b/sqlglot/generator.py
-@@ -364,6 +364,9 @@ class Generator:
+@@ -360,6 +360,9 @@ class Generator:
      # Whether GROUPING SETS can follow GROUP BY expressions without a comma
      SUPPORTS_GROUPING_SETS_AS_SUFFIX = False
  
@@ -12,7 +12,7 @@ index 88aef14b..3e7a4392 100644
      # The string used for creating an index on a table
      INDEX_ON = "ON"
  
-@@ -2952,7 +2955,31 @@ class Generator:
+@@ -2983,7 +2986,31 @@ class Generator:
          expressions = self.expressions(expression, indent=False)
          return f"CUBE {self.wrap(expressions)}" if expressions else "WITH CUBE"
  
@@ -45,7 +45,7 @@ index 88aef14b..3e7a4392 100644
          if group_by_all is True:
              modifier = " ALL"
 diff --git a/sqlglot/generators/snowflake.py b/sqlglot/generators/snowflake.py
-index 8ddccc57..1ae4b743 100644
+index ba5c473c..efc2fe38 100644
 --- a/sqlglot/generators/snowflake.py
 +++ b/sqlglot/generators/snowflake.py
 @@ -417,6 +417,7 @@ def _eliminate_dot_variant_lookup(expression: exp.Expr) -> exp.Expr:
@@ -54,10 +54,10 @@ index 8ddccc57..1ae4b743 100644
  class SnowflakeGenerator(generator.Generator):
 +    SUPPORTS_EMPTY_GROUP_BY = False
      BYTE_STRING_FUNCTION = "HEX_DECODE_BINARY"
-     SELECT_KINDS: tuple[str, ...] = ()
+     SELECT_KINDS = ()
      PARAMETER_TOKEN = "$"
 diff --git a/sqlglot/generators/spark2.py b/sqlglot/generators/spark2.py
-index fbaf7096..2b99a4e1 100644
+index 1871ca77..15622d0e 100644
 --- a/sqlglot/generators/spark2.py
 +++ b/sqlglot/generators/spark2.py
 @@ -130,6 +130,7 @@ def temporary_storage_provider(expression: exp.Expr) -> exp.Expr:

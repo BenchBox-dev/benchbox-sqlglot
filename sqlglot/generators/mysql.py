@@ -111,7 +111,8 @@ def _ts_or_ds_to_date_sql(self: MySQLGenerator, expression: exp.TsOrDsToDate) ->
 
 class MySQLGenerator(generator.Generator):
     BYTE_STRING_FUNCTION = "UNHEX"
-    SELECT_KINDS: tuple[str, ...] = ()
+    VARIANCE_NAME = "VAR_SAMP"
+    SELECT_KINDS = ()
     TRY_SUPPORTED = False
     SUPPORTS_UESCAPE = False
     SUPPORTS_DECODE_CASE = False
@@ -149,7 +150,13 @@ class MySQLGenerator(generator.Generator):
     )
 
     TRANSFORMS = {
-        **generator.Generator.TRANSFORMS,
+        # The base Postgres-style array operators (@>, <@) don't exist in MySQL, so drop
+        # them to let arraycontainsall_sql / arraycontainedby_sql flag them as unsupported
+        **{
+            k: v
+            for k, v in generator.Generator.TRANSFORMS.items()
+            if k not in {exp.ArrayContainsAll, exp.ArrayContainedBy}
+        },
         exp.ArrayAgg: rename_func("GROUP_CONCAT"),
         exp.BitwiseAndAgg: rename_func("BIT_AND"),
         exp.BitwiseOrAgg: rename_func("BIT_OR"),
@@ -229,7 +236,6 @@ class MySQLGenerator(generator.Generator):
         exp.TsOrDsToDate: _ts_or_ds_to_date_sql,
         exp.Unicode: lambda self, e: f"ORD(CONVERT({self.sql(e.this)} USING utf32))",
         exp.UnixToTime: _unix_to_time_sql,
-        exp.Variance: rename_func("VAR_SAMP"),
         exp.VariancePop: rename_func("VAR_POP"),
         exp.Week: remove_ts_or_ds_to_date(),
         exp.WeekOfYear: remove_ts_or_ds_to_date(rename_func("WEEKOFYEAR")),

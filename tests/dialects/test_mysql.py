@@ -3,11 +3,19 @@ import sys
 
 from sqlglot import UnsupportedError, expressions as exp
 from sqlglot.dialects.mysql import MySQL
+from sqlglot.optimizer.annotate_types import annotate_types
 from tests.dialects.test_dialect import Validator
 
 
 class TestMySQL(Validator):
     dialect = "mysql"
+
+    def test_conditionless_join_precedence(self):
+        self.validate_identity(
+            "SELECT * FROM a JOIN b RIGHT JOIN c ON b.y = c.z",
+            "SELECT * FROM a CROSS JOIN b RIGHT JOIN c ON b.y = c.z",
+        )
+        self.validate_identity("SELECT * FROM a, b RIGHT JOIN c ON b.y = c.z")
 
     def test_table_query_identifier(self):
         self.validate_identity(
@@ -17,6 +25,13 @@ class TestMySQL(Validator):
         self.validate_identity(
             "INSERT INTO t (`table`) TABLE u", "INSERT INTO t (`table`) SELECT * FROM u"
         )
+
+    def test_timestampdiff(self):
+        sql = "SELECT TIMESTAMPDIFF(MINUTE, TIMESTAMP('2024-01-01 00:00:45'), TIMESTAMP('2024-01-01 01:00:15'))"
+        expected = "SELECT DATE_SUB('MINUTE', CAST('2024-01-01 00:00:45' AS TIMESTAMP), CAST('2024-01-01 01:00:15' AS TIMESTAMP))"
+        self.validate_all(sql, write={"duckdb": expected})
+        expression = annotate_types(self.parse_one(sql), dialect="mysql")
+        self.assertEqual(expression.sql("duckdb"), expected)
 
     def test_timestampadd(self):
         for unit in ("SECOND", "MINUTE", "HOUR", "DAY", "WEEK", "MONTH", "QUARTER", "YEAR"):
@@ -47,6 +62,53 @@ class TestMySQL(Validator):
             write={
                 "mysql": "SELECT DATE_ADD('2024-01-01', INTERVAL 1 DAY) - DATE_ADD('2024-01-01', INTERVAL 1 DAY)",
                 "duckdb": "SELECT CAST('2024-01-01' AS TIMESTAMP) + INTERVAL 1 DAY - (CAST('2024-01-01' AS TIMESTAMP) + INTERVAL 1 DAY)",
+            },
+        )
+
+    def test_subday_datesub(self):
+        for unit in ("HOUR", "MINUTE", "SECOND"):
+            for amount in ("2", "-2", "0"):
+                self.validate_all(
+                    f"SELECT DATE_SUB(ts, INTERVAL '{amount}' {unit}) FROM t",
+                    read={
+                        "bigquery": f"SELECT DATE_SUB(ts, INTERVAL {amount} {unit}) FROM t",
+                    },
+                    write={
+                        "hive": f"SELECT CAST(ts AS TIMESTAMP) - INTERVAL '{amount}' {unit} FROM t",
+                        "spark2": f"SELECT CAST(ts AS TIMESTAMP) - INTERVAL '{amount}' {unit} FROM t",
+                        "spark": f"SELECT TIMESTAMPADD({unit}, -'{amount}', ts) FROM t",
+                    },
+                )
+
+            for amount, wrapped, negated in (
+                ("n", "n", "-n"),
+                ("n + 1", "(n + 1)", "-(n + 1)"),
+                ("NULL", "NULL", "-NULL"),
+            ):
+                self.validate_all(
+                    f"SELECT DATE_SUB(ts, INTERVAL {amount} {unit}) FROM t",
+                    write={
+                        "hive": f"SELECT IF({wrapped} IS NULL, NULL, CAST(ts AS TIMESTAMP)) "
+                        f"- INTERVAL (COALESCE({amount}, 0)) {unit} FROM t",
+                        "spark2": UnsupportedError,
+                        "spark": f"SELECT TIMESTAMPADD({unit}, {negated}, ts) FROM t",
+                    },
+                )
+
+        self.validate_all(
+            "SELECT DATE_SUB('2024-01-01 10:00:00.123456', INTERVAL 2 HOUR)",
+            write={
+                "hive": "SELECT CAST('2024-01-01 10:00:00.123456' AS TIMESTAMP) - INTERVAL '2' HOUR",
+                "spark2": "SELECT CAST('2024-01-01 10:00:00.123456' AS TIMESTAMP) - INTERVAL '2' HOUR",
+                "spark": "SELECT TIMESTAMPADD(HOUR, -'2', '2024-01-01 10:00:00.123456')",
+            },
+        )
+        self.validate_all(
+            "SELECT ts < DATE_SUB(ts, INTERVAL 2 HOUR) FROM t",
+            write={
+                "hive": "SELECT ts < (CAST(ts AS TIMESTAMP) - INTERVAL '2' HOUR) FROM t",
+                "spark2": "SELECT ts < (CAST(ts AS TIMESTAMP) - INTERVAL '2' HOUR) FROM t",
+                "spark": "SELECT ts < TIMESTAMPADD(HOUR, -'2', ts) FROM t",
             },
         )
 
@@ -527,6 +589,9 @@ class TestMySQL(Validator):
             "CREATE TABLE t (a INT) ENGINE=InnoDB /* c */ ROW_FORMAT=DYNAMIC",
         )
         self.validate_identity(
+            "CREATE TABLE t (a INT) ENGINE=InnoDB /* c */ ROW_FORMAT=DYNAMIC",
+        )
+        self.validate_identity(
             "CREATE TABLE `foo` (a VARCHAR(10), KEY idx_a (a DESC))",
             "CREATE TABLE `foo` (a VARCHAR(10), INDEX idx_a (a DESC))",
         )
@@ -954,6 +1019,13 @@ class TestMySQL(Validator):
 
     def test_canonical_functions(self):
         self.validate_identity("SELECT LEFT('str', 2)", "SELECT LEFT('str', 2)")
+        self.validate_all(
+            "SELECT LEFT(x, n), RIGHT(x, -1)",
+            write={
+                "duckdb": "SELECT LEFT(x, CASE WHEN n < 0 THEN 0 ELSE n END), RIGHT(x, CASE WHEN -1 < 0 THEN 0 ELSE -1 END)",
+                "mysql": "SELECT LEFT(x, n), RIGHT(x, -1)",
+            },
+        )
         self.validate_identity("SELECT INSTR('str', 'substr')", "SELECT LOCATE('substr', 'str')")
         self.validate_identity("SELECT UCASE('foo')", "SELECT UPPER('foo')")
         self.validate_identity("SELECT LCASE('foo')", "SELECT LOWER('foo')")

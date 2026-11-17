@@ -8,11 +8,17 @@ from sqlglot.optimizer.annotate_types import annotate_types
 from sqlglot.optimizer.qualify import qualify
 from sqlglot.optimizer.qualify_columns import quote_identifiers
 from tests.dialects.test_dialect import Validator
-from sqlglot.errors import ErrorLevel
+from sqlglot.errors import ErrorLevel, ParseError
 
 
 class TestClickhouse(Validator):
     dialect = "clickhouse"
+
+    def test_xor_missing_arguments(self):
+        for sql in ("SELECT xor()", "SELECT xor(;)", "SELECT xor(,)", "SELECT xor(0, xor())"):
+            for error_level in (ErrorLevel.RAISE, ErrorLevel.IMMEDIATE):
+                with self.subTest(sql=sql, error_level=error_level), self.assertRaises(ParseError):
+                    self.parse_one(sql, error_level=error_level)
 
     def test_clickhouse(self):
         self.validate_identity(
@@ -500,6 +506,9 @@ class TestClickhouse(Validator):
                 "postgres": "SELECT UNNEST(ARRAY[1, 2, 3])",
             },
         )
+        self.validate_identity("SELECT 2 = ANY(SELECT 2)")
+        self.validate_identity("SELECT 2 <> ANY(SELECT 1)")
+        self.validate_identity("SELECT 2 = ANY(SELECT 1 UNION ALL SELECT 2)")
         self.validate_all(
             "has([1], x)",
             read={
@@ -857,6 +866,35 @@ class TestClickhouse(Validator):
                 "mysql": "SELECT DATE_FORMAT(NOW(), '%Y-%m-%d')",
             },
         )
+        self.validate_all(
+            "SELECT formatDateTime(x, '%H:%i %M %W')",
+            read={
+                "duckdb": "SELECT STRFTIME(x, '%H:%M %B %A')",
+                "mysql": "SELECT DATE_FORMAT(x, '%H:%i %M %W')",
+            },
+            write={
+                "duckdb": "SELECT STRFTIME(x, '%H:%M %B %A')",
+                "mysql": "SELECT DATE_FORMAT(x, '%H:%i %M %W')",
+            },
+        )
+
+        self.validate_identity("SELECT SHA1(x), SHA256(x), SHA512(x)")
+        self.validate_all(
+            "SELECT SHA1(x), SHA256(x), SHA512(x)",
+            read={
+                "presto": "SELECT SHA1(x), SHA256(x), SHA512(x)",
+                "trino": "SELECT SHA1(x), SHA256(x), SHA512(x)",
+                "tsql": "SELECT HASHBYTES('SHA1', x), HASHBYTES('SHA2_256', x), HASHBYTES('SHA2_512', x)",
+            },
+        )
+        self.validate_all(
+            "SELECT LOWER(HEX(SHA256(x))), LOWER(HEX(SHA1(x)))",
+            read={"duckdb": "SELECT SHA256(x), SHA1(x)"},
+        )
+        self.validate_all(
+            "SELECT SHA256(x)",
+            write={"duckdb": "SELECT UNHEX(SHA256(x))"},
+        )
 
         self.validate_identity("ALTER TABLE visits DROP PARTITION 201901")
         self.validate_identity("ALTER TABLE visits DROP PARTITION ALL")
@@ -1012,6 +1050,25 @@ class TestClickhouse(Validator):
                         self.validate_identity(sql)
 
         self.validate_identity("SELECT []")
+
+    def test_time_format_escaped_percent(self):
+        self.validate_all(
+            "SELECT formatDateTime(x, '%%M %%B %%A %%i %%W %H:%i %M %W')",
+            read={
+                "duckdb": "SELECT STRFTIME(x, '%%M %%B %%A %%i %%W %H:%M %B %A')",
+            },
+            write={
+                "clickhouse": "SELECT formatDateTime(x, '%%M %%B %%A %%i %%W %H:%i %M %W')",
+                "duckdb": "SELECT STRFTIME(x, '%%M %%B %%A %%i %%W %H:%M %B %A')",
+            },
+        )
+        self.validate_all(
+            "SELECT parseDateTime('2024-03-04 %M %B %A', '%Y-%m-%d %%M %%B %%A')",
+            write={
+                "clickhouse": "SELECT parseDateTime('2024-03-04 %M %B %A', '%Y-%m-%d %%M %%B %%A')",
+                "duckdb": "SELECT STRPTIME('2024-03-04 %M %B %A', '%Y-%m-%d %%M %%B %%A')",
+            },
+        )
 
     def test_json_extract(self):
         for name in ("JSONExtractRaw", "JSONExtractString"):
@@ -2289,6 +2346,19 @@ LIFETIME(MIN 0 MAX 0)""",
             write={
                 "clickhouse, version=23.8": "dateTrunc('week', today())",
                 "clickhouse, version=24.1": "dateTrunc('WEEK', today())",
+            },
+        )
+
+    def test_array_sort(self):
+        self.validate_identity("SELECT arraySort(y -> -y, x), arrayReverseSort(y -> -y, x)")
+
+    def test_logical_and_or(self):
+        self.validate_all(
+            "SELECT minOrNull(x <> 0), maxOrNull(x <> 0) FROM t",
+            read={
+                "duckdb": "SELECT BOOL_AND(x), BOOL_OR(x) FROM t",
+                "postgres": "SELECT BOOL_AND(x), BOOL_OR(x) FROM t",
+                "snowflake": "SELECT BOOLAND_AGG(x), BOOLOR_AGG(x) FROM t",
             },
         )
 

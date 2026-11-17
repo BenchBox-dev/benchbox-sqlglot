@@ -9,6 +9,17 @@ if t.TYPE_CHECKING:
     from sqlglot.optimizer.annotate_types import TypeAnnotator
 
 
+def _annotate_at_time_zone(self: TypeAnnotator, expression: exp.AtTimeZone) -> exp.Expr:
+    this = expression.this
+    if this.is_type(exp.DType.DATE, exp.DType.TIMESTAMP, exp.DType.TIMESTAMPNTZ):
+        return self._set_type(expression, exp.DType.TIMESTAMPTZ)
+    if this.is_type(exp.DType.TIMESTAMPTZ):
+        return self._set_type(expression, exp.DType.TIMESTAMP)
+    if this.is_type(exp.DType.TIMETZ):
+        return self._set_type(expression, exp.DType.TIMETZ)
+    return self._set_type(expression, exp.DType.UNKNOWN)
+
+
 def _annotate_sha2(self: TypeAnnotator, expression: exp.SHA2) -> exp.Expr:
     size = 128
     length = expression.args.get("length")
@@ -21,6 +32,7 @@ def _annotate_sha2(self: TypeAnnotator, expression: exp.SHA2) -> exp.Expr:
 
 EXPRESSION_METADATA = {
     **EXPRESSION_METADATA,
+    exp.AtTimeZone: {"annotator": _annotate_at_time_zone},
     exp.SHA2: {"annotator": _annotate_sha2},
     # Redshift's TO_TIMESTAMP returns TIMESTAMPTZ, not TIMESTAMP
     # https://docs.aws.amazon.com/redshift/latest/dg/r_TO_TIMESTAMP.html
@@ -31,4 +43,6 @@ EXPRESSION_METADATA = {
     # Postgres NTILE is INT, but Redshift's is BIGINT — restore the base default.
     # https://docs.aws.amazon.com/redshift/latest/dg/r_WF_NTILE.html
     exp.Ntile: {"returns": exp.DType.BIGINT},
+    exp.FromBase: {"returns": exp.DType.BIGINT},
+    exp.LowerHex: {"returns": exp.DType.VARCHAR},
 }

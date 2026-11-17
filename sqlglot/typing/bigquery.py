@@ -47,8 +47,32 @@ def _annotate_date_func(self: TypeAnnotator, expression: _DateFunc) -> exp.Expr:
     return self._annotate_by_args(expression, "this")
 
 
-def _annotate_safe_divide(self: TypeAnnotator, expression: exp.SafeDivide) -> exp.Expr:
+def _annotate_datetime_or_timestamp_add(
+    self: TypeAnnotator,
+    expression: exp.DatetimeAdd | exp.DatetimeSub | exp.TimestampAdd | exp.TimestampSub,
+) -> exp.Expr:
+    """Annotate DATETIME_ADD / DATETIME_SUB / TIMESTAMP_ADD / TIMESTAMP_SUB.
+
+    Whichever of them is called, BigQuery returns a TIMESTAMP for a TIMESTAMP and a DATETIME
+    for a DATE or DATETIME. Any other argument, e.g. a string literal, gets the function's own type.
     """
+    this = expression.this
+    if this.is_type(exp.DType.TIMESTAMPTZ):
+        return self._set_type(expression, exp.DType.TIMESTAMPTZ)
+    if this.is_type(exp.DType.DATE, exp.DType.DATETIME, exp.DType.TIMESTAMP):
+        return self._set_type(expression, exp.DType.DATETIME)
+    if isinstance(expression, (exp.TimestampAdd, exp.TimestampSub)):
+        return self._set_type(expression, exp.DType.TIMESTAMPTZ)
+    return self._set_type(expression, exp.DType.DATETIME)
+
+
+def _annotate_int_pair_as_double(
+    self: TypeAnnotator, expression: exp.SafeDivide | exp.Pow
+) -> exp.Expr:
+    """
+    Shared by SAFE_DIVIDE and POW/POWER: both promote INT64/INT64 to FLOAT64,
+    otherwise follow normal numeric coercion.
+
     +------------+------------+------------+-------------+---------+
     | INPUT      | INT64      | NUMERIC    | BIGNUMERIC  | FLOAT64 |
     +------------+------------+------------+-------------+---------+
@@ -57,13 +81,16 @@ def _annotate_safe_divide(self: TypeAnnotator, expression: exp.SafeDivide) -> ex
     | BIGNUMERIC | BIGNUMERIC | BIGNUMERIC | BIGNUMERIC  | FLOAT64 |
     | FLOAT64    | FLOAT64    | FLOAT64    | FLOAT64     | FLOAT64 |
     +------------+------------+------------+-------------+---------+
-    """
-    if expression.this.is_type(*exp.DataType.INTEGER_TYPES) and expression.expression.is_type(
-        *exp.DataType.INTEGER_TYPES
-    ):
-        return self._set_type(expression, exp.DType.DOUBLE)
 
-    return _annotate_by_args_with_coerce(self, expression)
+    NULL operands coerce the same way INT64 does, since BigQuery treats a bare NULL
+    argument as an unresolved integer-family type for this promotion.
+    """
+    _annotate_by_args_with_coerce(self, expression)
+
+    if expression.is_type(exp.DType.NULL, *exp.DataType.INTEGER_TYPES):
+        self._set_type(expression, exp.DType.DOUBLE)
+
+    return expression
 
 
 def _annotate_by_args_with_coerce(self: TypeAnnotator, expression: exp.Expr) -> exp.Expr:
@@ -202,6 +229,15 @@ def _annotate_array(self: TypeAnnotator, expression: exp.Array) -> exp.Array:
             )
             self._set_type(expression, array_type)
             return expression
+
+    # BigQuery inherits field names from the first STRUCT in a literal array
+    first_type = array_args[0].type if array_args else None
+    if first_type and first_type.is_type(exp.DType.STRUCT) and first_type.expressions:
+        self._set_type(
+            expression,
+            exp.DataType(this=exp.DType.ARRAY, expressions=[first_type.copy()], nested=True),
+        )
+        return expression
 
     return self._annotate_by_args(expression, "expressions", array=True)
 
@@ -372,6 +408,10 @@ EXPRESSION_METADATA = {
         }
     },
     **{expr_type: {"returns": exp.DType.TIMESTAMPTZ} for expr_type in TIMESTAMP_EXPRESSIONS},
+    **{
+        expr_type: {"annotator": _annotate_datetime_or_timestamp_add}
+        for expr_type in (exp.DatetimeAdd, exp.DatetimeSub, exp.TimestampAdd, exp.TimestampSub)
+    },
     exp.ApproxTopK: {"annotator": lambda self, e: _annotate_by_args_approx_top(self, e)},
     exp.ApproxTopSum: {"annotator": lambda self, e: _annotate_by_args_approx_top(self, e)},
     exp.Array: {"annotator": _annotate_array},
@@ -399,7 +439,8 @@ EXPRESSION_METADATA = {
     },
     exp.ParseBignumeric: {"returns": exp.DType.BIGDECIMAL},
     exp.ParseNumeric: {"returns": exp.DType.DECIMAL},
-    exp.SafeDivide: {"annotator": lambda self, e: _annotate_safe_divide(self, e)},
+    exp.Pow: {"annotator": lambda self, e: _annotate_int_pair_as_double(self, e)},
+    exp.SafeDivide: {"annotator": lambda self, e: _annotate_int_pair_as_double(self, e)},
     exp.ToCodePoints: {
         "annotator": lambda self, e: self._set_type(
             e, exp.DataType.from_str("ARRAY<BIGINT>", dialect="bigquery")

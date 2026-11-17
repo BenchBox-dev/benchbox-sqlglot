@@ -57,6 +57,15 @@ def _build_timestamp_trunc(unit: str) -> t.Callable[[list], exp.TimestampTrunc]:
     )
 
 
+def _build_array_sort(name: str, asc: bool) -> t.Callable[[list], exp.Func]:
+    # Both sorts put NULLs last; the lambda form sorts by a key, which ArraySort can't represent
+    return lambda args: (
+        exp.ArraySort(this=args[0], asc=None if asc else exp.false(), nulls_first=exp.false())
+        if len(args) == 1
+        else exp.Anonymous(this=name, expressions=args)
+    )
+
+
 def _build_without_extra_args(expr_type: type[exp.Func], name: str) -> t.Callable[[list], exp.Func]:
     # The optional mode / timezone arguments have no counterpart in expr_type
     return lambda args: (
@@ -291,7 +300,9 @@ class ClickHouseParser(parser.Parser):
         "ARRAYMAX": exp.ArrayMax.from_arg_list,
         "ARRAYMIN": exp.ArrayMin.from_arg_list,
         "ARRAYREVERSE": exp.ArrayReverse.from_arg_list,
+        "ARRAYREVERSESORT": _build_array_sort("arrayReverseSort", asc=False),
         "ARRAYSLICE": exp.ArraySlice.from_arg_list,
+        "ARRAYSORT": _build_array_sort("arraySort", asc=True),
         "ARRAYFILTER": _build_array_lambda_func(exp.ArrayFilter, "arrayFilter"),
         "ARRAYMAP": _build_array_lambda_func(exp.Transform, "arrayMap"),
         "CURRENTDATABASE": exp.CurrentDatabase.from_arg_list,
@@ -341,8 +352,13 @@ class ClickHouseParser(parser.Parser):
         "TOMONDAY": _build_timestamp_trunc("WEEK"),
         "UNIQ": exp.ApproxDistinct.from_arg_list,
         "MD5": exp.MD5Digest.from_arg_list,
-        "SHA256": lambda args: exp.SHA2(this=seq_get(args, 0), length=exp.Literal.number(256)),
-        "SHA512": lambda args: exp.SHA2(this=seq_get(args, 0), length=exp.Literal.number(512)),
+        "SHA1": exp.SHA1Digest.from_arg_list,
+        "SHA256": lambda args: exp.SHA2Digest(
+            this=seq_get(args, 0), length=exp.Literal.number(256)
+        ),
+        "SHA512": lambda args: exp.SHA2Digest(
+            this=seq_get(args, 0), length=exp.Literal.number(512)
+        ),
         "SPLITBYCHAR": _build_split_by_char,
         "SPLITBYREGEXP": _build_split(exp.RegexpSplit),
         "SPLITBYSTRING": _build_split(exp.Split),
@@ -419,7 +435,7 @@ class ClickHouseParser(parser.Parser):
         "TUPLE": lambda self: exp.Struct.from_arg_list(self._parse_function_args(alias=True)),
         "AND": lambda self: self._parse_connector_function(exp.and_),
         "OR": lambda self: self._parse_connector_function(exp.or_),
-        "XOR": lambda self: exp.xor(*self._parse_function_args(alias=False)),
+        "XOR": lambda self: self._parse_xor(),
         "VIEW": lambda self: self.expression(
             exp.Anonymous(this="view", expressions=[self._parse_select()])
         ),
@@ -743,6 +759,10 @@ class ClickHouseParser(parser.Parser):
                     table.replace(table.to_column())
 
         return join
+
+    def _parse_xor(self) -> exp.Expr:
+        args = self._parse_function_args(alias=False)
+        return exp.xor(*args) if args else self.expression(exp.Xor())
 
     def _parse_function(
         self,

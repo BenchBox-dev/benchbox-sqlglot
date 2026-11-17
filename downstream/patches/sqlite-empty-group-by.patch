@@ -1,8 +1,8 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index d6b5a685..55651200 100644
+index c06ab9e8..e1c2bef8 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
-@@ -150,7 +150,55 @@ def _generated_to_auto_increment(expression: exp.Expr) -> exp.Expr:
+@@ -151,7 +151,55 @@ def _generated_to_auto_increment(expression: exp.Expr) -> exp.Expr:
      return expression
  
  
@@ -55,10 +55,10 @@ index d6b5a685..55651200 100644
 +
  class SQLiteGenerator(generator.Generator):
 +    SUPPORTS_EMPTY_GROUP_BY = False
-     SELECT_KINDS: tuple[str, ...] = ()
+     SELECT_KINDS = ()
      TRY_SUPPORTED = False
      SUPPORTS_UESCAPE = False
-@@ -235,6 +283,7 @@ class SQLiteGenerator(generator.Generator):
+@@ -236,6 +284,7 @@ class SQLiteGenerator(generator.Generator):
          **{kind: _moments_sql for kind in MOMENT_AGGREGATES},
          exp.Select: transforms.preprocess(
              [

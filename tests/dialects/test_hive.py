@@ -441,6 +441,16 @@ class TestHive(Validator):
             },
         )
 
+    def test_interval(self):
+        self.validate_identity(
+            "SELECT INTERVAL 23 HOUR + 59 MINUTE AS result",
+            "SELECT INTERVAL '23' HOUR + INTERVAL '59' MINUTE AS result",
+        )
+        self.validate_identity(
+            "SELECT INTERVAL '23' HOUR + '59' MINUTE AS result",
+            "SELECT INTERVAL '23' HOUR + INTERVAL '59' MINUTE AS result",
+        )
+
     def test_time(self):
         # A missing parse format falls back to plain CAST, instead of UNIX_TIMESTAMP(x, None)
         self.validate_all("STR_TO_DATE(x)", write={"hive": "CAST(x AS DATE)"})
@@ -978,6 +988,20 @@ class TestHive(Validator):
                 "spark2": "SELECT EXISTS(ARRAY(2, 3), x -> x % 2 = 0)",
                 "spark": "SELECT EXISTS(ARRAY(2, 3), x -> x % 2 = 0)",
                 "databricks": "SELECT EXISTS(ARRAY(2, 3), x -> x % NULLIF(2, 0) = 0)",
+            },
+        )
+        self.validate_all(
+            "SELECT EXISTS(arr, x -> x > 2)",
+            write={
+                "hive": "SELECT EXISTS(arr, x -> x > 2)",
+                "spark": "SELECT EXISTS(arr, x -> x > 2)",
+                "duckdb": "SELECT (ARRAY_LENGTH(LIST_FILTER(arr, LAMBDA x : x > 2)) <> 0)",
+                "postgres": "SELECT (CARDINALITY(ARRAY(SELECT x FROM UNNEST(arr) AS _t0(x) WHERE x > 2)) <> 0)",
+                "bigquery": "SELECT (ARRAY_LENGTH(ARRAY(SELECT x FROM UNNEST(arr) AS x WHERE x > 2)) <> 0)",
+                "presto": "SELECT ANY_MATCH(arr, x -> x > 2)",
+                "trino": "SELECT ANY_MATCH(arr, x -> x > 2)",
+                "snowflake": UnsupportedError,
+                "mysql": UnsupportedError,
             },
         )
 

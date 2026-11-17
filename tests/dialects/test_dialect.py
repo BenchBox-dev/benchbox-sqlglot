@@ -119,6 +119,29 @@ class Validator(unittest.TestCase):
 class TestDialect(Validator):
     maxDiff = None
 
+    def test_date_delta_missing_arguments(self):
+        for dialect, functions in {
+            "bigquery": (
+                "DATE_ADD",
+                "DATE_SUB",
+                "DATETIME_ADD",
+                "DATETIME_SUB",
+                "TIME_ADD",
+                "TIME_SUB",
+                "TIMESTAMP_ADD",
+                "TIMESTAMP_SUB",
+            ),
+            "mysql": ("DATE_ADD", "DATE_SUB"),
+            "doris": ("DATE_ADD", "DATE_SUB", "ADDDATE", "SUBDATE"),
+            "starrocks": ("DATE_ADD", "DATE_SUB", "ADDDATE", "SUBDATE"),
+        }.items():
+            for function in functions:
+                for args in ("", "x"):
+                    sql = f"SELECT {function}({args})"
+                    with self.subTest(dialect=dialect, sql=sql):
+                        with self.assertRaisesRegex(ParseError, "Required keyword:"):
+                            parse_one(sql, read=dialect)
+
     def test_table_query(self):
         dialects = ("", "duckdb", "postgres", "mysql", "presto", "trino")
         for sql, expected in (
@@ -1639,7 +1662,9 @@ class TestDialect(Validator):
             "ARRAY_SORT can't sort ascending with NULLs first or descending with NULLs last"
         )
         risingwave = ("ARRAY_SORT(x)", "ARRAY_SORT only sorts ascending with NULLs last")
+        clickhouse_nulls = "arraySort and arrayReverseSort put NULLs last"
         asc_nulls_last = {
+            "clickhouse": "arraySort(x)",
             "duckdb": "LIST_SORT(x)",
             "hive": hive,
             "risingwave": "ARRAY_SORT(x)",
@@ -1648,6 +1673,7 @@ class TestDialect(Validator):
             "trino": "ARRAY_SORT(x)",
         }
         asc_nulls_first = {
+            "clickhouse": ("arraySort(x)", clickhouse_nulls),
             "duckdb": "LIST_SORT(x, 'ASC', 'NULLS FIRST')",
             "hive": "SORT_ARRAY(x)",
             "risingwave": risingwave,
@@ -1656,6 +1682,7 @@ class TestDialect(Validator):
             "trino": ("ARRAY_SORT(x)", trino_order),
         }
         desc_nulls_last = {
+            "clickhouse": "arrayReverseSort(x)",
             "duckdb": "ARRAY_REVERSE_SORT(x)",
             "hive": hive,
             "risingwave": risingwave,
@@ -1664,6 +1691,7 @@ class TestDialect(Validator):
             "trino": ("REVERSE(ARRAY_SORT(x))", trino_order),
         }
         desc_nulls_first = {
+            "clickhouse": ("arrayReverseSort(x)", clickhouse_nulls),
             "duckdb": "LIST_SORT(x, 'DESC', 'NULLS FIRST')",
             "hive": hive,
             "risingwave": risingwave,
@@ -1676,12 +1704,14 @@ class TestDialect(Validator):
             ("spark", "ARRAY_SORT(x)", asc_nulls_last),
             ("snowflake", "ARRAY_SORT(x)", asc_nulls_last),
             ("duckdb", "LIST_SORT(x)", asc_nulls_last),
+            ("clickhouse", "arraySort(x)", asc_nulls_last),
             ("spark", "SORT_ARRAY(x)", asc_nulls_first),
             ("hive", "SORT_ARRAY(x)", asc_nulls_first),
             ("duckdb", "LIST_SORT(x, 'ASC', 'NULLS FIRST')", asc_nulls_first),
             ("spark", "SORT_ARRAY(x, FALSE)", desc_nulls_last),
             ("duckdb", "LIST_SORT(x, 'DESC')", desc_nulls_last),
             ("duckdb", "ARRAY_REVERSE_SORT(x)", desc_nulls_last),
+            ("clickhouse", "arrayReverseSort(x)", desc_nulls_last),
             ("snowflake", "ARRAY_SORT(x, FALSE)", desc_nulls_first),
             ("duckdb", "LIST_SORT(x, 'DESC', 'NULLS FIRST')", desc_nulls_first),
         ):
@@ -1689,6 +1719,7 @@ class TestDialect(Validator):
 
         # A non-literal order is only kept where the target reads it the same way
         unsupported = {
+            "clickhouse": ("arraySort(x)", "arraySort only takes literal orders"),
             "duckdb": ("LIST_SORT(x)", "LIST_SORT only takes literal orders"),
             "hive": hive,
             "risingwave": risingwave,
@@ -1731,6 +1762,10 @@ class TestDialect(Validator):
             "trino",
             "ARRAY_SORT(x, (a, b) -> a - b)",
             {
+                "clickhouse": (
+                    "arraySort(x)",
+                    "ClickHouse's arraySort does not support a comparator.",
+                ),
                 "duckdb": ("LIST_SORT(x)", "DuckDB's LIST_SORT does not support a comparator."),
                 "hive": ("SORT_ARRAY(x)", "Hive's SORT_ARRAY does not support a comparator."),
                 "snowflake": (
@@ -2341,7 +2376,7 @@ class TestDialect(Validator):
                 "presto": "SELECT a FROM x CROSS JOIN UNNEST(y) WITH ORDINALITY AS t(a)",
                 "spark2": "SELECT a FROM x LATERAL VIEW POSEXPLODE(y) t AS pos, a",
                 "spark": "SELECT a FROM x LATERAL VIEW POSEXPLODE(y) t AS pos, a",
-                "databricks": "SELECT a FROM x LATERAL VIEW POSEXPLODE(y) t AS pos, a",
+                "databricks": "SELECT a FROM x CROSS JOIN LATERAL (SELECT * EXCEPT (pos), CAST(pos AS BIGINT) + 1 AS ordinality FROM POSEXPLODE(y)) AS t(a, ordinality)",
             },
         )
 
@@ -2351,7 +2386,7 @@ class TestDialect(Validator):
             write={
                 "presto": "SELECT * FROM x CROSS JOIN UNNEST(y) AS t",
                 "spark": UnsupportedError,
-                "databricks": UnsupportedError,
+                "databricks": "SELECT * FROM x CROSS JOIN LATERAL EXPLODE(y) AS t",
             },
         )
 
@@ -3750,6 +3785,56 @@ SELECT
             },
         )
 
+    def test_window_funcs_requiring_order(self):
+        for func, without_order in (
+            ("ROW_NUMBER()", {"bigquery"}),
+            ("RANK()", set()),
+            ("DENSE_RANK()", set()),
+            ("PERCENT_RANK()", set()),
+            ("CUME_DIST()", set()),
+            ("NTILE(2)", set()),
+            ("NTH_VALUE(x, 2)", set()),
+            ("FIRST_VALUE(x)", {"databricks"}),
+            ("LAST_VALUE(x)", {"databricks"}),
+            ("SUM(x)", {"bigquery", "databricks", "snowflake"}),
+        ):
+            with self.subTest(func):
+                unordered = f"SELECT {func} OVER (PARTITION BY a, b) FROM t"
+                ordered = f"SELECT {func} OVER (PARTITION BY a, b ORDER BY a, b) FROM t"
+
+                self.validate_all(
+                    unordered,
+                    write={
+                        "trino": unordered,
+                        **{
+                            dialect: unordered if dialect in without_order else ordered
+                            for dialect in ("bigquery", "databricks", "snowflake")
+                        },
+                    },
+                )
+
+        self.validate_all(
+            "SELECT ROW_NUMBER() OVER () FROM t",
+            write={
+                "bigquery": "SELECT ROW_NUMBER() OVER () FROM t",
+                "databricks": "SELECT ROW_NUMBER() OVER (ORDER BY NULL) FROM t",
+                "snowflake": "SELECT ROW_NUMBER() OVER (ORDER BY NULL) FROM t",
+            },
+        )
+        # Known limitation: Databricks still rejects this, there are no partition keys to order by
+        self.validate_all(
+            "SELECT CUME_DIST() OVER () FROM t",
+            write={
+                "databricks": "SELECT CUME_DIST() OVER (ORDER BY NULL) FROM t",
+            },
+        )
+        self.validate_all(
+            "SELECT ROW_NUMBER() OVER (PARTITION BY a ORDER BY b) FROM t",
+            write={
+                "databricks": "SELECT ROW_NUMBER() OVER (PARTITION BY a ORDER BY b) FROM t",
+            },
+        )
+
     def test_window_exclude(self):
         for option in ("CURRENT ROW", "TIES", "GROUP"):
             self.validate_all(
@@ -4046,7 +4131,6 @@ FROM subquery2""",
                 "postgres": "RANDOM()",
                 "presto": "RAND()",
                 "spark": "RAND()",
-                "sqlite": "RANDOM()",
                 "tsql": "RAND()",
             },
         )
@@ -4065,7 +4149,7 @@ FROM subquery2""",
                 "hive": UnsupportedError,
                 "mysql": UnsupportedError,
                 "oracle": UnsupportedError,
-                "postgres": "(ARRAY_LENGTH(arr, 1) = 0 OR ARRAY_LENGTH(ARRAY(SELECT x FROM UNNEST(arr) AS _t0(x) WHERE pred), 1) <> 0)",
+                "postgres": "(CARDINALITY(arr) = 0 OR CARDINALITY(ARRAY(SELECT x FROM UNNEST(arr) AS _t0(x) WHERE pred)) <> 0)",
                 "presto": "ANY_MATCH(arr, x -> pred)",
                 "redshift": UnsupportedError,
                 "snowflake": UnsupportedError,
@@ -5501,7 +5585,7 @@ FROM subquery2""",
                 "": "FORMAT('str fmt1 fmt2', 1, 'a')",
                 "bigquery": "FORMAT('str fmt1 fmt2', 1, 'a')",
                 "postgres": "FORMAT('str fmt1 fmt2', 1, 'a')",
-                "duckdb": "FORMAT('str fmt1 fmt2', 1, 'a')",
+                "duckdb": "PRINTF('str fmt1 fmt2', 1, 'a')",
             },
             write={
                 "bigquery": "FORMAT('str fmt1 fmt2', 1, 'a')",
@@ -5509,7 +5593,7 @@ FROM subquery2""",
                 "spark2": "FORMAT_STRING('str fmt1 fmt2', 1, 'a')",
                 "spark": "FORMAT_STRING('str fmt1 fmt2', 1, 'a')",
                 "databricks": "FORMAT_STRING('str fmt1 fmt2', 1, 'a')",
-                "duckdb": "FORMAT('str fmt1 fmt2', 1, 'a')",
+                "duckdb": "PRINTF('str fmt1 fmt2', 1, 'a')",
             },
         )
 

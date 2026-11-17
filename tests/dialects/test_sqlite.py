@@ -13,6 +13,271 @@ from tests.dialects.test_dialect import Validator
 class TestSQLite(Validator):
     dialect = "sqlite"
 
+    def test_round(self):
+        for sql, duckdb_sql in (
+            ("ROUND(123.45)", "ROUND(123.45)"),
+            ("ROUND(123.45, -1)", "ROUND(123.45, 0)"),
+            ("ROUND(123.45, -2)", "ROUND(123.45, 0)"),
+            ("ROUND(-123.45, -1)", "ROUND(-123.45, 0)"),
+            ("ROUND(123.45, 0)", "ROUND(123.45, 0)"),
+            ("ROUND(123.45, 1)", "ROUND(123.45, 1)"),
+            ("ROUND(NULL, -1)", "ROUND(NULL, 0)"),
+            (
+                "ROUND(123.45, NULL)",
+                "ROUND(CAST(123.45 AS DOUBLE), CASE WHEN NULL < 0 THEN 0 ELSE NULL END)",
+            ),
+            ("ROUND(x, n)", "ROUND(CAST(x AS DOUBLE), CASE WHEN n < 0 THEN 0 ELSE n END)"),
+            (
+                "ROUND(123.45, n)",
+                "ROUND(CAST(123.45 AS DOUBLE), CASE WHEN n < 0 THEN 0 ELSE n END)",
+            ),
+            (
+                "ROUND(x, n - 1)",
+                "ROUND(CAST(x AS DOUBLE), CASE WHEN (n - 1) < 0 THEN 0 ELSE n - 1 END)",
+            ),
+        ):
+            with self.subTest(sql=sql):
+                self.validate_all(sql, write={"sqlite": sql, "duckdb": duckdb_sql})
+
+        sql = "SELECT ROUND(x, n) FROM t"
+        expression = self.validate_identity(sql)
+        original = expression.copy()
+        for _ in range(3):
+            self.assertEqual(
+                expression.sql("duckdb", copy=False),
+                "SELECT ROUND(CAST(x AS DOUBLE), CASE WHEN n < 0 THEN 0 ELSE n END) FROM t",
+            )
+            self.assertEqual(expression, original)
+            round_expression = expression.find(exp.Round)
+            self.assertIs(round_expression.args["decimals"].parent, round_expression)
+            self.assertEqual(expression.sql("sqlite", copy=False), sql)
+            expression = self.parse_one(expression.sql("sqlite"))
+
+        for dialect in ("duckdb", "postgres", "snowflake"):
+            with self.subTest(dialect=dialect):
+                self.assertEqual(
+                    parse_one("ROUND(123.45, -1)", dialect=dialect).sql("duckdb"),
+                    "ROUND(123.45, -1)",
+                )
+
+    def test_week_date_arithmetic(self):
+        self.validate_all(
+            "DATE(d, (n * 7) || ' DAY')",
+            read={"mysql": "DATE_ADD(d, INTERVAL n WEEK)"},
+        )
+        connection = sqlite3.connect(":memory:")
+        try:
+            for operation, amount, expected in (
+                ("ADD", "2", "2024-01-15"),
+                ("SUB", "2", "2023-12-18"),
+                ("ADD", "-2", "2023-12-18"),
+                ("SUB", "-2", "2024-01-15"),
+                ("ADD", "0", "2024-01-01"),
+            ):
+                with self.subTest(operation=operation, amount=amount):
+                    source = f"SELECT DATE_{operation}('2024-01-01', INTERVAL {amount} WEEK)"
+                    sql = parse_one(source, read="mysql").sql("sqlite")
+                    self.assertEqual(connection.execute(sql).fetchone()[0], expected)
+
+            for operation, expected in (("ADD", "2024-01-15"), ("SUB", "2023-12-18")):
+                source = f"SELECT DATE_{operation}(d, INTERVAL n WEEK) FROM (SELECT '2024-01-01' AS d, 2 AS n) AS t"
+                sql = parse_one(source, read="mysql").sql("sqlite")
+                self.assertEqual(connection.execute(sql).fetchone()[0], expected)
+            source = (
+                "SELECT DATE_ADD('2024-01-01', INTERVAL (n + 1) WEEK) FROM (SELECT 1 AS n) AS t"
+            )
+            sql = parse_one(source, read="mysql").sql("sqlite")
+            self.assertEqual(connection.execute(sql).fetchone()[0], "2024-01-15")
+            sql = parse_one("SELECT DATE_ADD(NULL, INTERVAL 2 WEEK)", read="mysql").sql("sqlite")
+            self.assertIsNone(connection.execute(sql).fetchone()[0])
+        finally:
+            connection.close()
+
+    def test_random(self):
+        duckdb_random = "CAST((((CAST(FLOOR(RANDOM() * 4294967296) AS INT128) * 4294967296) + CAST(FLOOR(RANDOM() * 4294967296) AS INT128)) % ((CAST(9223372036854775807 AS INT128) - CAST(-9223372036854775807 AS INT128)) + 1)) + CAST(-9223372036854775807 AS INT128) AS BIGINT)"
+        self.validate_all(
+            "SELECT RANDOM()",
+            write={
+                "sqlite": "SELECT RANDOM()",
+                "duckdb": f"SELECT {duckdb_random}",
+            },
+        )
+        self.validate_all(
+            "SELECT ABS(RANDOM()) % 2 WHERE RANDOM() < 0",
+            write={
+                "sqlite": "SELECT ABS(RANDOM()) % 2 WHERE RANDOM() < 0",
+                "duckdb": f"SELECT ABS({duckdb_random}) % NULLIF(2, 0) WHERE {duckdb_random} < 0",
+            },
+        )
+        expression = annotate_types(self.parse_one("RANDOM()"), dialect="sqlite")
+        self.assertTrue(expression.is_type(exp.DType.BIGINT))
+        self.assertEqual(expression.args["lower"].to_py(), -9223372036854775807)
+        self.assertEqual(expression.args["upper"].to_py(), 9223372036854775807)
+
+    def test_group_concat_null_separator(self):
+        for separator, duckdb_separator in (
+            ("NULL", "NULL"),
+            (":separator", "$separator"),
+            ("CAST(NULL AS TEXT)", "CAST(NULL AS TEXT)"),
+        ):
+            sql = f"SELECT GROUP_CONCAT(x, {separator}) FROM t"
+            self.validate_all(
+                sql,
+                write={
+                    "sqlite": sql,
+                    "duckdb": f"SELECT LISTAGG(x, COALESCE({duckdb_separator}, '')) FROM t",
+                },
+            )
+
+        self.validate_all(
+            "SELECT GROUP_CONCAT(x, NULL ORDER BY y) FILTER(WHERE z > 0) FROM t",
+            write={
+                "sqlite": "SELECT GROUP_CONCAT(x, NULL ORDER BY y) FILTER(WHERE z > 0) FROM t",
+                "duckdb": "SELECT LISTAGG(x, COALESCE(NULL, '') ORDER BY y NULLS FIRST) FILTER(WHERE z > 0) FROM t",
+            },
+        )
+        self.validate_all(
+            "SELECT STRING_AGG(x, NULL) FROM t",
+            write={
+                "sqlite": "SELECT GROUP_CONCAT(x, NULL) FROM t",
+                "duckdb": "SELECT LISTAGG(x, COALESCE(NULL, '')) FROM t",
+            },
+        )
+        for sql, expected in (
+            ("GROUP_CONCAT(x)", "LISTAGG(x, ',')"),
+            ("GROUP_CONCAT(x, '')", "LISTAGG(x, '')"),
+            ("GROUP_CONCAT(x, ',')", "LISTAGG(x, ',')"),
+            ("GROUP_CONCAT(x, 'NULL')", "LISTAGG(x, 'NULL')"),
+        ):
+            self.validate_all(
+                sql,
+                write={"duckdb": expected},
+            )
+
+    def test_group_concat_distinct_separator(self):
+        self.validate_all(
+            "SELECT GROUP_CONCAT(DISTINCT x) FROM t",
+            read={
+                "postgres": "SELECT STRING_AGG(DISTINCT x, ',') FROM t",
+                "duckdb": "SELECT STRING_AGG(DISTINCT x, ',') FROM t",
+                "mysql": "SELECT GROUP_CONCAT(DISTINCT x SEPARATOR ',') FROM t",
+            },
+        )
+        self.validate_all(
+            "SELECT GROUP_CONCAT(DISTINCT x ORDER BY x NULLS LAST) FROM t",
+            read={"postgres": "SELECT STRING_AGG(DISTINCT x, ',' ORDER BY x) FROM t"},
+        )
+        connection = sqlite3.connect(":memory:")
+        try:
+            connection.executescript(
+                "CREATE TABLE t(x TEXT); INSERT INTO t VALUES ('a'), ('a'), ('b'), (NULL);"
+            )
+            for where in ("", " WHERE x IS NULL", " WHERE FALSE"):
+                generated = parse_one(
+                    f"SELECT STRING_AGG(DISTINCT x, ',') FROM t{where}", dialect="postgres"
+                ).sql("sqlite")
+                self.assertEqual(
+                    connection.execute(generated).fetchall(),
+                    connection.execute(f"SELECT GROUP_CONCAT(DISTINCT x) FROM t{where}").fetchall(),
+                )
+        finally:
+            connection.close()
+
+    def test_unary_plus(self):
+        for sql in (
+            "SELECT +x FROM t",
+            "SELECT +t.x FROM t",
+            "SELECT +(x + 1) FROM t",
+            "SELECT ++x, +-x, -+x FROM t",
+            "SELECT +x COLLATE NOCASE FROM t",
+            "SELECT 5 IS +TRUE, 5 IS NOT +TRUE, 0 IS +FALSE",
+        ):
+            with self.subTest(sql=sql):
+                self.validate_identity(sql)
+
+    def test_unary_plus_preserves_affinity(self):
+        connection = sqlite3.connect(":memory:")
+        try:
+            connection.executescript(
+                "CREATE TABLE t (x TEXT); INSERT INTO t VALUES ('1'), ('2'), ('01'), (NULL);"
+            )
+            for sql in (
+                "SELECT x FROM t WHERE +x = 1",
+                "SELECT x FROM t WHERE +x IN (1, 2)",
+                "SELECT x FROM t WHERE +x < 2 ORDER BY x",
+                "SELECT x FROM t WHERE +x IS 1",
+                "SELECT x FROM t WHERE +x = '1'",
+                "SELECT 5 IS +TRUE, 5 IS TRUE, 0 IS +FALSE",
+            ):
+                with self.subTest(sql=sql):
+                    generated = self.parse_one(sql).sql("sqlite")
+                    self.assertEqual(
+                        connection.execute(sql).fetchall(),
+                        connection.execute(generated).fetchall(),
+                    )
+        finally:
+            connection.close()
+
+    def test_date_add_sub_day_units_retain_time(self):
+        connection = sqlite3.connect(":memory:")
+        try:
+            for sql, expected in (
+                (
+                    "SELECT DATE_ADD('2024-01-01 10:00:00', INTERVAL 2 HOUR)",
+                    "2024-01-01 12:00:00",
+                ),
+                (
+                    "SELECT DATE_ADD('2024-01-01 10:00:00', INTERVAL 30 MINUTE)",
+                    "2024-01-01 10:30:00",
+                ),
+                (
+                    "SELECT DATE_ADD('2024-01-01 10:00:00', INTERVAL 45 SECOND)",
+                    "2024-01-01 10:00:45",
+                ),
+                (
+                    "SELECT DATE_SUB('2024-01-01 10:00:00', INTERVAL 2 HOUR)",
+                    "2024-01-01 08:00:00",
+                ),
+            ):
+                with self.subTest(sql=sql):
+                    generated = parse_one(sql, read="mysql").sql("sqlite")
+                    self.assertEqual([(expected,)], connection.execute(generated).fetchall())
+        finally:
+            connection.close()
+
+    def test_pragma_quoted_names(self):
+        for source, expected in (
+            ('PRAGMA "a b"', 'PRAGMA "a b"'),
+            ('PRAGMA "a.b"', 'PRAGMA "a.b"'),
+            ('PRAGMA "select"', 'PRAGMA "select"'),
+            ('PRAGMA "a""b"', 'PRAGMA "a""b"'),
+            ("PRAGMA [a b]", 'PRAGMA "a b"'),
+            ("PRAGMA `a b`", 'PRAGMA "a b"'),
+            ("PRAGMA 'a b'", 'PRAGMA "a b"'),
+            ('PRAGMA "x; SELECT 123"', 'PRAGMA "x; SELECT 123"'),
+            ('PRAGMA "x--comment"', 'PRAGMA "x--comment"'),
+            ('PRAGMA main."table_info"(items)', 'PRAGMA main."table_info" = items'),
+        ):
+            with self.subTest(source=source):
+                self.validate_identity(source, expected)
+
+    def test_pragma_quoted_schemas(self):
+        for source, expected in (
+            ('"aux db"', '"aux db"'),
+            ('"aux.db"', '"aux.db"'),
+            ('"aux""db"', '"aux""db"'),
+            ("[aux db]", '"aux db"'),
+            ("`aux db`", '"aux db"'),
+            ("'aux db'", '"aux db"'),
+        ):
+            with self.subTest(schema=source):
+                self.validate_identity(
+                    f"PRAGMA {source}.table_info(items)",
+                    f"PRAGMA {expected}.table_info = items",
+                )
+
+        self.validate_identity("""PRAGMA "aux db".table_info = 'items'""")
+
     def test_safe_div(self):
         self.validate_all(
             "SELECT CAST(a AS INTEGER) / CAST(b AS INTEGER) FROM t",
@@ -148,6 +413,27 @@ class TestSQLite(Validator):
                         f"SELECT {func}({value})",
                         read={"": f"SELECT CAST({value} AS {dtype})"},
                     )
+
+    def test_json_cast(self):
+        for dtype, dialects in (
+            ("JSON", ("", "postgres", "duckdb")),
+            ("JSONB", ("", "postgres")),
+        ):
+            for value in ("'{\"a\": 1}'", "x", "NULL"):
+                with self.subTest(dtype=dtype, value=value):
+                    from_ = " FROM (SELECT '{\"a\": 1}' AS x) AS t" if value == "x" else ""
+                    self.validate_all(
+                        f"SELECT JSON({value}){from_}",
+                        read={
+                            dialect: f"SELECT CAST({value} AS {dtype}){from_}"
+                            for dialect in dialects
+                        },
+                    )
+
+            self.validate_all(
+                "SELECT JSON('{\"a\": 1}') ->> '$.a'",
+                read={"postgres": f"SELECT '{{\"a\": 1}}'::{dtype} ->> 'a'"},
+            )
 
     def test_is_precedence(self):
         self.validate_identity("SELECT 'x' LIKE 'x' NOT LIKE '1'")
@@ -694,6 +980,22 @@ class TestSQLite(Validator):
         self.validate_identity("SELECT x NOT IN (1) IS TRUE", "SELECT (NOT x IN (1)) IS TRUE")
         self.validate_identity("SELECT 0 NOT IN (1) NOT IN (2)", "SELECT NOT (NOT 0 IN (1)) IN (2)")
         self.validate_identity("WITH xyz(x) AS (SELECT 1) SELECT x FROM xyz")
+        self.validate_all(
+            "SELECT CHAR(72, 105, x)",
+            write={
+                "sqlite": "SELECT CHAR(72, 105, x)",
+                "mysql": "SELECT CHAR(72, 105, x)",
+                "clickhouse": "SELECT CHAR(72, 105, x)",
+                "duckdb": "SELECT CHR(72) || CHR(105) || CHR(x)",
+                "postgres": "SELECT CHR(72) || CHR(105) || CHR(x)",
+                "snowflake": "SELECT CHR(72) || CHR(105) || CHR(x)",
+                "bigquery": "SELECT CHR(72) || CHR(105) || CHR(x)",
+                "oracle": "SELECT CHR(72) || CHR(105) || CHR(x)",
+                "spark": "SELECT CHR(72) || CHR(105) || CHR(x)",
+                "trino": "SELECT CHR(72) || CHR(105) || CHR(x)",
+                "tsql": "SELECT CHAR(72) + CHAR(105) + CHAR(x)",
+            },
+        )
         self.validate_identity("SELECT * FROM t AS t INDEXED BY s.i")
         self.validate_identity("SELECT * FROM t INDEXED BY s.i")
         self.validate_identity("SELECT * FROM t INDEXED BY i")
@@ -829,6 +1131,38 @@ class TestSQLite(Validator):
                 "mysql": "SELECT DATE_SUB(d, INTERVAL -n DAY) FROM t",
             },
         )
+        # DATE drops the time component, so sub-day units use DATETIME instead
+        self.validate_all(
+            "SELECT DATETIME(d, '2 HOUR') FROM t",
+            read={
+                "mysql": "SELECT DATE_ADD(d, INTERVAL 2 HOUR) FROM t",
+                "duckdb": "SELECT DATE_ADD(d, INTERVAL 2 HOUR) FROM t",
+            },
+        )
+        self.validate_all(
+            "SELECT DATETIME(d, '30 MINUTE') FROM t",
+            read={
+                "mysql": "SELECT DATE_ADD(d, INTERVAL 30 MINUTE) FROM t",
+            },
+        )
+        self.validate_all(
+            "SELECT DATETIME(d, '45 SECOND') FROM t",
+            read={
+                "mysql": "SELECT DATE_ADD(d, INTERVAL 45 SECOND) FROM t",
+            },
+        )
+        self.validate_all(
+            "SELECT DATETIME(d, '-2 HOUR') FROM t",
+            read={
+                "mysql": "SELECT DATE_SUB(d, INTERVAL 2 HOUR) FROM t",
+            },
+        )
+        self.validate_all(
+            "SELECT DATETIME(d, (n) || ' HOUR') FROM t",
+            read={
+                "duckdb": "SELECT DATE_ADD(d, INTERVAL (n) HOUR) FROM t",
+            },
+        )
         self.validate_all(
             "SELECT DATE(d, (-(SELECT 1)) || ' DAY') FROM t",
             read={"mysql": "SELECT DATE_SUB(d, INTERVAL (SELECT 1) DAY) FROM t"},
@@ -848,6 +1182,14 @@ class TestSQLite(Validator):
         self.validate_identity("SELECT UNIXEPOCH('now', 'subsec')")
         self.validate_identity("SELECT TIMEDIFF('now', '1809-02-12')")
         self.validate_identity("SELECT * FROM GENERATE_SERIES(1, 5)")
+        self.validate_all(
+            "SELECT * FROM GENERATE_SERIES(1, 5 - 1)",
+            read={"duckdb": "SELECT * FROM RANGE(1, 5)"},
+        )
+        self.validate_all(
+            "SELECT * FROM GENERATE_SERIES(5, 1 + 1, -1)",
+            read={"duckdb": "SELECT * FROM RANGE(5, 1, -1)"},
+        )
         self.validate_identity("SELECT INSTR(haystack, needle)")
         self.validate_identity(
             "SELECT a, SUM(b) OVER (ORDER BY a ROWS BETWEEN -1 PRECEDING AND 1 FOLLOWING) FROM t1 ORDER BY 1"
@@ -1118,6 +1460,7 @@ class TestSQLite(Validator):
             "UNICODE(x)",
             write={
                 "": "UNICODE(x)",
+                "duckdb": "NULLIF(UNICODE(x), -1)",
                 "mysql": "ORD(CONVERT(x USING utf32))",
                 "oracle": "ASCII(UNISTR(x))",
                 "postgres": "ASCII(x)",
@@ -1151,6 +1494,18 @@ class TestSQLite(Validator):
         self.validate_identity("SELECT * FROM t WHERE NULL IS y")
         self.validate_identity("SELECT * FROM t WHERE NULL IS NOT y")
         self.validate_identity("SELECT SQLITE_VERSION()")
+
+    def test_unicode(self):
+        for arg in ("''", "NULL", "'A'", "'Ω'", "'😀'", "LOWER('')"):
+            with self.subTest(arg=arg):
+                sql = f"SELECT UNICODE({arg})"
+                self.validate_all(
+                    sql,
+                    write={
+                        "sqlite": sql,
+                        "duckdb": f"SELECT NULLIF(UNICODE({arg}), -1)",
+                    },
+                )
 
     def test_json_arrow_precedence(self):
         # ||, -> and ->> form a single left-associative precedence tier that binds

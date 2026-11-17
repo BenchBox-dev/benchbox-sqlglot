@@ -3,6 +3,7 @@ from __future__ import annotations
 import typing as t
 
 from sqlglot import exp, parser
+from sqlglot.dialects.dialect import build_formatted_trunc
 from sqlglot.helper import seq_get
 from sqlglot.tokens import TokenType
 from sqlglot.trie import new_trie
@@ -84,6 +85,74 @@ class TeradataParser(parser.Parser):
         TokenType.LOCK: lambda self: self._parse_locking_statement(),
     }
 
+    def _is_hex_character_string(self) -> bool:
+        return (
+            self._curr.token_type == TokenType.STRING
+            and self._next.token_type == TokenType.VAR
+            and self._next.text.upper() in {"XC", "XCV"}
+            and self._curr.end + 1 == self._next.start
+        )
+
+    def _parse_atom(self) -> exp.Expr | None:
+        if self._is_hex_character_string():
+            return None
+        return super()._parse_atom()
+
+    def _parse_string(self) -> exp.Expr | None:
+        if self._is_hex_character_string():
+            self.raise_error("Hexadecimal character literals are not supported in this context")
+            return None
+        return super()._parse_string()
+
+    def _parse_primary(self) -> exp.Expr | None:
+        if self._is_hex_character_string():
+            token = self._curr
+            if any(char not in "0123456789abcdefABCDEF" for char in token.text):
+                self.raise_error("Invalid hexadecimal character literal", token)
+            self._advance()
+            expression = self.expression(exp.HexString(this=token.text, is_character=True), token)
+            expression.meta["end"] = self._curr.end
+            expression.meta["col"] = self._curr.col
+            self._advance()
+            self._add_comments(expression)
+            return expression
+        primary = super()._parse_primary()
+        if (
+            self._prev.token_type == TokenType.STRING
+            and self._curr.token_type == TokenType.VAR
+            and self._curr.text.upper() in {"XC", "XCV"}
+            and self._is_connected()
+        ):
+            self.raise_error("Adjacent hexadecimal character literals are not supported")
+        return primary
+
+    def _parse_function_call(
+        self,
+        functions: dict[str, t.Callable] | None = None,
+        anonymous: bool = False,
+        optional_parens: bool = True,
+        any_token: bool = False,
+    ) -> exp.Expr | None:
+        expression = super()._parse_function_call(functions, anonymous, optional_parens, any_token)
+        conversion = expression.this if isinstance(expression, exp.Window) else expression
+        if isinstance(conversion, (exp.StrToDate, exp.StrToTime, exp.TsOrDsToDate)):
+            fmt = conversion.args.get("format")
+            if isinstance(fmt, exp.Expr) and any(
+                e.args.get("is_character") for e in fmt.find_all(exp.HexString)
+            ):
+                self.raise_error(
+                    "Hexadecimal character literals are not supported in conversion formats"
+                )
+        return expression
+
+    def _parse_interval(
+        self, require_interval: bool = True, parse_function_unit: bool = True
+    ) -> exp.Add | exp.Interval | None:
+        interval = super()._parse_interval(require_interval, parse_function_unit)
+        if interval and any(e.args.get("is_character") for e in interval.find_all(exp.HexString)):
+            self.raise_error("Hexadecimal character literals are not supported in intervals")
+        return interval
+
     def _parse_execute(self) -> exp.Execute | exp.Command:
         start = self._prev
         this = self._parse_table_parts(schema=True)
@@ -136,7 +205,11 @@ class TeradataParser(parser.Parser):
     FUNCTIONS = {
         **parser.Parser.FUNCTIONS,
         "CARDINALITY": exp.ArraySize.from_arg_list,
+        "CHARACTERS": exp.Length.from_arg_list,
+        "CURDATE": exp.CurrentDate.from_arg_list,
+        "CURTIME": exp.CurrentTime.from_arg_list,
         "RANDOM": lambda args: exp.Rand(lower=seq_get(args, 0), upper=seq_get(args, 1)),
+        "TRUNC": build_formatted_trunc,
     }
 
     EXPONENT = {
@@ -239,7 +312,7 @@ class TeradataParser(parser.Parser):
             and self._next.token_type == TokenType.L_PAREN
             and self._index + 3 < len(self._tokens)
             and self._tokens[self._index + 2].token_type in {TokenType.FORMAT, TokenType.VAR}
-            and self._tokens[self._index + 2].text.upper() in {"FORMAT", "TITLE"}
+            and self._tokens[self._index + 2].text.upper() in {"FORMAT", "TITLE", "NAMED"}
             and self._tokens[self._index + 3].token_type != TokenType.L_PAREN
         ):
             return None
@@ -258,20 +331,26 @@ class TeradataParser(parser.Parser):
             this
             and self._curr.token_type == TokenType.L_PAREN
             and self._next.token_type in {TokenType.FORMAT, TokenType.VAR}
-            and self._next.text.upper() in {"FORMAT", "TITLE"}
+            and self._next.text.upper() in {"FORMAT", "TITLE", "NAMED"}
         ):
             self._advance()
             attributes: dict[str, exp.Expr | None] = {}
             while True:
                 attribute = self._curr.text.upper()
-                if not self._match_texts(("FORMAT", "TITLE")):
-                    self.raise_error("Expected FORMAT or TITLE")
+                if not self._match_texts(("FORMAT", "TITLE", "NAMED")):
+                    self.raise_error("Expected FORMAT, TITLE or NAMED")
                     break
                 if attribute in attributes:
                     self.raise_error(f"Duplicate {attribute} attribute")
-                value = self._parse_string()
+                value = (
+                    self._parse_id_var(any_token=False, tokens={TokenType.VAR, TokenType.STRING})
+                    if attribute == "NAMED"
+                    else self._parse_string()
+                )
                 if not value:
-                    self.raise_error(f"Expected string after {attribute}")
+                    self.raise_error(f"Expected value after {attribute}")
+                elif attribute == "NAMED" and not isinstance(value, exp.Identifier):
+                    self.raise_error("Expected alias after NAMED")
                 elif attribute == "TITLE" and not value.is_string:
                     self.raise_error("Expected string literal after TITLE")
                 attributes[attribute] = value
@@ -282,9 +361,41 @@ class TeradataParser(parser.Parser):
                 this = self.expression(exp.FormatPhrase(this=this, format=attributes["FORMAT"]))
             if "TITLE" in attributes:
                 this = self.expression(exp.TeradataTitle(this=this, title=attributes["TITLE"]))
+            if "NAMED" in attributes:
+                this = self.expression(exp.TeradataNamed(this=this, alias=attributes["NAMED"]))
             this = super()._parse_column_ops(this)
 
         return this
+
+    def _parse_projections(self) -> tuple[list[exp.Expr], list[exp.Expr] | None]:
+        projections, exclude = super()._parse_projections()
+        for i, projection in enumerate(projections):
+            alias = (
+                projection
+                if isinstance(projection, exp.Alias)
+                and not isinstance(projection, exp.TeradataNamed)
+                else None
+            )
+            this = alias.this if alias else projection
+            node = this
+            named_alias = None
+            while isinstance(node, (exp.FormatPhrase, exp.TeradataTitle, exp.TeradataNamed)):
+                child = node.this
+                if isinstance(node, exp.TeradataNamed):
+                    if alias or named_alias:
+                        child.add_comments(node.args["alias"].pop_comments())
+                    named_alias = named_alias or node.args["alias"]
+                    child.add_comments(node.pop_comments())
+                    if node is this:
+                        this = child
+                    node.replace(child)
+                node = child
+            if named_alias:
+                if alias:
+                    alias.set("this", this)
+                else:
+                    projections[i] = self.expression(exp.Alias(this=this, alias=named_alias))
+        return projections, exclude
 
     def _parse_window(self, this: exp.Expr | None, alias: bool = False) -> exp.Expr | None:
         window = super()._parse_window(this, alias)

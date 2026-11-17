@@ -26,6 +26,7 @@ class Resolver:
         self.schema: Schema = schema
         self.dialect: Dialect = schema.dialect or Dialect()
         self._source_columns: dict[str, Sequence[str]] | None = None
+        self._source_nodes: dict[str, exp.Selectable] | None = None
         self._unambiguous_columns: Mapping[str, str] | None = None
         self._all_columns: set[str] | None = None
         self._get_source_columns_cache: dict[tuple[str, bool], Sequence[str]] = {}
@@ -242,6 +243,12 @@ class Resolver:
                                     source_expr.type = element_types[0].copy()
                             elif col_type:
                                 source_expr.type = col_type.copy()
+                        elif isinstance(unnest_expr, exp.Array):
+                            first_elem = seq_get(unnest_expr.expressions, 0)
+                            if isinstance(first_elem, exp.Struct) and all(
+                                isinstance(f, exp.PropertyEQ) for f in first_elem.expressions
+                            ):
+                                columns.extend(f.name for f in first_elem.expressions)
 
                     columns.extend(self._struct_field_names(source_expr.type))
                 elif isinstance(source_expr, exp.Lateral) and isinstance(
@@ -273,6 +280,12 @@ class Resolver:
                     columns = selectable.named_selects
 
             node, _ = self.scope.selected_sources.get(name) or (None, None)
+            if node is None and name in self.scope.semi_or_anti_join_tables:
+                # SEMI/ANTI sources are not selected, but their column alias lists still apply.
+                if self._source_nodes is None:
+                    self._source_nodes = dict(self.scope.references)
+                node = self._source_nodes.get(name)
+
             if isinstance(node, Scope):
                 column_aliases = node.expression.alias_column_names
             elif isinstance(node, exp.Expr):

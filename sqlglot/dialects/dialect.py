@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import re
 import string
 import typing as t
 import sys
@@ -1949,10 +1950,10 @@ def build_date_delta(
 def build_date_delta_with_interval(
     expression_class: Type[E],
     default_unit: str | None = None,
-) -> t.Callable[[BuilderArgs], E | None]:
-    def _builder(args: BuilderArgs) -> E | None:
+) -> t.Callable[[BuilderArgs], E]:
+    def _builder(args: BuilderArgs) -> E:
         if len(args) < 2:
-            return None
+            return expression_class(this=seq_get(args, 0))
 
         interval = args[1]
 
@@ -2243,6 +2244,100 @@ def build_trunc(
     return exp.Anonymous(this="TRUNC", expressions=args)
 
 
+# https://docs.teradata.com/r/Lake-Working-with-SQL/SQL-Functions/SQL-Date-and-Time-Functions-and-Expressions/DateTime-and-Interval-Functions-and-Expressions/TRUNC-Date/TRUNC-Date-Syntax/ROUND-Date-and-TRUNC-Date-Argument-Types-and-Rules/TRUNC-and-ROUND-Date-Formats
+TRUNC_FORMAT_TO_UNIT = {
+    "CC": "CENTURY",
+    "SCC": "CENTURY",
+    "SYYYY": "YEAR",
+    "SYYY": "YEAR",
+    "YYYY": "YEAR",
+    "YEAR": "YEAR",
+    "SYEAR": "YEAR",
+    "YYY": "YEAR",
+    "YY": "YEAR",
+    "Y": "YEAR",
+    "IYYY": "ISOYEAR",
+    "IYY": "ISOYEAR",
+    "IY": "ISOYEAR",
+    "I": "ISOYEAR",
+    "Q": "QUARTER",
+    "MONTH": "MONTH",
+    "MON": "MONTH",
+    "MM": "MONTH",
+    "RM": "MONTH",
+    "DAY": "WEEK",
+    "DY": "WEEK",
+    "D": "WEEK",
+    "IW": "ISOWEEK",
+    # These weeks are anchored to the first day of the month/year, not a fixed weekday.
+    "W": "WEEK_OF_MONTH",
+    "WW": "WEEK_OF_YEAR",
+    "DDD": "DAY",
+    "DD": "DAY",
+    "J": "DAY",
+    "HH": "HOUR",
+    "HH12": "HOUR",
+    "HH24": "HOUR",
+    "MI": "MINUTE",
+    "SS": "SECOND",
+}
+
+
+def build_formatted_trunc(
+    args: BuilderArgs, dialect: Dialect
+) -> exp.DateTrunc | exp.Trunc | exp.Anonymous:
+    trunc = build_trunc(args, dialect, date_trunc_unabbreviate=False, default_date_trunc_unit="DD")
+    if isinstance(trunc, exp.DateTrunc) and trunc.unit.is_string:
+        unit = TRUNC_FORMAT_TO_UNIT.get(trunc.unit.name.upper())
+        if unit == "ISOWEEK" or (unit == "WEEK" and dialect.WEEK_OFFSET):
+            start = 1 if unit == "ISOWEEK" else week_offset_to_dow(dialect.WEEK_OFFSET)
+            day = next(day for day, dow in WEEK_START_DAY_TO_DOW.items() if dow == start)
+            trunc.set("unit", exp.WeekStart(this=exp.var(day)))
+        elif unit:
+            trunc.set("unit", exp.Literal.string(unit))
+    return trunc
+
+
+UNIT_TO_TRUNC_FORMAT = {
+    "CENTURY": "CC",
+    "YEAR": "YEAR",
+    "YY": "YEAR",
+    "YYYY": "YEAR",
+    "ISOYEAR": "IYYY",
+    "QUARTER": "Q",
+    "MONTH": "MONTH",
+    "MM": "MONTH",
+    "MON": "MONTH",
+    "WEEK": "IW",
+    "WEEK_OF_MONTH": "W",
+    "WEEK_OF_YEAR": "WW",
+    "ISOWEEK": "IW",
+    "DAY": "DD",
+    "HOUR": "HH",
+    "MINUTE": "MI",
+}
+
+
+@unsupported_args("zone", "century_from_zero")
+def date_trunc_to_trunc_sql(self: Generator, expression: exp.DateTrunc) -> str:
+    unit = expression.unit
+    if isinstance(unit, exp.WeekStart):
+        if unit.name.upper() == "MONDAY":
+            unit = exp.Literal.string("IW")
+        else:
+            self.weekstart_name(unit)
+            unit = exp.Literal.string("DAY")
+    elif isinstance(unit, (exp.Literal, exp.Var)):
+        unit_name = unit.name.upper()
+        mapped = UNIT_TO_TRUNC_FORMAT.get(unit_name)
+        if mapped:
+            unit = exp.Literal.string(mapped)
+        else:
+            self.unsupported(f"Unexpected interval unit: {unit_name}")
+
+    return self.func("TRUNC", expression.this, unit)
+
+
 def any_value_to_max_sql(self: Generator, expression: exp.AnyValue) -> str:
     return self.func("MAX", expression.this)
 
@@ -2397,11 +2492,23 @@ def unit_to_str(expression: exp.Expr, default: str = "DAY") -> exp.Expr | None:
 
 
 def weekstart_unit_to_str(
-    self: Generator, expression: exp.Expr, default: str = "DAY"
+    self: Generator,
+    expression: exp.Expr,
+    default: str = "DAY",
+    *,
+    century_from_zero: bool = False,
 ) -> exp.Expr | None:
     unit = expression.args.get("unit")
     if isinstance(unit, exp.WeekStart):
         return exp.Literal.string(self.weekstart_name(unit))
+    if isinstance(unit, exp.Literal) and unit.name.upper() in ("WEEK_OF_MONTH", "WEEK_OF_YEAR"):
+        self.unsupported(f"Unexpected interval unit: {unit.name}")
+    if (
+        isinstance(unit, (exp.Literal, exp.Var))
+        and map_date_part(unit).name.upper() == "CENTURY"
+        and bool(expression.args.get("century_from_zero")) != century_from_zero
+    ):
+        self.unsupported("Cannot preserve century boundaries starting at different years")
 
     return unit_to_str(expression, default)
 
@@ -2409,7 +2516,7 @@ def weekstart_unit_to_str(
 def unit_to_var(expression: exp.Expr, default: str = "DAY") -> exp.Expr | None:
     unit = expression.args.get("unit")
 
-    if isinstance(unit, (exp.Var, exp.Placeholder, exp.WeekStart, exp.Column)):
+    if unit and not isinstance(unit, exp.Literal):
         return unit
 
     value = unit.name if unit else default
@@ -2776,6 +2883,15 @@ def build_like(expr_type: Type[E], not_like: bool = False) -> t.Callable[[Builde
     return _builder
 
 
+def regexp_capture_group_count(pattern: exp.Expression | None) -> int | None:
+    if pattern and (pattern.is_string or isinstance(pattern, exp.RawString)):
+        try:
+            return re.compile(pattern.name).groups
+        except re.error:
+            pass
+    return None
+
+
 def build_regexp_extract(expr_type: Type[E]) -> t.Callable[[BuilderArgs, Dialect], E]:
     def _builder(args: BuilderArgs, dialect: Dialect) -> E:
         # The "position" argument specifies the index of the string character to start matching from.
@@ -2798,7 +2914,9 @@ def build_regexp_extract(expr_type: Type[E]) -> t.Callable[[BuilderArgs, Dialect
     return _builder
 
 
-def explode_to_unnest_sql(self: Generator, expression: exp.Lateral) -> str:
+def explode_to_unnest_sql(
+    self: Generator, expression: exp.Lateral, supports_left_join_unnest: bool = True
+) -> str:
     this = expression.this
     alias = expression.args.get("alias")
 
@@ -2831,6 +2949,10 @@ def explode_to_unnest_sql(self: Generator, expression: exp.Lateral) -> str:
         )
 
     if cross_join_expr:
+        if expression.args.get("outer") or isinstance(this, exp.ExplodeOuter):
+            if supports_left_join_unnest:
+                return self.sql(exp.Join(this=cross_join_expr, side="LEFT", on=exp.true()))
+            self.unsupported("LEFT JOIN UNNEST is not supported, NULL or empty arrays are dropped")
         return self.sql(exp.Join(this=cross_join_expr, kind="cross"))
 
     return self.lateral_sql(expression)

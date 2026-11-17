@@ -49,15 +49,8 @@ def unsupported_args(
     def decorator(func: GeneratorMethod) -> GeneratorMethod:
         @wraps(func)
         def _func(generator: G, expression: E) -> str:
-            expression_name = expression.__class__.__name__
-            dialect_name = generator.dialect.__class__.__name__
-
             for arg_name, diagnostic in diagnostic_by_arg.items():
-                if expression.args.get(arg_name):
-                    diagnostic = diagnostic or UNSUPPORTED_TEMPLATE.format(
-                        arg_name, expression_name, dialect_name
-                    )
-                    generator.unsupported(diagnostic)
+                generator._warn_unsupported_arg(expression, arg_name, diagnostic)
 
             return func(generator, expression)
 
@@ -321,6 +314,9 @@ class Generator:
     # Window functions that support NULLS FIRST/LAST
     WINDOW_FUNCS_WITH_NULL_ORDERING: t.ClassVar[tuple[type[exp.Expression], ...]] = ()
 
+    # Window functions that require an ORDER BY in their window specification
+    WINDOW_FUNCS_REQUIRING_ORDER: t.ClassVar[tuple[type[exp.Expression], ...]] = ()
+
     # Whether ignore nulls is inside the agg or outside.
     # FIRST(x IGNORE NULLS) OVER vs FIRST (x) IGNORE NULLS OVER
     IGNORE_NULLS_IN_FUNC = False
@@ -396,6 +392,12 @@ class Generator:
     # Whether top-k distance/similarity joins are supported
     SUPPORTS_NEAREST_JOIN = False
 
+    # Whether MATCH_CONDITION in ASOF joins is supported
+    SUPPORTS_MATCH_CONDITION = False
+
+    # Whether ASOF JOIN MATCH_CONDITION should be folded into the ON clause
+    MATCH_CONDITION_IN_ON = False
+
     # Whether table hints should be generated
     TABLE_HINTS = True
 
@@ -433,7 +435,7 @@ class Generator:
     NVL2_SUPPORTED = True
 
     # https://cloud.google.com/bigquery/docs/reference/standard-sql/query-syntax
-    SELECT_KINDS: tuple[str, ...] = ("STRUCT", "VALUE")
+    SELECT_KINDS: t.ClassVar[tuple[str, ...]] = ("STRUCT", "VALUE")
 
     # Whether VALUES statements can be used as derived tables.
     # MySQL 5 and Redshift do not allow this, so when False, it will convert
@@ -643,6 +645,12 @@ class Generator:
     # The function name of the exp.ArraySize expression
     ARRAY_SIZE_NAME: str = "ARRAY_LENGTH"
 
+    # Override for sample variance; otherwise use the expression's function name.
+    VARIANCE_NAME: str = ""
+
+    # Whether VARIANCE natively returns zero for a single non-NULL value.
+    VARIANCE_RETURNS_ZERO_ON_SINGLE_VALUE = False
+
     # The syntax to use when altering the type of a column
     ALTER_SET_TYPE = "SET DATA TYPE"
 
@@ -654,6 +662,9 @@ class Generator:
 
     # Whether a multi-argument DECODE(...) function is supported. If not, a CASE expression is generated
     SUPPORTS_DECODE_CASE = True
+
+    # Whether CHR / CHAR accepts multiple code points, e.g. CHAR(72, 105). If not, the calls are concatenated
+    SUPPORTS_MULTI_ARG_CHR = True
 
     # Whether SYMMETRIC and ASYMMETRIC flags are supported with BETWEEN expression
     SUPPORTS_BETWEEN_FLAGS = False
@@ -1069,6 +1080,17 @@ class Generator:
 
             expression = sqlglot.transforms.move_ctes_to_top_level(expression)
         return expression
+
+    def _warn_unsupported_arg(
+        self, expression: exp.Expr, arg_name: str, diagnostic: str | None = None
+    ) -> None:
+        if expression.args.get(arg_name):
+            self.unsupported(
+                diagnostic
+                or UNSUPPORTED_TEMPLATE.format(
+                    arg_name, expression.__class__.__name__, self.dialect.__class__.__name__
+                )
+            )
 
     def unsupported(self, message: str) -> None:
         if self.unsupported_level == ErrorLevel.IMMEDIATE:
@@ -1677,6 +1699,11 @@ class Generator:
     def hexstring_sql(
         self, expression: exp.HexString, binary_function_repr: str | None = None
     ) -> str:
+        if expression.args.get("is_character"):
+            self.unsupported("Hexadecimal character literals are only supported in Teradata")
+            this = expression.this.replace("'", "''")
+            return f"'{this}'XC"
+
         this = self.sql(expression, "this")
         is_integer_type = expression.args.get("is_integer")
 
@@ -2723,16 +2750,20 @@ class Generator:
         in_exprs = expression.fields[0].expressions
         step = len(columns) // len(in_exprs)
 
-        # Derive the per-value suffix from the first stored column vs the first IN-list value.
-        # This correctly handles dialects (e.g. Spark single-agg) that ignore agg aliases.
-        first_base = in_exprs[0].sql() if src_identify_pivot_strings else in_exprs[0].alias_or_name
-        first_stored = columns[0].name
+        suffix = ""
+        if len(expression.expressions) != 1 or expression.expressions[0].alias:
+            # Derive the per-value suffix from the first stored column vs the first IN-list value.
+            # This correctly handles dialects (e.g. Spark single-agg) that ignore agg aliases.
+            first_base = (
+                in_exprs[0].sql() if src_identify_pivot_strings else in_exprs[0].alias_or_name
+            )
+            first_stored = columns[0].name
 
-        # exit if only suffix matches, not prefix. (e.g. BigQuery, which cannot be fixed)
-        if not first_stored.startswith(first_base):
-            return None
+            # exit if only suffix matches, not prefix. (e.g. BigQuery, which cannot be fixed)
+            if not first_stored.startswith(first_base):
+                return None
 
-        suffix = first_stored[len(first_base) :]
+            suffix = first_stored[len(first_base) :]
 
         # Whether the target dialect would append an agg-name suffix for this pivot.
         # Spark single-agg uniquely drops the agg alias entirely.
@@ -3061,6 +3092,17 @@ class Generator:
         return f"PRIOR {self.sql(expression, 'this')}"
 
     def join_sql(self, expression: exp.Join, join_op: str | None = None) -> str:
+        if (
+            match_condition := expression.args.get("match_condition")
+        ) and not self.SUPPORTS_MATCH_CONDITION:
+            if self.MATCH_CONDITION_IN_ON and not expression.args.get("using"):
+                expression = expression.on(match_condition)
+                expression.set("match_condition", None)
+                # Snowflake ASOF joins preserve unmatched left rows.
+                expression.set("side", "LEFT")
+            else:
+                self.unsupported("MATCH_CONDITION is not supported")
+
         if not self.SEMI_ANTI_JOIN_WITH_SIDE and expression.kind in ("SEMI", "ANTI"):
             side = None
         else:
@@ -3832,9 +3874,28 @@ class Generator:
         return f"{self.seg('WHERE')}{self.sep()}{this}"
 
     def window_sql(self, expression: exp.Window) -> str:
+        if (
+            isinstance(expression.this, exp.Variance)
+            and expression.this.args.get("single_value_returns_zero")
+            and expression.text("over") != "KEEP"
+            and not self.VARIANCE_RETURNS_ZERO_ON_SINGLE_VALUE
+        ):
+            return self.variance_sql(expression.this, window=expression)
+
         this = self.sql(expression, "this")
         partition = self.partition_by_sql(expression)
         order = expression.args.get("order")
+        if not order and self.WINDOW_FUNCS_REQUIRING_ORDER and not expression.args.get("alias"):
+            func = expression.this
+            if isinstance(func, (exp.IgnoreNulls, exp.RespectNulls)):
+                func = func.this
+            if isinstance(func, self.WINDOW_FUNCS_REQUIRING_ORDER):
+                # Without an ordering all rows of a partition are peers, which is
+                # also the case when ordering by the partition keys themselves
+                partition_by = expression.args.get("partition_by")
+                order = exp.Order(
+                    expressions=[e.copy() for e in partition_by] if partition_by else [exp.null()]
+                )
         order = self.order_sql(order, flat=True) if order else ""
         spec = self.sql(expression, "spec")
         alias = self.sql(expression, "alias")
@@ -3941,7 +4002,17 @@ class Generator:
         return f"ANY {this}"
 
     def exists_sql(self, expression: exp.Exists) -> str:
-        return f"EXISTS{self.wrap(expression)}"
+        predicate = expression.expression
+        if not predicate:
+            return f"EXISTS{self.wrap(expression)}"
+
+        # Spark's EXISTS(array, lambda)
+        if self.CAN_IMPLEMENT_ARRAY_ANY:
+            filtered = exp.ArrayFilter(this=expression.this, expression=predicate)
+            return self.sql(exp.paren(exp.ArraySize(this=filtered).neq(0)))
+
+        self.unsupported("EXISTS with a lambda predicate is unsupported")
+        return self.function_fallback_sql(expression)
 
     def case_sql(self, expression: exp.Case) -> str:
         this = self.sql(expression, "this")
@@ -4152,6 +4223,18 @@ class Generator:
 
         return escaped
 
+    def format_sql(self, expression: exp.Format) -> str:
+        if (
+            expression.args.get("is_fmt")
+            and expression.this.is_string
+            and not expression.expressions
+            and not any(c in expression.name for c in "{}")
+        ):
+            return self.sql(expression.this)
+
+        self._warn_unsupported_arg(expression, "is_fmt")
+        return self.function_fallback_sql(expression)
+
     def formatjson_sql(self, expression: exp.FormatJson) -> str:
         return f"{self.sql(expression, 'this')} FORMAT JSON"
 
@@ -4164,6 +4247,10 @@ class Generator:
 
     def teradatatitle_sql(self, expression: exp.TeradataTitle) -> str:
         self.unsupported("Teradata TITLE display headings are not supported")
+        return self.sql(expression, "this")
+
+    def teradatanamed_sql(self, expression: exp.TeradataNamed) -> str:
+        self.unsupported("Teradata NAMED on subexpressions is not supported")
         return self.sql(expression, "this")
 
     def _jsonobject_sql(
@@ -4344,6 +4431,9 @@ class Generator:
         sql = self.seg(self.indent(self.sql(expression, "this")), sep="")
         return f"({sql}{self.seg(')', sep='')}"
 
+    def pos_sql(self, expression: exp.Pos) -> str:
+        return f"+{self.sql(expression, 'this')}"
+
     def neg_sql(self, expression: exp.Neg) -> str:
         # This makes sure we don't convert "- - 5" to "--5", which is a comment
         this_sql = self.sql(expression, "this")
@@ -4502,6 +4592,10 @@ class Generator:
 
     def command_sql(self, expression: exp.Command) -> str:
         return f"{self.sql(expression, 'this')} {expression.text('expression').strip()}"
+
+    def optimize_sql(self, expression: exp.Optimize) -> str:
+        self.unsupported("OPTIMIZE is only supported in Databricks")
+        return f"OPTIMIZE {self.sql(expression, 'this')}"
 
     def comment_sql(self, expression: exp.Comment) -> str:
         this = self.sql(expression, "this")
@@ -6351,6 +6445,36 @@ class Generator:
             self.unsupported("ARRAY_SORT only sorts ascending with NULLs last")
         return self.func("ARRAY_SORT", expression.this, expression.expression)
 
+    def variance_sql(self, expression: exp.Variance, window: exp.Window | None = None) -> str:
+        this = expression.this
+        name = self.VARIANCE_NAME or self.function_name(expression)
+        if not expression.args.get("single_value_returns_zero"):
+            return self.func(name, this)
+
+        node: exp.Expr = expression
+        while node.parent and not isinstance(node.parent, (exp.Window, exp.AggFunc, exp.Select)):
+            node = node.parent
+        if window is None and isinstance(node.parent, exp.Window) and node.arg_key == "this":
+            self.unsupported("VARIANCE returning 0 for a single value is not supported in a window")
+            return self.func(name, this)
+
+        expression.set("single_value_returns_zero", None)
+        count: exp.Expr
+        variance: exp.Expr = expression
+        if window:
+            count = window.copy()
+            count.set("this", exp.Count(this=count.this.this))
+            variance = window
+        else:
+            count = exp.Count(this=this.copy())
+
+        return self.sql(
+            exp.case(count, copy=False)
+            .when(0, exp.null(), copy=False)
+            .when(1, 0, copy=False)
+            .else_(variance, copy=False)
+        )
+
     def arraysize_sql(self, expression: exp.ArraySize) -> str:
         dim = expression.expression
 
@@ -6769,7 +6893,21 @@ class Generator:
 
         return name
 
+    def datetrunc_sql(self, expression: exp.DateTrunc) -> str:
+        self._warn_unsupported_arg(expression, "century_from_zero")
+        unit = expression.unit
+        if unit.is_string and unit.name.upper() in ("WEEK_OF_MONTH", "WEEK_OF_YEAR"):
+            self.unsupported(f"Unexpected interval unit: {unit.name}")
+
+        return self.function_fallback_sql(expression)
+
     def chr_sql(self, expression: exp.Chr, name: str = "CHR") -> str:
+        args = expression.expressions
+        if len(args) > 1 and not self.SUPPORTS_MULTI_ARG_CHR:
+            # CHAR(72, 105) -> CHR(72) || CHR(105)
+            chars: list[exp.Expr] = [exp.Chr(expressions=[arg.copy()]) for arg in args]
+            return self.sql(reduce(lambda x, y: exp.DPipe(this=x, expression=y), chars))
+
         this = self.expressions(expression)
         charset = self.sql(expression, "charset")
         using = f" USING {charset}" if charset else ""

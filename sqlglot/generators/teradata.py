@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from sqlglot import exp, generator, transforms
 from sqlglot.dialects.dialect import (
+    date_trunc_to_trunc_sql,
     max_or_greatest,
     min_or_least,
     rename_func,
@@ -39,7 +40,7 @@ def _date_add_sql(
 
 
 class TeradataGenerator(generator.Generator):
-    SELECT_KINDS: tuple[str, ...] = ()
+    SELECT_KINDS = ()
     TRY_SUPPORTED = False
     SUPPORTS_UESCAPE = False
     SUPPORTS_DECODE_CASE = False
@@ -63,6 +64,7 @@ class TeradataGenerator(generator.Generator):
         **generator.Generator.TYPE_MAPPING,
         exp.DType.GEOMETRY: "ST_GEOMETRY",
         exp.DType.DOUBLE: "DOUBLE PRECISION",
+        exp.DType.TINYINT: "BYTEINT",
         exp.DType.TIMESTAMPTZ: "TIMESTAMP",
     }
 
@@ -93,10 +95,19 @@ class TeradataGenerator(generator.Generator):
         exp.ToChar: lambda self, e: self.function_fallback_sql(e),
         exp.ToNumber: to_number_with_nls_param,
         exp.Use: lambda self, e: f"DATABASE {self.sql(e, 'this')}",
+        exp.DateTrunc: date_trunc_to_trunc_sql,
         exp.DateAdd: _date_add_sql("+"),
         exp.DateSub: _date_add_sql("-"),
+        exp.DayOfWeek: rename_func("DAYOFWEEK"),
         exp.Quarter: lambda self, e: self.sql(exp.Extract(this="QUARTER", expression=e.this)),
     }
+
+    def hexstring_sql(
+        self, expression: exp.HexString, binary_function_repr: str | None = None
+    ) -> str:
+        if expression.args.get("is_character"):
+            return f"{self.sql(exp.Literal.string(expression.this))}XC"
+        return super().hexstring_sql(expression, binary_function_repr)
 
     def execute_sql(self, expression: exp.Execute) -> str:
         if expression.args.get("return_status"):
@@ -105,12 +116,19 @@ class TeradataGenerator(generator.Generator):
         arguments = f"({self.expressions(expression, flat=True)})" if expression.expressions else ""
         return f"EXECUTE {this}{arguments}"
 
+    def currenttime_sql(self, expression: exp.CurrentTime) -> str:
+        prefix, suffix = ("(", ")") if expression.this else ("", "")
+        return self.func("CURRENT_TIME", expression.this, prefix=prefix, suffix=suffix)
+
     def currenttimestamp_sql(self, expression: exp.CurrentTimestamp) -> str:
         prefix, suffix = ("(", ")") if expression.this else ("", "")
         return self.func("CURRENT_TIMESTAMP", expression.this, prefix=prefix, suffix=suffix)
 
     def teradatatitle_sql(self, expression: exp.TeradataTitle) -> str:
         return f"{self.sql(expression, 'this')} (TITLE {self.sql(expression, 'title')})"
+
+    def teradatanamed_sql(self, expression: exp.TeradataNamed) -> str:
+        return f"{self.sql(expression, 'this')} (NAMED {self.sql(expression, 'alias')})"
 
     def cast_sql(self, expression: exp.Cast, safe_prefix: str | None = None) -> str:
         if expression.to.this == exp.DType.UNKNOWN and expression.args.get("format"):

@@ -6,8 +6,6 @@ from sqlglot.errors import OptimizeError
 from sqlglot._typing import E
 from sqlglot.helper import tsort
 
-JOIN_ATTRS = ("on", "side", "kind", "using", "method")
-
 
 def optimize_joins(expression: E) -> E:
     """
@@ -95,14 +93,23 @@ def normalize(expression: E) -> E:
     Remove INNER and OUTER from joins as they are optional.
     """
     for join in expression.find_all(exp.Join):
-        if join.kind == "PASTE" or join.args.get("nearest"):
+        if (
+            join.kind in ("ASOF", "PASTE")
+            or join.method in ("ASOF", "POSITIONAL")
+            or join.args.get("nearest")
+        ):
             continue
 
-        if not any(join.args.get(k) for k in JOIN_ATTRS):
+        if not any(join.args.get(k) for k in exp.Join.QUALIFIERS):
             join.set("kind", "CROSS")
 
         if join.kind == "CROSS":
-            join.set("on", None)
+            # SQLite and MySQL allow CROSS JOIN predicates, which must keep filtering rows.
+            on = join.args.get("on")
+            if join.args.get("using") or (on and on != exp.true()):
+                join.set("kind", None)
+            else:
+                join.set("on", None)
         else:
             if join.kind in ("INNER", "OUTER"):
                 join.set("kind", None)
@@ -123,8 +130,10 @@ def _is_reorderable(joins: Iterable[exp.Join]) -> bool:
 
     Joins with a side (LEFT, RIGHT, FULL) cannot be reordered easily,
     the order affects which rows are included in the result.
-    PASTE joins pair rows by position, so reordering changes their pairings.
+    PASTE and POSITIONAL joins pair rows by position, so reordering changes their pairings.
+    ASOF and ANY joins select a match based on all their predicates and input rows.
     NEAREST joins select top-k matches, which depend on the input rows.
+    Unnamed join operands, such as parenthesized joins, cannot be tracked by name.
 
     Example:
         >>> from sqlglot import parse_one, exp
@@ -136,4 +145,11 @@ def _is_reorderable(joins: Iterable[exp.Join]) -> bool:
         >>> _is_reorderable(ast.find(exp.Select).args.get("joins", []))
         False
     """
-    return not any(join.side or join.kind == "PASTE" or join.args.get("nearest") for join in joins)
+    return not any(
+        join.side
+        or join.kind in ("ASOF", "ANY", "PASTE")
+        or join.method in ("ASOF", "POSITIONAL")
+        or join.args.get("nearest")
+        or not join.alias_or_name
+        for join in joins
+    )

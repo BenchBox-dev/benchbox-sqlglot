@@ -652,6 +652,8 @@ class TestOracle(Validator):
         )
         self.validate_identity("L2_DISTANCE(x, y)")
         self.validate_identity("BITMAP_OR_AGG(x)")
+        self.validate_identity("SELECT VAR_POP(a) FROM t")
+        self.validate_identity("SELECT APPROX_COUNT_DISTINCT(a) FROM t")
 
     def test_pivot_syntax_restrictions(self):
         """Oracle only accepts simple column names in a (UN)PIVOT's FOR clause and IN-list
@@ -1140,13 +1142,26 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""
             },
         )
 
-        # Make sure units are not normalized e.g 'Q' -> 'QUARTER' and 'W' -> 'WEEK'
+        # Preserve Oracle format models when generating normalized units.
         # https://docs.oracle.com/en/database/oracle/oracle-database/21/sqlrf/ROUND-and-TRUNC-Date-Functions.html
         for unit in (
             "'Q'",
             "'W'",
         ):
             self.validate_identity(f"TRUNC(x, {unit})")
+
+    def test_trunc_century(self):
+        for fmt in ("CC", "SCC"):
+            self.validate_all(
+                f"TRUNC(CAST('2024-05-15' AS DATE), '{fmt}')",
+                write={
+                    "oracle": "TRUNC(CAST('2024-05-15' AS DATE), 'CC')",
+                    "teradata": "TRUNC(CAST('2024-05-15' AS DATE), 'CC')",
+                    "exasol": "TRUNC(CAST('2024-05-15' AS DATE), 'CC')",
+                    "postgres": "DATE_TRUNC('CENTURY', CAST('2024-05-15' AS DATE))",
+                    "duckdb": UnsupportedError,
+                },
+            )
 
     def test_trunc_type_inference(self):
         # Tests for build_trunc discrimination logic (shared across Oracle, Exasol, Snowflake)
@@ -1203,18 +1218,18 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""
             },
         )
 
-        # Date truncation with various units
-        for unit in ("DAY", "WEEK", "MONTH", "QUARTER", "YEAR"):
-            with self.subTest(f"Date TRUNC with {unit}"):
+        for fmt, unit in (("DD", "DAY"), ("MONTH", "MONTH"), ("Q", "QUARTER"), ("YEAR", "YEAR")):
+            with self.subTest(fmt=fmt):
                 self.validate_all(
-                    f"TRUNC(CAST(x AS DATE), '{unit}')",
+                    f"TRUNC(CAST(x AS DATE), '{fmt}')",
                     write={
-                        "oracle": f"TRUNC(CAST(x AS DATE), '{unit}')",
+                        "oracle": f"TRUNC(CAST(x AS DATE), '{fmt}')",
+                        "teradata": f"TRUNC(CAST(x AS DATE), '{fmt}')",
                         "snowflake": f"DATE_TRUNC('{unit}', CAST(x AS DATE))",
                         "postgres": f"DATE_TRUNC('{unit}', CAST(x AS DATE))",
                         "bigquery": f"DATE_TRUNC(CAST(x AS DATE), {unit})",
                         "duckdb": f"DATE_TRUNC('{unit}', CAST(x AS DATE))",
-                        "tsql": f"DATE_TRUNC('{unit}', CAST(x AS DATE))",
+                        "tsql": f"DATETRUNC({unit}, CAST(x AS DATE))",
                         "spark": (
                             f"DATE_TRUNC('{unit}', CAST(x AS DATE))"
                             if unit == "DAY"
@@ -1223,17 +1238,14 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""
                     },
                 )
 
-        # Timestamp truncation with various units
-        for unit in ("HOUR", "MINUTE", "SECOND", "DAY", "MONTH", "YEAR"):
-            with self.subTest(f"Timestamp TRUNC with {unit}"):
+        for fmt, unit in (("HH", "HOUR"), ("MI", "MINUTE"), ("DD", "DAY")):
+            with self.subTest(fmt=fmt):
                 self.validate_all(
-                    f"TRUNC(CAST(x AS TIMESTAMP), '{unit}')",
+                    f"TRUNC(CAST(x AS TIMESTAMP), '{fmt}')",
                     write={
-                        "oracle": f"TRUNC(CAST(x AS TIMESTAMP), '{unit}')",
-                        "snowflake": f"DATE_TRUNC('{unit}', CAST(x AS TIMESTAMP))",
-                        "postgres": f"DATE_TRUNC('{unit}', CAST(x AS TIMESTAMP))",
+                        "oracle": f"TRUNC(CAST(x AS TIMESTAMP), '{fmt}')",
                         "duckdb": f"DATE_TRUNC('{unit}', CAST(x AS TIMESTAMP))",
-                        "tsql": f"DATE_TRUNC('{unit}', CAST(x AS DATETIME2))",
+                        "tsql": f"DATETRUNC({unit}, CAST(x AS DATETIME2))",
                         "spark": (
                             f"DATE_TRUNC('{unit}', CAST(x AS TIMESTAMP))"
                             if unit in ("HOUR", "MINUTE", "SECOND", "DAY")
@@ -1241,6 +1253,27 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""
                         ),
                     },
                 )
+
+        self.validate_all(
+            "TRUNC(CAST('2024-05-15' AS DATE), 'IW')",
+            write={
+                "oracle": "TRUNC(CAST('2024-05-15' AS DATE), 'IW')",
+                "teradata": "TRUNC(CAST('2024-05-15' AS DATE), 'IW')",
+                "bigquery": "DATE_TRUNC(CAST('2024-05-15' AS DATE), WEEK(MONDAY))",
+                "tsql": "DATETRUNC(ISO_WEEK, CAST('2024-05-15' AS DATE))",
+            },
+        )
+        for fmt in ("W", "WW"):
+            self.validate_all(
+                f"TRUNC(CAST(x AS DATE), '{fmt}')",
+                write={
+                    "oracle": f"TRUNC(CAST(x AS DATE), '{fmt}')",
+                    "teradata": f"TRUNC(CAST(x AS DATE), '{fmt}')",
+                    "duckdb": UnsupportedError,
+                    "spark": UnsupportedError,
+                    "exasol": f"TRUNC(CAST(x AS DATE), '{fmt}')",
+                },
+            )
 
     def test_analyze(self):
         self.validate_identity("ANALYZE TABLE tbl")
@@ -1453,3 +1486,71 @@ CONNECT BY PRIOR employee_id = manager_id AND LEVEL <= 4"""
             "CREATE TRIGGER view_insert INSTEAD OF INSERT ON employee_view FOR EACH ROW BEGIN INSERT INTO employees (id, name, dept_id) VALUES (:NEW.id, :NEW.name, :NEW.dept_id) END",
             check_command_warning=True,
         )
+
+    def test_variance(self):
+        self.validate_identity("SELECT VARIANCE(x) OVER (PARTITION BY y) FROM t")
+        self.validate_all(
+            "SELECT VARIANCE(x) FROM t",
+            write={
+                "duckdb": "SELECT CASE COUNT(x) WHEN 0 THEN NULL WHEN 1 THEN 0 ELSE VARIANCE(x) END FROM t",
+                "oracle": "SELECT VARIANCE(x) FROM t",
+                "postgres": "SELECT CASE COUNT(x) WHEN 0 THEN NULL WHEN 1 THEN 0 ELSE VAR_SAMP(x) END FROM t",
+            },
+        )
+        self.validate_all(
+            "SELECT VARIANCE(DISTINCT x) FROM t",
+            write={
+                "oracle": "SELECT VARIANCE(DISTINCT x) FROM t",
+                "postgres": "SELECT CASE COUNT(DISTINCT x) WHEN 0 THEN NULL WHEN 1 THEN 0 ELSE VAR_SAMP(DISTINCT x) END FROM t",
+            },
+        )
+        self.validate_all(
+            "SELECT VAR_SAMP(x) FROM t",
+            read={
+                "duckdb": "SELECT VARIANCE(x) FROM t",
+                "postgres": "SELECT VARIANCE(x) FROM t",
+            },
+            write={
+                "duckdb": "SELECT VARIANCE(x) FROM t",
+                "oracle": "SELECT VAR_SAMP(x) FROM t",
+                "postgres": "SELECT VAR_SAMP(x) FROM t",
+            },
+        )
+
+        for over in (
+            "OVER ()",
+            "OVER (PARTITION BY y)",
+            "OVER (PARTITION BY y ORDER BY x ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)",
+            "OVER (ORDER BY x ROWS BETWEEN 1 PRECEDING AND 1 PRECEDING)",
+        ):
+            with self.subTest(over=over):
+                self.validate_all(
+                    f"SELECT VARIANCE(x) {over} FROM t",
+                    write={
+                        "oracle": f"SELECT VARIANCE(x) {over} FROM t",
+                        "postgres": f"SELECT CASE COUNT(x) {over} WHEN 0 THEN NULL WHEN 1 THEN 0 ELSE VAR_SAMP(x) {over} END FROM t",
+                        "duckdb": f"SELECT CASE COUNT(x) {over} WHEN 0 THEN NULL WHEN 1 THEN 0 ELSE VARIANCE(x) {over} END FROM t",
+                    },
+                )
+        self.validate_all(
+            "SELECT VARIANCE(DISTINCT x) OVER (PARTITION BY y) FROM t",
+            write={
+                "duckdb": "SELECT CASE COUNT(DISTINCT x) OVER (PARTITION BY y) WHEN 0 THEN NULL WHEN 1 THEN 0 ELSE VARIANCE(DISTINCT x) OVER (PARTITION BY y) END FROM t",
+            },
+        )
+        self.validate_all(
+            "SELECT SUM(VARIANCE(x)) OVER () FROM t GROUP BY y",
+            write={
+                "postgres": "SELECT SUM(CASE COUNT(x) WHEN 0 THEN NULL WHEN 1 THEN 0 ELSE VAR_SAMP(x) END) OVER () FROM t GROUP BY y",
+            },
+        )
+        self.validate_all(
+            "SELECT VARIANCE(x) FROM (SELECT 1 AS x) t WHERE 1 = 0",
+            write={
+                "clickhouse": "SELECT CASE COUNT(x) WHEN 0 THEN NULL WHEN 1 THEN 0 ELSE varSamp(x) END FROM (SELECT 1 AS x) AS t WHERE 1 = 0",
+            },
+        )
+        with self.assertRaises(UnsupportedError):
+            parse_one("SELECT VAR_SAMP(DISTINCT x) FROM t", read="postgres").sql(
+                "oracle", unsupported_level=ErrorLevel.RAISE
+            )

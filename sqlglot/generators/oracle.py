@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from sqlglot import exp, generator, transforms
 from sqlglot.dialects.dialect import (
+    approx_count_distinct_sql,
+    date_trunc_to_trunc_sql,
     groupconcat_sql,
     mod_func_sql,
     no_ilike_sql,
@@ -22,9 +24,10 @@ def _trim_sql(self: OracleGenerator, expression: exp.Trim) -> str:
 
 
 class OracleGenerator(generator.Generator):
-    SELECT_KINDS: tuple[str, ...] = ()
+    SELECT_KINDS = ()
     TRY_SUPPORTED = False
     SUPPORTS_UESCAPE = False
+    SUPPORTS_MULTI_ARG_CHR = False
     LOCKING_READS_SUPPORTED = True
     SUPPORTS_MERGE_WHERE = True
     CAST_TO_INT_ROUNDS = True
@@ -42,6 +45,7 @@ class OracleGenerator(generator.Generator):
     SUPPORTS_DECODE_CASE = True
     UNPIVOT_ALIASES_ARE_IDENTIFIERS = False
     PIVOT_ALIAS_WITH_AS = False
+    VARIANCE_RETURNS_ZERO_ON_SINGLE_VALUE = True
 
     AFTER_HAVING_MODIFIER_TRANSFORMS = generator.AFTER_HAVING_MODIFIER_TRANSFORMS
 
@@ -68,12 +72,13 @@ class OracleGenerator(generator.Generator):
 
     TRANSFORMS = {
         **generator.Generator.TRANSFORMS,
+        exp.ApproxDistinct: approx_count_distinct_sql,
         exp.Pivot: transforms.preprocess([transforms.unqualify_pivot_fields]),
         exp.GroupConcat: lambda self, e: groupconcat_sql(self, e, on_overflow=True),
         exp.DateStrToDate: lambda self, e: self.func(
             "TO_DATE", e.this, exp.Literal.string("YYYY-MM-DD")
         ),
-        exp.DateTrunc: lambda self, e: self.func("TRUNC", e.this, e.unit),
+        exp.DateTrunc: date_trunc_to_trunc_sql,
         exp.EuclideanDistance: rename_func("L2_DISTANCE"),
         exp.ILike: no_ilike_sql,
         exp.LogicalOr: rename_func("MAX"),
@@ -85,6 +90,7 @@ class OracleGenerator(generator.Generator):
             [
                 transforms.eliminate_distinct_on,
                 transforms.eliminate_qualify,
+                transforms.eliminate_semi_and_anti_joins,
             ]
         ),
         exp.StrPosition: lambda self, e: strposition_sql(
@@ -110,6 +116,7 @@ class OracleGenerator(generator.Generator):
         ),
         exp.UtcTimestamp: rename_func("UTC_TIMESTAMP"),
         exp.UtcTime: rename_func("UTC_TIME"),
+        exp.VariancePop: rename_func("VAR_POP"),
         exp.Systimestamp: lambda self, e: "SYSTIMESTAMP",
         exp.TableSpaceProperty: lambda self, e: f"TABLESPACE {self.sql(e, 'this')}",
     }
@@ -121,6 +128,13 @@ class OracleGenerator(generator.Generator):
         exp.PhysicalProperty: exp.Properties.Location.POST_SCHEMA,
         exp.StorageProperty: exp.Properties.Location.POST_SCHEMA,
     }
+
+    def variance_sql(self, expression: exp.Variance, window: exp.Window | None = None) -> str:
+        if expression.args.get("single_value_returns_zero"):
+            return self.func("VARIANCE", expression.this)
+        if isinstance(expression.this, exp.Distinct):
+            self.unsupported("Oracle's VAR_SAMP does not support DISTINCT")
+        return self.func("VAR_SAMP", expression.this)
 
     def physicalproperty_sql(self, expression: exp.PhysicalProperty) -> str:
         value = self.sql(expression, "value")

@@ -110,6 +110,7 @@ EXPRESSION_METADATA: ExprMetadataType = {
             exp.EndsWith,
             exp.Exists,
             exp.In,
+            exp.IsArray,
             exp.IsInf,
             exp.IsNan,
             exp.LogicalAnd,
@@ -306,6 +307,12 @@ EXPRESSION_METADATA: ExprMetadataType = {
         }
     },
     **{
+        expr_type: {"returns": exp.DType.VARIANT}
+        for expr_type in {
+            exp.ToVariant,
+        }
+    },
+    **{
         expr_type: {"annotator": annotate_by_numeric_arg}
         for expr_type in {
             exp.Ceil,
@@ -405,7 +412,9 @@ EXPRESSION_METADATA: ExprMetadataType = {
     exp.HexString: {
         "annotator": lambda self, e: self._set_type(
             e,
-            exp.DType.BIGINT if e.args.get("is_integer") else exp.DType.BINARY,
+            exp.DType.VARCHAR
+            if e.args.get("is_character")
+            else (exp.DType.BIGINT if e.args.get("is_integer") else exp.DType.BINARY),
         )
     },
     exp.GenerateSeries: {

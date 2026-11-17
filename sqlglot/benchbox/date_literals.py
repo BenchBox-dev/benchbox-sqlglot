@@ -61,7 +61,16 @@ class DateLiteralPadding(Generator):
         return annotate_types(node.copy(), dialect=self.dialect, overwrite_types=False)
 
     def _is_known_date(self, node: exp.Expr) -> bool:
-        return self._typed(node).is_type(exp.DType.DATE)
+        if self._typed(node).is_type(exp.DType.DATE):
+            return True
+        inner = node.unnest()
+        if isinstance(inner, (exp.Add, exp.Sub)):
+            left, right = inner.this, inner.expression
+            if isinstance(right, exp.Interval):
+                return self._is_known_date(left)
+            if isinstance(left, exp.Interval) and isinstance(inner, exp.Add):
+                return self._is_known_date(right)
+        return False
 
     def _pad_literals(self, *operands: exp.Expr) -> None:
         if not self.PAD_DATE_LITERALS:
