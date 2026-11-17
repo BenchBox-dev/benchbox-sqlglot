@@ -111,6 +111,13 @@
       "status": "done",
       "title": "Patch normalization emitted a hunk that adds only blank lines"
     },
+    "refresh-upstream-v30-33-0-patch-conflicts-20261117": {
+      "claim": null,
+      "needs": [],
+      "priority": "high",
+      "status": "open",
+      "title": "Adapt the five carried patches that conflict with upstream v30.33.0 and ship benchbox-sqlglot 30.33.0.1"
+    },
     "sqlglot-controller-mergeability-retry-misses-new-hold-20261107": {
       "claim": null,
       "needs": [],
