@@ -249,13 +249,13 @@ def _regexpextract_sql(
     # Other dialects don't support all of the following parameters, so we need to
     # generate default values as necessary to ensure the transpilation is correct
     group = expression.args.get("group")
+    parameters = expression.args.get("parameters")
 
-    # To avoid generating all these default values, we set group to None if
-    # it's 0 (also default value) which doesn't trigger the following chain
-    if group and group.name == "0":
+    has_e = parameters and parameters.is_string and "e" in parameters.name
+    if expression.args.get("inferred_group") or (group and not has_e and group.name == "0"):
         group = None
 
-    parameters = expression.args.get("parameters") or (group and exp.Literal.string("c"))
+    parameters = parameters or (group and exp.Literal.string("c"))
     occurrence = expression.args.get("occurrence") or (parameters and exp.Literal.number(1))
     position = expression.args.get("position") or (occurrence and exp.Literal.number(1))
 
@@ -401,7 +401,7 @@ def _eliminate_dot_variant_lookup(expression: exp.Expr) -> exp.Expr:
                 unnest_aliases.add(unnest_alias.columns[0].name)
 
         if unnest_aliases:
-            for c in find_all_in_scope(expression, exp.Column):
+            for c in find_all_in_scope(expression, exp.Column, include_udtfs=True):
                 if c.table in unnest_aliases:
                     bracket_lhs = c.args["table"]
                     bracket_rhs = exp.Literal.string(c.name)
@@ -419,9 +419,10 @@ def _eliminate_dot_variant_lookup(expression: exp.Expr) -> exp.Expr:
 class SnowflakeGenerator(generator.Generator):
     SUPPORTS_EMPTY_GROUP_BY = False
     BYTE_STRING_FUNCTION = "HEX_DECODE_BINARY"
-    SELECT_KINDS: tuple[str, ...] = ()
+    SELECT_KINDS = ()
     PARAMETER_TOKEN = "$"
     MATCHED_BY_SOURCE = False
+    SUPPORTS_MULTI_ARG_CHR = False
     MERGE_ALL_BY_NAME = True
     SINGLE_STRING_INTERVAL = True
     CAST_TO_INT_ROUNDS = True
@@ -451,6 +452,7 @@ class SnowflakeGenerator(generator.Generator):
 
     IS_BOOL_ALLOWED = False
     DIRECTED_JOINS = True
+    SUPPORTS_MATCH_CONDITION = True
     SUPPORTS_UESCAPE = False
     TRY_SUPPORTED = False
 
@@ -716,6 +718,18 @@ class SnowflakeGenerator(generator.Generator):
     }
 
     RESPECT_IGNORE_NULLS_UNSUPPORTED_EXPRESSIONS = (exp.ArrayAgg,)
+
+    WINDOW_FUNCS_REQUIRING_ORDER = (
+        exp.CumeDist,
+        exp.DenseRank,
+        exp.FirstValue,
+        exp.LastValue,
+        exp.NthValue,
+        exp.Ntile,
+        exp.PercentRank,
+        exp.Rank,
+        exp.RowNumber,
+    )
 
     def with_properties(self, properties: exp.Properties) -> str:
         return self.properties(properties, wrapped=False, prefix=self.sep(""), sep=" ")
@@ -1157,6 +1171,9 @@ class SnowflakeGenerator(generator.Generator):
         return f"{self.sql(expression, 'this')}!{self.sql(expression, 'expression')}"
 
     def format_sql(self, expression: exp.Format) -> str:
+        if expression.args.get("is_fmt"):
+            return super().format_sql(expression)
+
         if expression.name.lower() == "%s" and len(expression.expressions) == 1:
             return self.func("TO_CHAR", expression.expressions[0])
 

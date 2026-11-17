@@ -3,6 +3,7 @@ from __future__ import annotations
 import typing as t
 
 from collections import Counter, defaultdict
+from itertools import chain
 
 from sqlglot import expressions as exp
 from sqlglot.helper import find_new_name, seq_get
@@ -133,10 +134,24 @@ UNMERGABLE_ARGS = set(exp.Select.arg_types) - {
 # without getting wrapped in parentheses, because the precedence won't be altered.
 SAFE_TO_REPLACE_UNWRAPPED = (
     exp.Column,
-    exp.EQ,
     exp.Func,
-    exp.NEQ,
     exp.Paren,
+)
+
+
+# These Binary subclasses are opaque to the NULL-propagation check. This is a
+# conservative list, not a claim that every instance returns a non-NULL value.
+NULL_PROPAGATION_EXCEPTIONS = (
+    exp.Func,  # Binary functions include AND/OR, which need not propagate NULL.
+    exp.Is,  # IS NULL/TRUE/FALSE return booleans for NULL inputs.
+    exp.NullSafeEQ,
+    exp.NullSafeNEQ,
+    exp.Match,  # MATCH can invoke a user-defined function, e.g., in SQLite.
+    exp.DPipe,  # Concatenation ignores NULL operands in some dialects.
+    exp.NestedJSONSelect,  # Dialect-specific JSON field access.
+    exp.Operator,  # User-defined operators have unknown NULL behavior.
+    exp.PropertyEQ,  # Named field syntax: name := value.
+    exp.Kwarg,  # Named argument syntax: name => value.
 )
 
 
@@ -147,11 +162,13 @@ def merge_ctes(
     copy_budget: CopyBudget | None = None,
 ) -> tuple[E, bool]:
     copy_budget = copy_budget or CopyBudget(expression)
+    scopes = traverse_scope(expression) if scopes is None else scopes
+    scope_lookup = {id(scope.expression): scope for scope in scopes}
 
     # All places where we select from CTEs.
     # We key on the CTE scope so we can detect CTES that are selected from multiple times.
     cte_selections = defaultdict(list)
-    for outer_scope in traverse_scope(expression) if scopes is None else scopes:
+    for outer_scope in scopes:
         for table, inner_scope in outer_scope.selected_sources.values():
             if isinstance(inner_scope, Scope) and inner_scope.is_cte:
                 cte_selections[id(inner_scope)].append(
@@ -170,9 +187,9 @@ def merge_ctes(
             continue
         alias = table.alias_or_name
         if _mergeable(
-            outer_scope, inner_scope, leave_tables_isolated, from_or_join
+            outer_scope, inner_scope, leave_tables_isolated, from_or_join, table, scope_lookup
         ) and copy_budget.consume(outer_scope, inner_scope, alias):
-            _rename_inner_sources(outer_scope, inner_scope, alias)
+            _rename_inner_sources(outer_scope, inner_scope, alias, scope_lookup)
             _merge_from(outer_scope, inner_scope, table, alias)
             _merge_expressions(outer_scope, inner_scope, alias)
             _merge_order(outer_scope, inner_scope)
@@ -192,8 +209,10 @@ def merge_derived_tables(
     copy_budget: CopyBudget | None = None,
 ) -> E:
     copy_budget = copy_budget or CopyBudget(expression)
+    scopes = traverse_scope(expression) if scopes is None else scopes
+    scope_lookup = {id(scope.expression): scope for scope in scopes}
 
-    for outer_scope in traverse_scope(expression) if scopes is None else scopes:
+    for outer_scope in scopes:
         for subquery in outer_scope.derived_tables:
             from_or_join = subquery.find_ancestor(exp.From, exp.Join)
             if not isinstance(from_or_join, (exp.From, exp.Join)):
@@ -203,9 +222,14 @@ def merge_derived_tables(
             if not isinstance(inner_scope, Scope):
                 continue
             if _mergeable(
-                outer_scope, inner_scope, leave_tables_isolated, from_or_join
+                outer_scope,
+                inner_scope,
+                leave_tables_isolated,
+                from_or_join,
+                subquery,
+                scope_lookup,
             ) and copy_budget.consume(outer_scope, inner_scope, alias):
-                _rename_inner_sources(outer_scope, inner_scope, alias)
+                _rename_inner_sources(outer_scope, inner_scope, alias, scope_lookup)
                 _merge_from(outer_scope, inner_scope, subquery, alias)
                 _merge_expressions(outer_scope, inner_scope, alias)
                 _merge_order(outer_scope, inner_scope)
@@ -222,6 +246,8 @@ def _mergeable(
     inner_scope: Scope,
     leave_tables_isolated: bool,
     from_or_join: FromOrJoin,
+    source: exp.Selectable,
+    scope_lookup: dict[int, Scope],
 ) -> bool:
     """
     Return True if `inner_select` can be merged into outer query.
@@ -229,7 +255,7 @@ def _mergeable(
     inner_select = inner_scope.expression.unnest()
     outer = outer_scope.expression
     outer_args = outer.args
-    inner_name = from_or_join.alias_or_name
+    inner_name = source.alias_or_name
 
     def _constant_projection_empties_group_by_all(column_free_aliases: set[str]) -> bool:
         """
@@ -370,6 +396,45 @@ def _mergeable(
         }
         return bool(number_literal_aliases & ordered)
 
+    def _is_null_propagating(expression: exp.Expr) -> bool:
+        """Conservatively check whether the projection is NULL when all inner sources are NULL."""
+        stack = [expression]
+        while stack:
+            node = stack.pop().unalias().unnest()
+            if isinstance(node, exp.Null) or (
+                isinstance(node, exp.Column) and node.table in inner_scope.selected_sources
+            ):
+                return True
+            if isinstance(node, exp.Dot):
+                if isinstance(node.expression, exp.Identifier):
+                    stack.append(node.this)
+            elif isinstance(node, (exp.Cast, exp.Unary)):
+                stack.append(node.this)
+            elif isinstance(node, exp.Binary) and not isinstance(node, NULL_PROPAGATION_EXCEPTIONS):
+                stack.extend((node.expression, node.this))
+        return False
+
+    def _outer_join_blocks_merge(projections: dict[str, exp.Expr]) -> bool:
+        node: exp.Expr = source
+        joins = node.args.get("joins", [])
+        while True:
+            if (isinstance(node, exp.Join) and node.side in ("LEFT", "FULL")) or any(
+                j.side in ("RIGHT", "FULL") for j in joins
+            ):
+                break
+            if node is outer or not node.parent:
+                return False
+            # Include later joins and enclosing parenthesized joins that null-extend this source.
+            start = node.index + 1 if node.arg_key == "joins" and node.index is not None else 0
+            joins = node.parent.args.get("joins", [])[start:]
+            node = node.parent
+
+        referenced = {c.name for c in outer_scope.columns if c.table == inner_name}
+        return any(
+            name in referenced and not _is_null_propagating(projection)
+            for name, projection in projections.items()
+        )
+
     if (
         not isinstance(outer, exp.Select)
         or outer.is_star
@@ -377,8 +442,14 @@ def _mergeable(
         or any(v for k, v in inner_select.args.items() if k in UNMERGABLE_ARGS)
         or inner_select.args.get("from_") is None
         or outer_scope.pivots
-        or any(j.args.get("nearest") for j in outer_args.get("joins", []))
-        or any(j.args.get("nearest") for j in inner_select.args.get("joins", []))
+        # Merging can move filters and projections across row pairing and padding.
+        or any(
+            join.method in ("ASOF", "POSITIONAL")
+            or join.kind in ("ASOF", "ANY", "PASTE")
+            or join.args.get("nearest")
+            for scope in (outer_scope, inner_scope)
+            for join in scope.find_all(exp.Join)
+        )
         or (leave_tables_isolated and len(outer_scope.selected_sources) > 1)
         or (isinstance(from_or_join, exp.Join) and inner_select.args.get("joins"))
         or (
@@ -419,42 +490,117 @@ def _mergeable(
         if not has_column:
             column_free_aliases.add(name)
 
+    external_sources = {column.table for column in inner_scope.external_columns}
+    if external_sources:
+        # Ancestor sources cannot be renamed here, so skip merges that would capture them.
+        if external_sources.intersection(
+            name for name, _ in outer_scope.references if name != inner_name
+        ):
+            return False
+
+        outer_columns = outer_scope.source_columns(inner_name)
+        for name, projection in projections.items():
+            sources = external_sources.intersection(
+                column.table for column in projection.find_all(exp.Column)
+            )
+            if sources and sources.intersection(
+                _nested_source_names(
+                    outer_scope,
+                    (column for column in outer_columns if column.name == name),
+                    scope_lookup,
+                )
+            ):
+                return False
+
     return (
         not _constant_projection_empties_group_by_all(column_free_aliases)
         and not _outer_select_joins_on_inner_select_join(projections)
         and not _window_projection_blocks_merge(window_aliases)
         and not _literal_group_unmergeable(number_literal_aliases)
         and not _literal_in_order_by(number_literal_aliases)
+        and not _outer_join_blocks_merge(projections)
         and not (inner_scope.is_cte and _is_recursive())
     )
 
 
-def _rename_inner_sources(outer_scope: Scope, inner_scope: Scope, alias: str) -> None:
+def _nested_source_names(
+    scope: Scope, columns: t.Iterable[exp.Expr], scope_lookup: dict[int, Scope]
+) -> set[str]:
+    names: set[str] = set()
+    seen = {id(scope.expression)}
+    for column in columns:
+        if id(column) in scope.column_index:
+            continue
+
+        # Only scopes on a reference's path can capture it. Shared paths are visited once.
+        node = column.parent
+        while node is not None and id(node) not in seen:
+            seen.add(id(node))
+            if nested_scope := scope_lookup.get(id(node)):
+                names.update(name for name, _ in nested_scope.references)
+            node = node.parent
+
+    return names
+
+
+def _rename_inner_sources(
+    outer_scope: Scope, inner_scope: Scope, alias: str, scope_lookup: dict[int, Scope]
+) -> None:
     """
     Renames any sources in the inner query that conflict with names in the outer query.
     """
     inner_taken = set(inner_scope.selected_sources)
-    outer_taken = {name for name, _ in outer_scope.references}
-    conflicts = outer_taken.intersection(inner_taken)
-    conflicts -= {alias}
+    outer_taken = {name for name, _ in outer_scope.references if name != alias}
+    outer_taken.update(column.table for column in outer_scope.external_columns)
+    outer_taken.update(
+        _nested_source_names(outer_scope, outer_scope.source_columns(alias), scope_lookup)
+    )
 
-    taken = outer_taken.union(inner_taken)
+    conflicts = outer_taken.intersection(inner_taken)
+    if not conflicts:
+        return
+
+    taken = outer_taken.union(name for name, _ in inner_scope.references)
+    taken.update(column.table for column in inner_scope.external_columns)
+    table_columns = [
+        column
+        for scope in inner_scope.traverse()
+        for column in scope.table_columns
+        if column.name in conflicts
+        and column.name not in _nested_source_names(inner_scope, (column,), scope_lookup)
+    ]
+    taken.update(
+        _nested_source_names(
+            inner_scope,
+            chain(
+                (column for column in inner_scope.columns if column.table in conflicts),
+                table_columns,
+            ),
+            scope_lookup,
+        )
+    )
 
     for conflict in conflicts:
         new_name = find_new_name(taken, conflict)
+        taken.add(new_name)
 
         source, _ = inner_scope.selected_sources[conflict]
-        new_alias = exp.to_identifier(new_name)
+        alias_holder = source.parent if isinstance(source.parent, exp.Subquery) else source
+        table_alias = alias_holder.args.get("alias") or exp.TableAlias()
+        table_alias.set("this", exp.to_identifier(new_name))
+        alias_holder.set("alias", table_alias)
 
-        if isinstance(source, exp.Table) and source.alias:
-            source.set("alias", exp.TableAlias(this=new_alias))
-        elif isinstance(source, exp.Table):
-            source.replace(exp.alias_(source, new_alias))
-        elif isinstance(source.parent, exp.Subquery):
-            source.parent.set("alias", exp.TableAlias(this=new_alias))
+        for join_hint in inner_scope.join_hints:
+            for table in join_hint.find_all(exp.Table):
+                if table.alias_or_name == conflict:
+                    table.set("this", exp.to_identifier(new_name))
 
         for column in inner_scope.source_columns(conflict):
             column.set("table", exp.to_identifier(new_name))
+
+        for table_column in table_columns:
+            if table_column.name == conflict:
+                table_column.set("this", exp.to_identifier(new_name))
 
         inner_scope.rename_source(conflict, new_name)
 
@@ -535,7 +681,6 @@ def _merge_expressions(outer_scope: Scope, inner_scope: Scope, alias: str) -> No
             continue
 
         expression = expression.unalias()
-        must_wrap_expression = not isinstance(expression, SAFE_TO_REPLACE_UNWRAPPED)
 
         is_number = expression.is_number
         last = len(columns_to_replace) - 1
@@ -571,7 +716,7 @@ def _merge_expressions(outer_scope: Scope, inner_scope: Scope, alias: str) -> No
 
             # Ensures we don't alter the intended operator precedence if there's additional
             # context surrounding the outer expression (i.e. it's not a simple projection).
-            if isinstance(parent, (exp.Unary, exp.Binary)) and must_wrap_expression:
+            if _must_wrap(expression, column):
                 replacement = exp.paren(replacement, copy=False)
 
             # make sure we do not accidentally change the name of the column
@@ -583,6 +728,26 @@ def _merge_expressions(outer_scope: Scope, inner_scope: Scope, alias: str) -> No
     if outer_columns:
         for scope in outer_scope.traverse():
             scope.clear_cache()
+
+
+def _must_wrap(expression: exp.Expr, column: exp.Column) -> bool:
+    parent = column.parent
+
+    if isinstance(parent, exp.Paren) or not (
+        isinstance(parent, (exp.Unary, exp.Binary, exp.Between))
+        or (isinstance(parent, exp.In) and column.arg_key == "this")
+    ):
+        return False
+
+    # AND / OR are Funcs, but they bind looser than any operator they can be nested in
+    if isinstance(expression, exp.Connector):
+        return True
+
+    # = and <> are safe under AND / OR, but e.g. Postgres binds IN and BETWEEN tighter than them
+    if isinstance(expression, (exp.EQ, exp.NEQ)):
+        return not isinstance(parent, exp.Connector)
+
+    return not isinstance(expression, SAFE_TO_REPLACE_UNWRAPPED)
 
 
 def _merge_where(outer_scope: Scope, inner_scope: Scope, from_or_join: FromOrJoin) -> None:

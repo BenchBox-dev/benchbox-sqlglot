@@ -108,7 +108,7 @@ class TestReduceListAggregates(unittest.TestCase):
             out,
         )
         self.assertIn("(SELECT AVG(_v0) FROM UNNEST(prices) AS _t(_v0)) AS avg_price", out)
-        self.assertIn("ARRAY_LENGTH(quantities, 1) AS count_order", out)
+        self.assertIn("CARDINALITY(quantities) AS count_order", out)
 
     def test_postgres_standalone_transform_keeps_order(self):
         tree = sqlglot.parse_one(
@@ -128,7 +128,7 @@ class TestReduceListAggregates(unittest.TestCase):
         self.assertIn("SUM(l_extendedprice * (1 - l_discount) * (1 + l_tax)) AS _fold2", out)
         self.assertIn("AVG(CAST(l_extendedprice AS DOUBLE PRECISION)) AS _fold3", out)
         self.assertIn("_fold1 AS sum_disc_price", out)
-        self.assertIn("ARRAY_LENGTH(quantities, 1) AS count_order", out)
+        self.assertIn("CARDINALITY(quantities) AS count_order", out)
 
     def test_datafusion_keeps_filters_aligned(self):
         aligned = rewrite(

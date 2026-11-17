@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -34,7 +35,16 @@ from tests.helpers import (
 
 
 def parse_and_optimize(func, sql, read_dialect, **kwargs):
-    return func(parse_one(sql, read=read_dialect), **kwargs)
+    optimized = func(parse_one(sql, read=read_dialect), **kwargs)
+
+    for expression in optimized.walk():
+        for arg_key, arg in expression.args.items():
+            for child in arg if isinstance(arg, list) else [arg]:
+                if isinstance(child, exp.Expr):
+                    assert child.arg_key == arg_key, f"{child.sql()} isn't {arg_key}"
+                    assert child.parent is expression, f"{child.sql()} isn't a child of its parent"
+
+    return optimized
 
 
 def qualify_then_canonicalize(expression, **qualify_kwargs):
@@ -267,12 +277,6 @@ class TestOptimizer(unittest.TestCase):
                     expected,
                     actual,
                 )
-                for expression in optimized.walk():
-                    for arg_key, arg in expression.args.items():
-                        if isinstance(arg, exp.Expr):
-                            self.assertEqual(arg_key, arg.arg_key)
-                            self.assertIs(arg.parent, expression)
-
                 if string_to_bool(execute):
                     with self.subTest(f"(execute) {title}"):
                         dfs = []
@@ -512,6 +516,81 @@ class TestOptimizer(unittest.TestCase):
             identify=False,
         )
         self.assertEqual(physical.find(exp.Column), exp.column("state", table="address"))
+
+    def test_qualify_semi_anti_join_alias_shadowing_column(self):
+        for column_type, values in (
+            ("STRUCT(k INT)", "(1, 10, {'k': 10}), (2, 20, {'k': 99}), (3, 30, {'k': 30})"),
+            ("VARCHAR", "(1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c')"),
+        ):
+            schema = {
+                "t1": {"id": "INT", "k": "INT", "s": column_type},
+                "t2": {"k": "INT", "payload": "STRUCT(k INT, nested STRUCT(k INT))"},
+            }
+            with duckdb.connect() as connection:
+                connection.execute(f"CREATE TABLE t1 (id INT, k INT, s {column_type})")
+                connection.execute(f"INSERT INTO t1 VALUES {values}")
+                connection.execute(
+                    "CREATE TABLE t2 (k INT, payload STRUCT(k INT, nested STRUCT(k INT)))"
+                )
+                connection.execute("INSERT INTO t2 VALUES (20, {'k': 20, 'nested': {'k': 20}})")
+
+                for kind, expected in (("SEMI", [(2,)]), ("ANTI", [(1,), (3,)])):
+                    for prefix, source in (
+                        ("", "t2 AS s"),
+                        ("", "(SELECT DISTINCT * FROM t2) AS s"),
+                        ("WITH s AS (SELECT * FROM t2) ", "s"),
+                    ):
+                        for column in ("s.k", "s.payload.k", "s.payload.nested.k"):
+                            sql = (
+                                f"{prefix}SELECT t1.id FROM t1 {kind} JOIN {source} "
+                                f"ON t1.k = {column}"
+                            )
+                            with self.subTest(column_type=column_type, sql=sql):
+                                self.assertCountEqual(connection.execute(sql).fetchall(), expected)
+                                for transform in (qualify, optimizer.optimize):
+                                    with self.subTest(transform=transform.__name__):
+                                        transformed = transform(
+                                            parse_one(sql, read="duckdb"),
+                                            schema=schema,
+                                            dialect="duckdb",
+                                        )
+                                        self.assertCountEqual(
+                                            connection.execute(
+                                                transformed.sql("duckdb")
+                                            ).fetchall(),
+                                            expected,
+                                        )
+
+    def test_qualify_semi_anti_join_column_aliases(self):
+        schema = {
+            "t1": {"id": "INT", "k": "INT", "s": "STRUCT(v INT)"},
+            "t2": {"k": "INT"},
+        }
+        with duckdb.connect() as connection:
+            connection.execute("CREATE TABLE t1 (id INT, k INT, s STRUCT(v INT))")
+            connection.execute(
+                "INSERT INTO t1 VALUES (1, 10, {'v': 10}), (2, 20, {'v': 99}), (3, 30, {'v': 30})"
+            )
+            connection.execute("CREATE TABLE t2 (k INT)")
+            connection.execute("INSERT INTO t2 VALUES (20)")
+
+            for kind, expected in (("SEMI", [(2,)]), ("ANTI", [(1,), (3,)])):
+                for prefix, source in (
+                    ("", "t2 AS s(v)"),
+                    ("WITH cte AS (SELECT * FROM t2) ", "cte AS s(v)"),
+                ):
+                    sql = f"{prefix}SELECT t1.id FROM t1 {kind} JOIN {source} ON t1.k = s.v"
+                    with self.subTest(sql=sql):
+                        self.assertCountEqual(connection.execute(sql).fetchall(), expected)
+                        for transform in (qualify, optimizer.optimize):
+                            with self.subTest(transform=transform.__name__):
+                                transformed = transform(
+                                    parse_one(sql, read="duckdb"), schema=schema, dialect="duckdb"
+                                )
+                                self.assertCountEqual(
+                                    connection.execute(transformed.sql("duckdb")).fetchall(),
+                                    expected,
+                                )
 
     def test_qualify_correlated_shadowed_struct_path(self):
         schema = {
@@ -1898,6 +1977,93 @@ class TestOptimizer(unittest.TestCase):
             "WITH T AS (SELECT 1 AS A) SELECT T.$2 AS _COL_0 FROM T AS T",
         )
 
+    def test_qualify_star_rename_unexpanded(self):
+        for sql, expand_stars in (
+            ("SELECT * RENAME(b AS new_b) FROM x FULL JOIN y USING (b)", False),
+            (
+                "SELECT * RENAME(b AS new_b) FROM (SELECT a, a, b FROM x) AS x "
+                "FULL JOIN y USING (b)",
+                True,
+            ),
+        ):
+            with self.subTest(sql=sql):
+                qualified = qualify(
+                    parse_one(sql),
+                    schema=self.schema,
+                    expand_stars=expand_stars,
+                    quote_identifiers=False,
+                )
+                self.assertEqual(qualified.expressions[0].sql(), "* RENAME (b AS new_b)")
+
+    def test_qualify_star_replace_rename_unexpanded(self):
+        qualified = qualify(
+            parse_one(
+                "SELECT * REPLACE(b * 2 AS b) RENAME(b AS new_b) "
+                "FROM x FULL JOIN y USING (b) CROSS JOIN (SELECT 1 AS c, 2 AS c) AS z",
+                dialect="snowflake",
+            ),
+            schema=self.schema,
+            dialect="snowflake",
+            quote_identifiers=False,
+        )
+        self.assertEqual(
+            qualified.expressions[0].sql("snowflake"),
+            "* REPLACE (COALESCE(X.B, Y.B) * 2 AS B) RENAME (B AS NEW_B)",
+        )
+
+    def test_qualify_star_rename_quoted(self):
+        schema = {"x": {"b": "INT"}, "y": {"b": "INT"}}
+        for source, selection, qualified_source in (
+            ("x", "X.B", "X AS X"),
+            (
+                "x FULL JOIN y USING (b)",
+                "COALESCE(X.B, Y.B)",
+                "X AS X FULL JOIN Y AS Y ON X.B = Y.B",
+            ),
+        ):
+            for name in ("mixedCase", "B"):
+                for replace in (False, True):
+                    with self.subTest(source=source, name=name, replace=replace):
+                        modifier = " REPLACE(b * 2 AS b)" if replace else ""
+                        sql = f'SELECT *{modifier} RENAME(b AS "{name}") FROM {source}'
+                        qualified = qualify(
+                            parse_one(sql, dialect="snowflake"),
+                            schema=schema,
+                            dialect="snowflake",
+                            quote_identifiers=False,
+                        )
+                        expected = selection + " * 2" if replace else selection
+                        self.assertEqual(
+                            qualified.sql("snowflake"),
+                            f'SELECT {expected} AS "{name}" FROM {qualified_source}',
+                        )
+
+    def test_qualify_columns_using_after_outer_join(self):
+        source = "(VALUES (1, 'c1'), (2, 'c2'), (2, 'c3'), (3, 'c4'), (NULL, 'cn')) AS c(k, vc)"
+        for side in ("FULL", "RIGHT"):
+            for join in (
+                f"JOIN {source} USING (k)",
+                f"LEFT JOIN {source} USING (k)",
+                f"FULL JOIN {source} USING (k)",
+                f"SEMI JOIN {source} USING (k)",
+                f"ANTI JOIN {source} USING (k)",
+                f"ANTI JOIN (VALUES (0)) AS d(k) USING (k) JOIN {source} USING (k)",
+                f"NATURAL JOIN {source}",
+            ):
+                with self.subTest(side=side, join=join):
+                    sql = (
+                        "SELECT * FROM (VALUES (1, 'a1'), (NULL, 'an')) AS a(k, va) "
+                        f"{side} JOIN (VALUES (1, 'b1'), (2, 'b2'), (NULL, 'bn')) AS b(k, vb) "
+                        f"USING (k) {join}"
+                    )
+                    expected = self.conn.execute(sql).fetchall()
+                    for transform in (qualify, optimizer.optimize):
+                        with self.subTest(transform=transform.__name__):
+                            transformed = transform(parse_one(sql, read="duckdb"), dialect="duckdb")
+                            self.assertCountEqual(
+                                self.conn.execute(transformed.sql("duckdb")).fetchall(), expected
+                            )
+
     def test_qualify_columns__with_invisible(self):
         schema = MappingSchema(self.schema, {"x": {"a"}, "y": {"b"}, "z": {"b"}})
         self.check_file("qualify_columns__with_invisible", qualify_columns, schema=schema)
@@ -2118,6 +2284,40 @@ SELECT :with_,WITH :expressions,CTE :this,UNION :this,SELECT :expressions,1,:exp
             "SELECT :expressions,item_id /* description */",
         )
 
+    def test_simplify_string_comparisons(self):
+        with duckdb.connect() as conn:
+            for dtype in (None, "UNKNOWN", "INT", "DECIMAL(10, 2)", "TEXT"):
+                column_type = dtype if dtype not in (None, "UNKNOWN") else "INT"
+                conn.execute(f"CREATE OR REPLACE TABLE x (a {column_type})")
+                conn.execute("INSERT INTO x VALUES (9), (10), (11), (NULL)")
+                schema = {"x": {"a": dtype}} if dtype else None
+
+                for predicate, text_expected in (
+                    ("x.a > '10' AND x.a > '9'", "x.a > '9'"),
+                    ("x.a > '10' OR x.a > '9'", "x.a > '10'"),
+                    ("x.a < '10' AND x.a < '9'", "x.a < '10'"),
+                    ("x.a < '10' OR x.a < '9'", "x.a < '9'"),
+                    ("x.a < '9' AND x.a = '10'", "x.a = '10'"),
+                ):
+                    with self.subTest(dtype=dtype, predicate=predicate):
+                        sql = f"SELECT x.a, {predicate} AS p FROM x ORDER BY x.a"
+                        expression = parse_one(sql, dialect="duckdb")
+                        if dtype:
+                            annotate_types(expression, schema=schema, dialect="duckdb")
+
+                        simplified = optimizer.simplify.simplify(expression, dialect="duckdb")
+                        self.assertEqual(
+                            simplified.selects[1].this.sql(),
+                            text_expected if dtype == "TEXT" else predicate,
+                        )
+                        expected = conn.execute(sql).fetchall()
+                        self.assertEqual(
+                            conn.execute(simplified.sql("duckdb")).fetchall(), expected
+                        )
+
+                        optimized = optimizer.optimize(sql, schema=schema, dialect="duckdb")
+                        self.assertEqual(conn.execute(optimized.sql("duckdb")).fetchall(), expected)
+
     def test_simplify_nested(self):
         sql = """
         SELECT x, 1 + 1
@@ -2140,6 +2340,215 @@ SELECT :with_,WITH :expressions,CTE :this,UNION :this,SELECT :expressions,1,:exp
 
     def test_unnest_subqueries(self):
         self.check_file("unnest_subqueries", optimizer.unnest_subqueries.unnest_subqueries)
+
+    def test_optimize_scalar_subquery_predicates(self):
+        schema = {"x": {"id": "INT", "ref": "INT"}, "y": {"id": "INT", "val": "INT"}}
+        with duckdb.connect() as connection:
+            connection.execute("CREATE TABLE x (id INT, ref INT)")
+            connection.execute("INSERT INTO x VALUES (1, 10), (2, 20), (3, NULL), (4, 30)")
+            connection.execute("CREATE TABLE y (id INT, val INT)")
+            connection.execute("INSERT INTO y VALUES (10, NULL), (20, 5)")
+            for value in ("y.val", "y.val + 1"):
+                for predicate, expected in (
+                    ("IS NULL", [(1,), (3,), (4,)]),
+                    ("> 1", [(2,)]),
+                    ("IN (5, 6)", [(2,)]),
+                    ("= ANY (SELECT 5 UNION ALL SELECT 6)", [(2,)]),
+                    ("< ANY (SELECT y2.id FROM y AS y2 WHERE y2.id = x.ref)", [(2,)]),
+                    ("> ANY (SELECT y2.val - 1 FROM y AS y2 WHERE y2.id = x.ref)", [(2,)]),
+                    (
+                        "< ALL (SELECT y2.id FROM y AS y2 WHERE y2.id = x.ref)",
+                        [(2,), (3,), (4,)],
+                    ),
+                    (
+                        "< ALL (SELECT y2.val + 2 FROM y AS y2 WHERE y2.id = x.ref)",
+                        [(2,), (3,), (4,)],
+                    ),
+                ):
+                    for group in ("", " GROUP BY y.id, y.val"):
+                        sql = (
+                            "SELECT x.id FROM x WHERE "
+                            f"(SELECT {value} FROM y WHERE y.id = x.ref{group}) {predicate}"
+                        )
+                        with self.subTest(sql=sql):
+                            self.assertCountEqual(connection.execute(sql).fetchall(), expected)
+                            optimized = optimizer.optimize(sql, schema=schema, dialect="duckdb")
+                            self.assertCountEqual(
+                                connection.execute(optimized.sql("duckdb")).fetchall(), expected
+                            )
+
+    def test_optimize_scalar_subquery_predicate_multiple_rows(self):
+        schema = {"x": {"id": "INT"}, "y": {"id": "INT", "val": "INT"}}
+        with duckdb.connect() as connection:
+            connection.execute("CREATE TABLE x (id INT)")
+            connection.execute("INSERT INTO x VALUES (1)")
+            connection.execute("CREATE TABLE y (id INT, val INT)")
+            connection.execute("INSERT INTO y VALUES (1, NULL), (1, 5)")
+            for predicate in (
+                "IS NULL",
+                "> 1",
+                "IN (5, 6)",
+                "= ANY (SELECT 5)",
+                "> ANY (SELECT y2.id FROM y AS y2 WHERE y2.id = x.id)",
+                "< ALL (SELECT y2.id FROM y AS y2 WHERE y2.id = x.id)",
+            ):
+                sql = (
+                    f"SELECT x.id FROM x WHERE (SELECT y.val FROM y WHERE y.id = x.id) {predicate}"
+                )
+                optimized = optimizer.optimize(sql, schema=schema, dialect="duckdb").sql("duckdb")
+                for query in (sql, optimized):
+                    with self.subTest(query=query):
+                        with self.assertRaisesRegex(
+                            duckdb.InvalidInputException, "More than one row"
+                        ):
+                            connection.execute(query).fetchall()
+
+    def test_optimize_scalar_subquery_key_predicates(self):
+        schema = {"x": {"id": "INT", "ref": "INT"}, "y": {"id": "INT"}}
+        with duckdb.connect() as connection:
+            connection.execute("CREATE TABLE x (id INT, ref INT)")
+            connection.execute("INSERT INTO x VALUES (2, 10), (10, 10)")
+            connection.execute("CREATE TABLE y (id INT)")
+            connection.execute("INSERT INTO y VALUES (10)")
+
+            for values in (
+                "(SELECT y.id FROM y WHERE y.id = x.ref), 2",
+                "(SELECT y.id FROM y WHERE y.id = x.ref), (SELECT 2)",
+                "(SELECT 2), (SELECT y.id FROM y WHERE y.id = x.ref)",
+                "(SELECT 10), (SELECT 2)",
+            ):
+                sql = f"SELECT x.id FROM x WHERE x.id IN ({values})"
+                optimized = optimizer.optimize(sql, schema=schema, dialect="duckdb").sql("duckdb")
+                for query in (sql, optimized):
+                    with self.subTest(query=query):
+                        self.assertCountEqual(connection.execute(query).fetchall(), [(2,), (10,)])
+
+            connection.execute("INSERT INTO y VALUES (10)")
+            sql = "SELECT x.id FROM x WHERE (SELECT y.id FROM y WHERE y.id = x.ref) > 1"
+            optimized = optimizer.optimize(sql, schema=schema, dialect="duckdb").sql("duckdb")
+            for query in (sql, optimized):
+                with self.subTest(query=query):
+                    with self.assertRaisesRegex(duckdb.InvalidInputException, "More than one row"):
+                        connection.execute(query).fetchall()
+
+    def test_unnest_positional_join_predicates(self):
+        for dialect, kind in (("duckdb", "POSITIONAL"), ("clickhouse", "PASTE")):
+            for predicate in (
+                "y.b IN (SELECT z.b AS b FROM z)",
+                "y.b = ANY (SELECT z.b AS b FROM z)",
+            ):
+                sql = f"SELECT x.a, w.d FROM x JOIN y ON x.a = y.b AND {predicate} {kind} JOIN w"
+                with self.subTest(sql=sql, dialect=dialect):
+                    expression = parse_one(sql, dialect=dialect)
+                    self.assertEqual(
+                        optimizer.unnest_subqueries.unnest_subqueries(expression.copy()), expression
+                    )
+
+            expression = parse_one(
+                f"SELECT x.a, w.d FROM x {kind} JOIN w "
+                "JOIN y ON x.a = y.b AND y.b IN (SELECT z.b AS b FROM z)",
+                dialect=dialect,
+            )
+            self.assertIsNone(
+                optimizer.unnest_subqueries.unnest_subqueries(expression).find(exp.In)
+            )
+
+    def test_optimize_in_nulls(self):
+        for where in (
+            "",
+            " WHERE y.b IS NOT NULL",
+            " WHERE y.b IS NULL",
+            " WHERE FALSE",
+            " WHERE y.c = x.a",
+            " WHERE y.b = x.a",
+        ):
+            for predicate in (
+                f"x.a IN (SELECT y.b FROM y{where})",
+                f"x.a = ANY (SELECT y.b FROM y{where})",
+            ):
+                for sql in (
+                    f"SELECT x.a, {predicate} AS r FROM x",
+                    f"SELECT x.a, NOT ({predicate}) AS r FROM x",
+                    f"SELECT x.a, ({predicate}) AND x.a > 1 AS r FROM x",
+                    f"SELECT x.a, ({predicate}) OR x.a > 1 AS r FROM x",
+                    f"SELECT x.a FROM x WHERE NOT ({predicate})",
+                    f"SELECT x.a FROM x WHERE NOT (({predicate}) AND x.a > 1)",
+                    f"SELECT x.a FROM x WHERE ({predicate}) IS NULL",
+                    f"SELECT x.a FROM x WHERE COALESCE(({predicate}), TRUE)",
+                    f"SELECT x.a FROM x WHERE ({predicate}) = FALSE",
+                    f"SELECT x.a FROM x WHERE ({predicate}) AND x.a > 1",
+                    f"SELECT x.a FROM x WHERE ({predicate}) OR x.a > 1",
+                    f"SELECT x.a FROM x JOIN x AS x2 ON x.b = x2.b AND ({predicate}) = FALSE",
+                    "SELECT x.a FROM x QUALIFY ROW_NUMBER() OVER (ORDER BY x.a) > 0 "
+                    f"AND ({predicate}) = FALSE",
+                    f"SELECT x.a FROM x GROUP BY x.a HAVING ({predicate}) IS NULL",
+                    f"SELECT x.a FROM x ORDER BY ({predicate}), x.a",
+                ):
+                    with self.subTest(sql=sql):
+                        optimized = optimizer.optimize(sql, schema=self.schema, dialect="duckdb")
+                        expected = self.conn.execute(sql).fetchall()
+                        actual = self.conn.execute(optimized.sql("duckdb")).fetchall()
+                        if "ORDER BY" in sql:
+                            self.assertEqual(actual, expected)
+                        else:
+                            self.assertCountEqual(actual, expected)
+
+    def test_optimize_uncorrelated_exists(self):
+        for subquery in (
+            "SELECT y.b FROM y",
+            "SELECT y.b FROM y WHERE y.b IS NULL",
+            "SELECT y.b FROM y WHERE FALSE",
+            "SELECT SUM(y.b) FROM y WHERE FALSE",
+            "SELECT y.b FROM y LIMIT 0",
+            "SELECT y.b FROM y LIMIT 1 OFFSET 1",
+            "SELECT y.b FROM y UNION ALL SELECT z.b FROM z",
+        ):
+            for sql in (
+                f"SELECT x.a, COUNT(*) AS n, EXISTS ({subquery}) AS e FROM x GROUP BY x.a",
+                f"SELECT COUNT(*) AS n, EXISTS ({subquery}) AS e FROM x",
+                f"SELECT COUNT(*) AS n, EXISTS ({subquery}) AS e FROM x WHERE FALSE",
+                f"SELECT COUNT(*), SUM(CASE WHEN EXISTS ({subquery}) THEN 1 ELSE 0 END) FROM x",
+                f"SELECT COUNT(*), SUM(CASE WHEN NOT EXISTS ({subquery}) THEN 1 ELSE 0 END) FROM x",
+                f"SELECT x.a, COUNT(*) AS n FROM x GROUP BY x.a HAVING EXISTS ({subquery})",
+            ):
+                with self.subTest(sql=sql):
+                    optimized = optimizer.optimize(sql, schema=self.schema, dialect="duckdb")
+                    self.assertCountEqual(
+                        self.conn.execute(sql).fetchall(),
+                        self.conn.execute(optimized.sql("duckdb")).fetchall(),
+                    )
+
+    def test_optimize_correlated_all(self):
+        with duckdb.connect() as connection:
+            connection.execute("CREATE TABLE x (a INT, b INT)")
+            connection.execute("CREATE TABLE y (b INT, c INT)")
+            connection.execute(
+                "INSERT INTO x VALUES (1, 1), (2, 2), (3, 3), (NULL, 4), "
+                "(5, 5), (6, 6), (NULL, 7), (8, NULL)"
+            )
+            connection.execute(
+                "INSERT INTO y VALUES (1, 1), (NULL, 2), (0, 4), "
+                "(1, 5), (NULL, 5), (7, 6), (NULL, 6)"
+            )
+            for column in ("b", "c"):
+                for op in ("=", "<>", ">", ">=", "<", "<="):
+                    predicate = f"x.a {op} ALL (SELECT y.{column} FROM y WHERE y.c = x.b)"
+                    for sql in (
+                        f"SELECT x.a, x.b, {predicate} AS r FROM x",
+                        f"SELECT x.a, x.b, {predicate} AND x.b = 1 AS r FROM x",
+                        f"SELECT x.a, x.b FROM x WHERE {predicate}",
+                        f"SELECT x.a, x.b FROM x WHERE NOT ({predicate})",
+                        f"SELECT x.a, x.b FROM x WHERE NOT {predicate}",
+                    ):
+                        with self.subTest(sql=sql):
+                            optimized = optimizer.optimize(
+                                sql, schema=self.schema, dialect="duckdb"
+                            )
+                            self.assertIsNone(optimized.find(exp.All))
+                            self.assertCountEqual(
+                                connection.execute(sql).fetchall(),
+                                connection.execute(optimized.sql("duckdb")).fetchall(),
+                            )
 
     def test_optimize_subqueries_in_aggregates(self):
         for projection in (
@@ -2174,6 +2583,74 @@ SELECT :with_,WITH :expressions,CTE :this,UNION :this,SELECT :expressions,1,:exp
 
     def test_pushdown_predicates(self):
         self.check_file("pushdown_predicates", optimizer.pushdown_predicates.pushdown_predicates)
+
+    def test_optimize_distinct_on_predicates(self):
+        subquery = (
+            "SELECT DISTINCT ON (k) id, k, v FROM "
+            "(VALUES (1, 1, 0), (2, 1, 1), (3, 2, 0), (4, 2, 3)) AS t(id, k, v) "
+            "ORDER BY k, id"
+        )
+        for dialect in ("duckdb", "postgres"):
+            for sql in (
+                f"SELECT sub.id, sub.v FROM ({subquery}) AS sub WHERE sub.v > 0",
+                f"WITH sub AS ({subquery}) SELECT sub.id, sub.v FROM sub WHERE sub.v > 0",
+                f"SELECT sub.id, sub.v FROM ({subquery}) AS sub "
+                "WHERE (sub.k = 1 AND sub.v > 0) OR (sub.k = 2 AND sub.v > 1)",
+                f"SELECT x.k, sub.id FROM (VALUES (1), (2)) AS x(k) JOIN ({subquery}) AS sub "
+                "ON x.k = sub.k AND sub.v > 0",
+                f"SELECT x.k, sub.id FROM (VALUES (1), (2)) AS x(k) LEFT JOIN ({subquery}) AS sub "
+                "ON x.k = sub.k AND sub.v > 0",
+            ):
+                with self.subTest(sql=sql, dialect=dialect):
+                    optimized = optimizer.optimize(sql, dialect=dialect)
+                    self.assertCountEqual(
+                        self.conn.execute(sql).fetchall(),
+                        self.conn.execute(optimized.sql("duckdb")).fetchall(),
+                    )
+
+    def test_optimize_special_joins(self):
+        for sql in (
+            "SELECT x.a, y.b FROM x ASOF JOIN y ON x.a >= y.b WHERE y.b = 2",
+            "SELECT x.a, y.b FROM x ASOF JOIN (SELECT b FROM y) AS y ON x.a >= y.b WHERE y.b = 2",
+            "SELECT x.a, y.b FROM x ASOF LEFT JOIN y ON x.a >= y.b "
+            "WHERE (x.a = 2 AND y.b = 2) OR (x.a = 3 AND y.b = 2)",
+            "SELECT x.a, y.b FROM x CROSS JOIN y AS z ASOF JOIN y ON x.a >= y.b AND z.c = y.c",
+            "SELECT x.a, y.b FROM x POSITIONAL JOIN y WHERE y.b = 3",
+            "SELECT x.a, y.b FROM x POSITIONAL JOIN (SELECT b FROM y) AS y WHERE y.b = 3",
+            "SELECT x.a, y.b FROM (SELECT a FROM x) AS x POSITIONAL JOIN y WHERE x.a = 3",
+            "SELECT x.a, y.b FROM x POSITIONAL JOIN y "
+            "WHERE (x.a = 2 AND y.b = 2) OR (x.a = 3 AND y.b = 4)",
+            "SELECT x.a, y.b FROM x POSITIONAL JOIN (SELECT b FROM y WHERE b = 3) AS y",
+            "SELECT x.a, y.b FROM (SELECT a FROM x WHERE a = 2) AS x POSITIONAL JOIN y",
+            "WITH s AS (SELECT b FROM y WHERE b = 3) SELECT x.a, s.b FROM x POSITIONAL JOIN s",
+            "WITH s AS (SELECT a FROM x WHERE a = 2) SELECT s.a, y.b FROM s POSITIONAL JOIN y",
+            "SELECT y.b, x.v FROM y POSITIONAL JOIN (SELECT COALESCE(a, 0) AS v FROM x) AS x",
+            "SELECT x.v, y.b FROM (SELECT COALESCE(a, 0) AS v FROM x) AS x POSITIONAL JOIN y",
+            "SELECT x.a, y.b FROM x POSITIONAL JOIN (SELECT b FROM y ORDER BY b DESC) AS y",
+            "SELECT z.b FROM z POSITIONAL JOIN (SELECT 1 AS a) AS x",
+            "SELECT x.a, y.b FROM ((SELECT a FROM x WHERE a = 2) AS x POSITIONAL JOIN y)",
+            "SELECT x.a, y.b FROM (x POSITIONAL JOIN (SELECT b FROM y WHERE b = 3) AS y)",
+            "WITH s AS (SELECT a FROM x WHERE a = 2) SELECT s.a, y.b FROM (s POSITIONAL JOIN y)",
+            "SELECT x.a, y.b FROM (x POSITIONAL JOIN y) JOIN y AS z ON x.a = z.b WHERE y.b = 3",
+            "SELECT x.a, y.b FROM (x POSITIONAL JOIN y) JOIN y AS z ON x.a = z.b "
+            "WHERE (x.a = 2 AND y.b = 3) OR (x.a = 3 AND y.b = 4)",
+            "SELECT x.a, y.b FROM (x ASOF JOIN y ON x.a >= y.b) "
+            "JOIN y AS z ON x.a = z.b WHERE y.b = 2",
+            "SELECT x.a, w.d FROM x JOIN y ON x.a = y.b "
+            "AND y.b IN (SELECT z.b FROM y AS z WHERE z.b = 3) POSITIONAL JOIN w",
+            "SELECT x.a, w.d FROM x JOIN y ON x.a = y.b "
+            "AND y.b IN (SELECT z.b FROM y AS z WHERE z.b > 100) POSITIONAL JOIN w",
+            "SELECT x.a, w.d FROM x JOIN y ON x.a = y.b "
+            "AND y.b = ANY (SELECT z.b FROM y AS z WHERE z.b = 3) POSITIONAL JOIN w",
+            "SELECT x.a, w.d FROM x JOIN y ON x.a = y.b "
+            "AND y.b = ANY (SELECT z.b FROM y AS z WHERE z.b > 100) POSITIONAL JOIN w",
+        ):
+            with self.subTest(sql=sql):
+                optimized = optimizer.optimize(sql, schema=self.schema, dialect="duckdb")
+                self.assertCountEqual(
+                    self.conn.execute(sql).fetchall(),
+                    self.conn.execute(optimized.sql("duckdb")).fetchall(),
+                )
 
     def test_pushdown_dnf_many_predicates(self):
         n = 50
@@ -2257,19 +2734,51 @@ SELECT :with_,WITH :expressions,CTE :this,UNION :this,SELECT :expressions,1,:exp
             optimizer.optimize_joins.optimize_joins,
         )
 
-    def test_optimize_paste_joins(self):
-        for sql in (
-            "SELECT * FROM x PASTE JOIN y",
-            "SELECT * FROM x PASTE JOIN y JOIN z ON x.a = z.a AND y.a = z.a",
+    def test_optimize_positional_joins(self):
+        for dialect, kind in (("clickhouse", "PASTE"), ("duckdb", "POSITIONAL")):
+            for sql in (
+                f"SELECT * FROM x {kind} JOIN y",
+                f"SELECT * FROM x {kind} JOIN y JOIN z ON x.a = z.a AND y.a = z.a",
+                f"SELECT * FROM x JOIN z ON x.a = z.a AND z.a = 2 {kind} JOIN y",
+            ):
+                for rule in (
+                    optimizer.optimize_joins.optimize_joins,
+                    optimizer.optimize_joins.reorder_joins,
+                ):
+                    with self.subTest(sql=sql, rule=rule.__name__):
+                        expression = parse_one(sql, dialect=dialect)
+                        self.assertEqual(rule(expression.copy()), expression)
+
+    def test_optimize_match_selecting_joins(self):
+        for dialect, kind, condition in (
+            ("duckdb", "ASOF", "x.a >= y.b"),
+            ("clickhouse", "ASOF", "x.a >= y.b AND x.b = y.c"),
+            ("clickhouse", "ANY", "x.a = y.b"),
         ):
-            with self.subTest(sql=sql):
-                expression = parse_one(sql, dialect="clickhouse")
-                self.assertEqual(
-                    optimizer.optimize_joins.optimize_joins(expression.copy()), expression
-                )
-                self.assertEqual(
-                    optimizer.optimize_joins.reorder_joins(expression.copy()), expression
-                )
+            for sql in (
+                f"SELECT x.a, y.b FROM x CROSS JOIN z {kind} JOIN y ON {condition} AND z.c = y.c",
+                f"SELECT x.a, y.b FROM x JOIN z ON x.a = z.b {kind} JOIN y ON {condition}",
+            ):
+                for rule in (
+                    optimizer.optimize_joins.optimize_joins,
+                    optimizer.optimize_joins.reorder_joins,
+                ):
+                    with self.subTest(sql=sql, dialect=dialect, rule=rule.__name__):
+                        expression = parse_one(sql, dialect=dialect)
+                        self.assertEqual(rule(expression.copy()), expression)
+
+    def test_optimize_snowflake_asof_without_on(self):
+        expression = parse_one(
+            "SELECT x.a, y.b FROM x ASOF JOIN y MATCH_CONDITION (x.a >= y.b)",
+            dialect="snowflake",
+        )
+        self.assertEqual(optimizer.optimize_joins.optimize_joins(expression.copy()), expression)
+        optimized = optimizer.optimize(expression, schema=self.schema, dialect="snowflake")
+        self.assertIsNone(optimized.find(exp.Join).args.get("on"))
+        self.assertCountEqual(
+            self.conn.execute(expression.sql("duckdb")).fetchall(),
+            self.conn.execute(optimized.sql("duckdb")).fetchall(),
+        )
 
     def test_nearest_joins(self):
         for sql in (
@@ -2299,6 +2808,23 @@ SELECT :with_,WITH :expressions,CTE :this,UNION :this,SELECT :expressions,1,:exp
             optimizer.eliminate_joins.eliminate_joins,
             pretty=True,
         )
+
+        positional_sql = "SELECT empty_x.a FROM (SELECT x.a FROM x WHERE FALSE) AS empty_x POSITIONAL JOIN (SELECT 1 AS b) AS y"
+        optimized_positional = optimizer.eliminate_joins.eliminate_joins(
+            parse_one(positional_sql, read="duckdb")
+        ).sql("duckdb")
+        self.assertEqual(optimized_positional, positional_sql)
+        self.assertEqual(self.conn.execute(optimized_positional).fetchall(), [(None,)])
+
+    def test_eliminate_positional_joins(self):
+        for dialect, kind in (("duckdb", "POSITIONAL"), ("clickhouse", "PASTE")):
+            for source in ("SELECT 1 AS b", "SELECT COUNT(*) AS b FROM y"):
+                sql = f"SELECT x.a FROM x {kind} JOIN ({source}) AS y"
+                with self.subTest(sql=sql):
+                    expression = parse_one(sql, dialect=dialect)
+                    self.assertEqual(
+                        optimizer.eliminate_joins.eliminate_joins(expression.copy()), expression
+                    )
 
     def test_eliminate_ctes(self):
         self.check_file(
@@ -2401,6 +2927,100 @@ SELECT :with_,WITH :expressions,CTE :this,UNION :this,SELECT :expressions,1,:exp
         )
 
         self.check_file("merge_subqueries", optimize, execute=True, schema=self.schema)
+
+    def test_merge_positional_join_inputs(self):
+        for dialect, kind in (("duckdb", "POSITIONAL"), ("clickhouse", "PASTE")):
+            for sql in (
+                f"SELECT x.a, y.b FROM x {kind} JOIN (SELECT b FROM y WHERE b = 3) AS y",
+                f"SELECT x.a, y.b FROM (SELECT a FROM x WHERE a = 2) AS x {kind} JOIN y",
+                f"WITH s AS (SELECT b FROM y WHERE b = 3) SELECT x.a, s.b FROM x {kind} JOIN s",
+                f"WITH s AS (SELECT a FROM x WHERE a = 2) SELECT s.a, y.b FROM s {kind} JOIN y",
+                f"SELECT x.a, y.v FROM x {kind} JOIN (SELECT COALESCE(b, 0) AS v FROM y) AS y",
+                f"SELECT x.v, y.b FROM (SELECT COALESCE(a, 0) AS v FROM x) AS x {kind} JOIN y",
+                f"SELECT x.a, y.b FROM x {kind} JOIN (SELECT b FROM y ORDER BY b DESC) AS y",
+            ):
+                with self.subTest(sql=sql):
+                    expression = parse_one(sql, dialect=dialect)
+                    self.assertEqual(
+                        optimizer.merge_subqueries.merge_subqueries(expression.copy()), expression
+                    )
+
+    def test_merge_any_join_inputs(self):
+        schema = {"x": {"id": "INT", "val": "INT"}, "y": {"id": "INT", "val": "INT"}}
+        for sql in (
+            "SELECT x.id, s.v FROM x LEFT ANY JOIN (SELECT id, val + 1 AS v FROM y) AS s "
+            "ON x.id = s.id",
+            "WITH s AS (SELECT id, val + 1 AS v FROM y) "
+            "SELECT x.id, s.v FROM x LEFT ANY JOIN s ON x.id = s.id",
+            "SELECT s.v, y.id FROM (SELECT id, val + 1 AS v FROM x) AS s "
+            "RIGHT ANY JOIN y ON s.id = y.id",
+        ):
+            with self.subTest(sql=sql):
+                expression = qualify(
+                    parse_one(sql, dialect="clickhouse"), schema=schema, dialect="clickhouse"
+                )
+                self.assertEqual(
+                    optimizer.merge_subqueries.merge_subqueries(expression.copy()), expression
+                )
+
+    def test_merge_asof_join_inputs(self):
+        schema = {"x": {"id": "INT", "ts": "INT"}, "y": {"id": "INT", "ts": "INT", "val": "INT"}}
+        with duckdb.connect() as connection:
+            connection.execute(
+                "CREATE TABLE x (id INT, ts INT); INSERT INTO x VALUES (1, 20), (2, 20); "
+                "CREATE TABLE y (id INT, ts INT, val INT); "
+                "INSERT INTO y VALUES (1, 10, 100), (1, 15, 5)"
+            )
+            for dialect in ("duckdb", "clickhouse", "snowflake"):
+                condition = (
+                    "MATCH_CONDITION (x.ts >= s.ts) ON x.id = s.id"
+                    if dialect == "snowflake"
+                    else "ON x.id = s.id AND x.ts >= s.ts"
+                )
+                for subquery in (
+                    "SELECT id, ts, val FROM y WHERE val > 10",
+                    "SELECT id, ts, COALESCE(val, 0) AS val FROM y",
+                ):
+                    for sql in (
+                        f"SELECT x.id, s.val FROM x ASOF JOIN ({subquery}) AS s {condition}",
+                        f"WITH s AS ({subquery}) SELECT x.id, s.val FROM x ASOF JOIN s {condition}",
+                    ):
+                        with self.subTest(sql=sql, dialect=dialect):
+                            expression = qualify(
+                                parse_one(sql, dialect=dialect), schema=schema, dialect=dialect
+                            )
+                            self.assertEqual(
+                                optimizer.merge_subqueries.merge_subqueries(expression.copy()),
+                                expression,
+                            )
+                            optimized = optimizer.optimize(
+                                expression, schema=schema, dialect=dialect
+                            )
+                            self.assertCountEqual(
+                                connection.execute(expression.sql("duckdb")).fetchall(),
+                                connection.execute(optimized.sql("duckdb")).fetchall(),
+                            )
+
+    def test_merge_subqueries_match(self):
+        sql = (
+            "SELECT x.a, q.c FROM x LEFT JOIN "
+            "(SELECT y.b, y.c MATCH 'hit' AS c FROM y) AS q ON x.a = q.b ORDER BY x.a"
+        )
+        optimized = optimizer.optimize(
+            sql, schema={"x": {"a": "INT"}, "y": {"b": "INT", "c": "TEXT"}}, dialect="sqlite"
+        )
+
+        connection = sqlite3.connect(":memory:")
+        self.addCleanup(connection.close)
+        connection.create_function("match", 2, lambda term, value: int(value == term))
+        connection.executescript(
+            "CREATE TABLE x(a INT); INSERT INTO x VALUES (1), (2); "
+            "CREATE TABLE y(b INT, c TEXT); INSERT INTO y VALUES (1, 'hit');"
+        )
+        self.assertEqual(connection.execute(sql).fetchall(), [(1, 1), (2, None)])
+        self.assertEqual(
+            connection.execute(optimized.sql("sqlite")).fetchall(), [(1, 1), (2, None)]
+        )
 
     def test_merge_subqueries_copy_budget(self):
         # Each CTE references its source's projection twice, so merging the whole chain would
@@ -2755,6 +3375,16 @@ SELECT :with_,WITH :expressions,CTE :this,UNION :this,SELECT :expressions,1,:exp
             'SELECT "bar"."a" AS "a" FROM "bar"',
         )
 
+    def test_scope_star_rename(self):
+        for star in ("*", "x.*"):
+            with self.subTest(star=star):
+                scope = build_scope(
+                    parse_one(
+                        f"SELECT b AS plain_b, {star} REPLACE(b * 2 AS b) RENAME(b AS new_b) FROM x"
+                    )
+                )
+                self.assertEqual(scope.columns, [exp.column("b"), exp.column("b")])
+
     def test_scope(self):
         ast = parse_one("SELECT IF(a IN UNNEST(b), 1, 0) AS c FROM t", dialect="bigquery")
         self.assertEqual(build_scope(ast).columns, [exp.column("a"), exp.column("b")])
@@ -2837,10 +3467,10 @@ SELECT :with_,WITH :expressions,CTE :this,UNION :this,SELECT :expressions,1,:exp
         for scopes in traverse_scope(expression), list(build_scope(expression).traverse()):
             self.assertEqual(len(scopes), 4)
 
-            self.assertEqual(scopes[0].expression.sql(), "t1, t2")
+            self.assertEqual(scopes[0].expression.sql(), "t1 CROSS JOIN t2")
             self.assertEqual(set(scopes[0].sources), {"t1", "t2"})
 
-            self.assertEqual(scopes[1].expression.sql(), "SELECT * FROM (t1, t2) AS t3")
+            self.assertEqual(scopes[1].expression.sql(), "SELECT * FROM (t1 CROSS JOIN t2) AS t3")
             self.assertEqual(set(scopes[1].sources), {"t3"})
 
             self.assertEqual(scopes[2].expression.sql(), "SELECT * FROM t4")
@@ -2848,7 +3478,7 @@ SELECT :with_,WITH :expressions,CTE :this,UNION :this,SELECT :expressions,1,:exp
 
             self.assertEqual(
                 scopes[3].expression.sql(),
-                "SELECT * FROM (((SELECT * FROM (t1, t2) AS t3), (SELECT * FROM t4)))",
+                "SELECT * FROM (((SELECT * FROM (t1 CROSS JOIN t2) AS t3) CROSS JOIN (SELECT * FROM t4)))",
             )
             self.assertEqual(set(scopes[3].sources), {""})
 
@@ -3254,9 +3884,9 @@ SELECT :with_,WITH :expressions,CTE :this,UNION :this,SELECT :expressions,1,:exp
     def test_annotate_types_caches_schema_lookups(self):
         schema = MappingSchema({"t": {"a": "INT"}})
         qualified = qualify(parse_one("SELECT a, a FROM t"), schema=schema)
-        pre = len(schema._find_cache)
+        schema._find_cache.clear()
         annotate_types(qualified, schema=schema)
-        self.assertEqual(len(schema._find_cache) - pre, 1)
+        self.assertEqual(len(schema._find_cache), 1)
 
     def test_annotate_types_caches_positional_aliases(self):
         for width in (4, 64):

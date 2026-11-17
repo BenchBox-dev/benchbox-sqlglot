@@ -311,8 +311,13 @@ def _expand_using(scope: Scope, resolver: Resolver) -> tuple[dict[str, t.Any], l
 
             table = table or source_table
 
-            if i == 0 or using_identifier_count == 1:
-                lhs: exp.Expr = exp.column(identifier, table=table)
+            if tables := column_tables.get(identifier):
+                lhs: exp.Expr = exp.func(
+                    "coalesce",
+                    *[exp.column(identifier, table=t) for t in tables],
+                )
+            elif i == 0 or using_identifier_count == 1:
+                lhs = exp.column(identifier, table=table)
             else:
                 coalesce_columns = [
                     exp.column(identifier, table=t)
@@ -751,15 +756,44 @@ def _convert_columns_to_dots(scope: Scope, resolver: Resolver) -> None:
     normalized to `Dot(Dot(...(<table>.<column>, field1), field2, ...))` to be qualified properly.
     """
     converted = False
+    scope_sources = scope.selected_sources
+    semi_or_anti_join_tables = scope.semi_or_anti_join_tables
+    join_columns: dict[str, set[str]] = {}
     for column in itertools.chain(scope.columns, scope.stars):
         if isinstance(column, exp.Dot):
             continue
 
-        is_star = isinstance(column.this, exp.Star)
         column_table: str | exp.Identifier | None = column.table
+        is_star = isinstance(column.this, exp.Star)
         dot_parts = column.meta.pop("dot_parts", [])
         root_resolver: Resolver | None = None
-        if not is_star and column.db and column_table in scope.selected_sources:
+        if semi_or_anti_join_tables and column_table:
+            root = column.args.get("catalog") or column.args.get("db")
+            root_name = root.name if root else column_table
+            if (
+                root_name in semi_or_anti_join_tables
+                and isinstance(join := column.find_ancestor(exp.Join, exp.Select), exp.Join)
+                and join.is_semi_or_anti_join
+                and (join_name := join.alias_or_name) == root_name
+            ):
+                source_columns = join_columns.get(join_name)
+                if source_columns is None:
+                    source_columns = join_columns[join_name] = set(
+                        resolver.get_source_columns(join_name)
+                    )
+                field = column.parts[1] if root else column.this
+                if (
+                    field.is_star
+                    or not source_columns
+                    or field.name in source_columns
+                    or "*" in source_columns
+                ):
+                    # Prefer the join's own columns, preserving struct fallback for missing ones.
+                    if not column.db:
+                        continue
+                    root_resolver = resolver
+
+        if not root_resolver and not is_star and column.db and column_table in scope_sources:
             root, field = column.parts[:2]
             for candidate_resolver in itertools.chain((resolver,), resolver.outer_resolvers()):
                 if root.name not in candidate_resolver.scope.selected_sources:
@@ -769,11 +803,7 @@ def _convert_columns_to_dots(scope: Scope, resolver: Resolver) -> None:
                 break
         if (
             column_table
-            and (
-                column_table not in scope.selected_sources
-                or (is_star and column.db)
-                or root_resolver
-            )
+            and (column_table not in scope_sources or (is_star and column.db) or root_resolver)
             and (
                 root_resolver
                 or is_star
@@ -798,7 +828,9 @@ def _convert_columns_to_dots(scope: Scope, resolver: Resolver) -> None:
                     column_table = None
                     break
 
-                if isinstance(root, exp.Identifier) and root.name in selected_sources:
+                if isinstance(root, exp.Identifier) and (
+                    root_resolver or root.name in selected_sources
+                ):
                     # The struct is already qualified, but we still need to change the AST
                     column_table = root
                     root, *parts = parts
@@ -820,13 +852,21 @@ def _convert_columns_to_dots(scope: Scope, resolver: Resolver) -> None:
 
             if column_table:
                 converted = True
-                new_column = exp.column(root, table=column_table)
+
+                # The column becomes the root of the Dots, so other scopes' references to it,
+                # e.g. a correlated subquery's, stay in the tree
+                placeholder = exp.Null()
+                column.replace(exp.Dot.build([placeholder, *parts]))
+                column.set("catalog", None)
+                column.set("db", None)
+                column.set("this", root)
+                column.set("table", exp.to_identifier(column_table))
 
                 if dot_parts:
                     # Remove the actual column parts from the rest of dot parts
-                    new_column.meta["dot_parts"] = dot_parts[2 if was_qualified else 1 :]
+                    column.meta["dot_parts"] = dot_parts[2 if was_qualified else 1 :]
 
-                column.replace(exp.Dot.build([new_column, *parts]))
+                placeholder.replace(column)
 
     if converted:
         # We want to re-aggregate the converted columns, otherwise they'd be skipped in
@@ -1123,10 +1163,6 @@ def _expand_stars(
     """Expand stars to lists of column selections"""
 
     new_selections: list[exp.Expr] = []
-    except_columns: dict[int, set[str]] = {}
-    replace_columns: dict[int, dict[str, exp.Alias]] = {}
-    rename_columns: dict[int, dict[str, str]] = {}
-    ilike_pattern: str | None = None
 
     dialect = resolver.dialect
 
@@ -1152,6 +1188,10 @@ def _expand_stars(
 
     for expression in scope_expression.selects:
         tables: list[str] = []
+        except_columns: dict[int, set[str]] = {}
+        replace_columns: dict[int, dict[str, exp.Alias]] = {}
+        rename_columns: dict[int, dict[str, exp.Identifier]] = {}
+        ilike_pattern: str | None = None
         is_unqualified_star = isinstance(expression, exp.Star)
         coalesced_columns = set()
 
@@ -1316,19 +1356,15 @@ def _expand_stars(
 
                     selection = alias(exp.func("coalesce", *coalesce_args), alias=name, copy=False)
                 else:
-                    alias_ = renamed_columns.get(name, name)
                     quoted = name in quoted_columns or (
                         # if it has characters that the dialect would have changed, infer that it was quoted.
                         isinstance(source, exp.Table) and dialect.case_sensitive(name)
                     )
-                    selection_expr = replaced_columns.get(name) or exp.column(
-                        name, table=table, quoted=quoted
-                    )
-                    selection = (
-                        alias(selection_expr, alias_, copy=False)
-                        if alias_ != name
-                        else selection_expr
-                    )
+                    selection = exp.column(name, table=table, quoted=quoted)
+
+                selection = replaced_columns.get(name) or selection
+                if alias_ := renamed_columns.get(name):
+                    selection = alias(selection, alias_)
 
                 if name in using_selections and using_selections[name] is None:
                     using_selections[name] = selection
@@ -1415,14 +1451,14 @@ def _add_except_columns(expression: exp.Expr, tables, except_columns: dict[int, 
 
 
 def _add_rename_columns(
-    expression: exp.Expr, tables, rename_columns: dict[int, dict[str, str]]
+    expression: exp.Expr, tables, rename_columns: dict[int, dict[str, exp.Identifier]]
 ) -> None:
     rename = expression.args.get("rename")
 
     if not rename:
         return
 
-    columns = {e.this.name: e.alias for e in rename}
+    columns = {e.this.name: e.args["alias"] for e in rename}
 
     for table in tables:
         rename_columns[id(table)] = columns

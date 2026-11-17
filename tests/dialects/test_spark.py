@@ -9,6 +9,26 @@ from tests.dialects.test_dialect import Validator
 class TestSpark(Validator):
     dialect = "spark"
 
+    def test_trunc_unknown_format(self):
+        sql = "TRUNC(CAST('2024-05-15' AS DATE), 'WW')"
+        self.assertEqual(self.parse_one(sql).sql("spark", unsupported_level=ErrorLevel.RAISE), sql)
+
+    def test_trunc_aliases(self):
+        for fmt, unit in (("MM", "MONTH"), ("MON", "MONTH"), ("YY", "YEAR"), ("YYYY", "YEAR")):
+            for dialect in ("spark2", "spark", "databricks"):
+                for alias in (fmt, fmt.lower()):
+                    with self.subTest(dialect=dialect, alias=alias):
+                        expression = parse_one(f"TRUNC(DATE '2024-05-15', '{alias}')", read=dialect)
+                        self.assertEqual(
+                            expression.sql(dialect, unsupported_level=ErrorLevel.RAISE),
+                            f"TRUNC(CAST('2024-05-15' AS DATE), '{fmt}')",
+                        )
+                        for target in ("oracle", "teradata"):
+                            self.assertEqual(
+                                expression.sql(target, unsupported_level=ErrorLevel.RAISE),
+                                f"TRUNC(CAST('2024-05-15' AS DATE), '{unit}')",
+                            )
+
     def test_create_table_options(self):
         sql = "CREATE TABLE t (a INT) USING PARQUET OPTIONS ('path'='s3://b/t')"
         dialects = ("spark2", "spark", "databricks")
@@ -882,6 +902,42 @@ TBLPROPERTIES (
         )
         self.validate_identity("SELECT DATE_FORMAT(x, 'yyyy-MM-dd HH:mm:ss')")
         self.validate_all(
+            "SELECT DATE_FORMAT(x, 'yyyy-MM-dd HH:mm:ss.SSS')",
+            write={
+                "duckdb": "SELECT STRFTIME(CAST(x AS TIMESTAMP), '%Y-%m-%d %H:%M:%S.%g')",
+                "snowflake": "SELECT TO_CHAR(CAST(x AS TIMESTAMP), 'yyyy-mm-DD hh24:mi:ss.ff3')",
+                "spark": "SELECT DATE_FORMAT(x, 'yyyy-MM-dd HH:mm:ss.SSS')",
+            },
+        )
+        self.validate_all(
+            "SELECT TO_TIMESTAMP(x, 'yyyy-MM-dd HH:mm:ss.SSS')",
+            write={
+                "duckdb": "SELECT STRPTIME(x, '%Y-%m-%d %H:%M:%S.%g')",
+                "spark": "SELECT TO_TIMESTAMP(x, 'yyyy-MM-dd HH:mm:ss.SSS')",
+            },
+        )
+        self.validate_all(
+            "SELECT TO_TIMESTAMP(x, 'yyyy-M-d H:m:s.SSS')",
+            read={
+                "snowflake": "SELECT TO_TIMESTAMP(x, 'YYYY-MM-DD HH24:MI:SS.FF3')",
+            },
+        )
+        self.validate_all(
+            "SELECT DATE_FORMAT(x, 'yyyy-MM-dd HH:mm:ss.SSSSSS')",
+            write={
+                "duckdb": "SELECT STRFTIME(CAST(x AS TIMESTAMP), '%Y-%m-%d %H:%M:%S.%f')",
+                "snowflake": "SELECT TO_CHAR(CAST(x AS TIMESTAMP), 'yyyy-mm-DD hh24:mi:ss.ff6')",
+                "spark": "SELECT DATE_FORMAT(x, 'yyyy-MM-dd HH:mm:ss.SSSSSS')",
+            },
+        )
+        self.validate_all(
+            "SELECT TO_TIMESTAMP(x, 'yyyy-MM-dd HH:mm:ss.SSSSSS')",
+            write={
+                "duckdb": "SELECT STRPTIME(x, '%Y-%m-%d %H:%M:%S.%f')",
+                "spark": "SELECT TO_TIMESTAMP(x, 'yyyy-MM-dd HH:mm:ss.SSSSSS')",
+            },
+        )
+        self.validate_all(
             "SELECT RLIKE('John Doe', 'John.*')",
             write={
                 "bigquery": "SELECT REGEXP_CONTAINS('John Doe', 'John.*')",
@@ -1098,10 +1154,17 @@ TBLPROPERTIES (
         self.validate_all(
             "SELECT LEFT(x, 2), RIGHT(x, 2)",
             write={
-                "duckdb": "SELECT LEFT(x, 2), RIGHT(x, 2)",
+                "duckdb": "SELECT LEFT(x, CASE WHEN 2 < 0 THEN 0 ELSE 2 END), RIGHT(x, CASE WHEN 2 < 0 THEN 0 ELSE 2 END)",
                 "presto": "SELECT SUBSTR(x, 1, 2), SUBSTR(x, LENGTH(x) - (2 - 1))",
                 "hive": "SELECT SUBSTRING(x, 1, 2), SUBSTRING(x, LENGTH(x) - (2 - 1))",
                 "spark": "SELECT LEFT(x, 2), RIGHT(x, 2)",
+            },
+        )
+        self.validate_all(
+            "SELECT LEFT(x, n), RIGHT(x, -1)",
+            write={
+                "duckdb": "SELECT LEFT(x, CASE WHEN n < 0 THEN 0 ELSE n END), RIGHT(x, CASE WHEN -1 < 0 THEN 0 ELSE -1 END)",
+                "spark": "SELECT LEFT(x, n), RIGHT(x, -1)",
             },
         )
         self.validate_identity(
@@ -1512,6 +1575,50 @@ TBLPROPERTIES (
             },
         )
 
+    def test_lateral_view_outer(self):
+        for sql in (
+            "SELECT a FROM x LATERAL VIEW OUTER EXPLODE(y) t AS a",
+            "SELECT a FROM x LATERAL VIEW EXPLODE_OUTER(y) t AS a",
+        ):
+            with self.subTest(sql):
+                self.validate_all(
+                    sql,
+                    write={
+                        "athena": "SELECT a FROM x LEFT JOIN UNNEST(y) AS t(a) ON TRUE",
+                        "duckdb": "SELECT a FROM x LEFT JOIN UNNEST(y) AS t(a) ON TRUE",
+                        "presto": "SELECT a FROM x CROSS JOIN UNNEST(y) AS t(a)",
+                        "trino": "SELECT a FROM x LEFT JOIN UNNEST(y) AS t(a) ON TRUE",
+                        "spark": sql,
+                    },
+                )
+                with self.assertRaises(UnsupportedError):
+                    self.parse_one(sql).sql("presto", unsupported_level=ErrorLevel.RAISE)
+
+        for sql in (
+            "SELECT a FROM x LATERAL VIEW OUTER POSEXPLODE(y) t AS pos, col",
+            "SELECT a FROM x LATERAL VIEW POSEXPLODE_OUTER(y) t AS pos, col",
+        ):
+            with self.subTest(sql):
+                self.validate_all(
+                    sql,
+                    write={
+                        "duckdb": "SELECT a FROM x LEFT JOIN LATERAL (SELECT pos - 1 AS pos, col FROM UNNEST(y) WITH ORDINALITY AS t(col, pos)) ON TRUE",
+                        "presto": "SELECT a FROM x CROSS JOIN LATERAL (SELECT pos - 1 AS pos, col FROM UNNEST(y) WITH ORDINALITY AS t(col, pos))",
+                        "trino": "SELECT a FROM x LEFT JOIN LATERAL (SELECT pos - 1 AS pos, col FROM UNNEST(y) WITH ORDINALITY AS t(col, pos)) ON TRUE",
+                        "spark": sql,
+                    },
+                )
+
+        self.validate_all(
+            "SELECT a, b FROM x LATERAL VIEW OUTER INLINE(y) t AS a, b",
+            write={
+                "duckdb": "SELECT a, b FROM x LEFT JOIN LATERAL (SELECT UNNEST(y, max_depth => 2)) AS t(a, b) ON TRUE",
+                "presto": "SELECT a, b FROM x CROSS JOIN UNNEST(y) AS t(a, b)",
+                "trino": "SELECT a, b FROM x LEFT JOIN UNNEST(y) AS t(a, b) ON TRUE",
+                "spark": "SELECT a, b FROM x LATERAL VIEW OUTER INLINE(y) t AS a, b",
+            },
+        )
+
     def test_explode_map(self):
         from sqlglot.optimizer.annotate_types import annotate_types
         from sqlglot.optimizer.qualify import qualify
@@ -1644,6 +1751,18 @@ TBLPROPERTIES (
                     annotated.sql("presto"),
                     """WITH "test_table" AS (SELECT 12345 AS "id_column", ARRAY[CAST(ROW('John', 30) AS ROW("name" VARCHAR, "age" INTEGER)), CAST(ROW('Mary', 20) AS ROW("name" VARCHAR, "age" INTEGER)), CAST(ROW('Mike', 80) AS ROW("name" VARCHAR, "age" INTEGER)), CAST(ROW('Dan', 50) AS ROW("name" VARCHAR, "age" INTEGER))] AS "struct_column") SELECT "test_table"."id_column" AS "id_column", "explode_view"."name" AS "name", "explode_view"."age" AS "age" FROM "test_table" AS "test_table" CROSS JOIN UNNEST("test_table"."struct_column") AS "explode_view"("name", "age")""",
                 )
+
+        with self.subTest("Annotated exploded column of a previous exploded column"):
+            expr = self.parse_one(
+                "WITH t AS (SELECT ARRAY(STRUCT(ARRAY(1, 2) AS a)) AS arr) "
+                "SELECT x FROM t LATERAL VIEW EXPLODE(arr) t1 AS s LATERAL VIEW EXPLODE(s.a) t2 AS x"
+            )
+            annotated = annotate_types(qualify(expr, dialect="spark"), dialect="spark")
+
+            self.assertEqual(
+                annotated.sql("presto"),
+                """WITH "t" AS (SELECT ARRAY[CAST(ROW(ARRAY[1, 2]) AS ROW("a" ARRAY(INTEGER)))] AS "arr") SELECT "t2"."x" AS "x" FROM "t" AS "t" CROSS JOIN UNNEST("t"."arr") AS "t1"("a") CROSS JOIN UNNEST("t1"."a") AS "t2"("x")""",
+            )
 
     def test_approx_percentile(self):
         self.validate_all(

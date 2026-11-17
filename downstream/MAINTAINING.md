@@ -567,10 +567,10 @@ accumulate. To pause everything, set
 2. Create a disposable rebased source candidate. For example:
 
    ```sh
-   git fetch upstream tag v30.31.0
+   git fetch upstream tag v30.33.0
    uv run --no-project -- python -m downstream.refresh candidate \
-     --tag v30.31.0 --path ../sqlglot.refresh-candidate \
-     --branch refresh/candidate-30.31.0
+     --tag v30.33.0 --path ../sqlglot.refresh-candidate \
+     --branch refresh/candidate-30.33.0
    ```
 
    Repeat `--retire PATCH_ID` for reviewed retirements (carried patches only).
@@ -584,8 +584,8 @@ accumulate. To pause everything, set
 
    ```sh
    uv run --no-project -- python -m downstream.refresh integrate \
-     --tag v30.31.0 --candidate refresh/candidate-30.31.0 \
-     --path ../sqlglot.refresh-integration --branch refresh/upstream-30.31.0
+     --tag v30.33.0 --candidate refresh/candidate-30.33.0 \
+     --path ../sqlglot.refresh-integration --branch refresh/upstream-30.33.0
    ```
 
    For each retired patch, repeat `--retire 'PATCH_ID=reviewed upstream evidence

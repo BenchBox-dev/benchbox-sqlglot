@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import typing as t
 
 from sqlglot import exp, parser
@@ -12,6 +13,7 @@ from sqlglot.dialects.dialect import (
     date_trunc_to_time,
 )
 from sqlglot.helper import seq_get
+from sqlglot.time import format_time
 from sqlglot.tokens import TokenType
 
 if t.TYPE_CHECKING:
@@ -53,6 +55,34 @@ def _build_from_unixtime(args: list) -> exp.Expr:
     return exp.UnixToTime.from_arg_list(args)
 
 
+# A Joda field is a run of one letter, e.g. yyyy, or seconds with milliseconds
+JODA_FIELD_RE = re.compile(r"ss\.SSS|([A-Za-z])\1*")
+
+
+def _build_format_datetime(args: list) -> exp.Expr:
+    from sqlglot.dialects.presto import Presto
+
+    fmt = seq_get(args, 1)
+
+    # Formats with quoted text, a literal % or a field without a mapping are left as is
+    if (
+        len(args) != 2
+        or not (fmt and fmt.is_string and fmt.name)
+        or "'" in fmt.name
+        or "%" in fmt.name
+        or any(f.group(0) not in Presto.JODA_TIME_MAPPING for f in JODA_FIELD_RE.finditer(fmt.name))
+    ):
+        return exp.Anonymous(this="FORMAT_DATETIME", expressions=args)
+
+    return exp.TimeToStr(
+        this=seq_get(args, 0),
+        format=exp.Literal.string(
+            format_time(fmt.name, Presto.JODA_TIME_MAPPING, Presto.JODA_TIME_TRIE)
+        ),
+        joda=True,
+    )
+
+
 def _build_to_char(args: list, dialect: Dialect) -> exp.TimeToStr:
     fmt = seq_get(args, 1)
     if isinstance(fmt, exp.Literal):
@@ -69,6 +99,7 @@ class PrestoParser(parser.Parser):
 
     VALUES_FOLLOWED_BY_PAREN = False
     ZONE_AWARE_TIMESTAMP_CONSTRUCTOR = True
+    AT_TIME_ZONE_READS_SESSION_ZONE = True
 
     NO_PAREN_FUNCTIONS = {
         **parser.Parser.NO_PAREN_FUNCTIONS,
@@ -108,6 +139,7 @@ class PrestoParser(parser.Parser):
         "ELEMENT_AT": lambda args: exp.Bracket(
             this=seq_get(args, 0), expressions=[seq_get(args, 1)], offset=1, safe=True
         ),
+        "FORMAT_DATETIME": _build_format_datetime,
         "FROM_HEX": exp.Unhex.from_arg_list,
         "FROM_UNIXTIME": _build_from_unixtime,
         "FROM_UTF8": lambda args: exp.Decode(
@@ -133,13 +165,19 @@ class PrestoParser(parser.Parser):
         "STRPOS": lambda args: exp.StrPosition(
             this=seq_get(args, 0), substr=seq_get(args, 1), occurrence=seq_get(args, 2)
         ),
-        "SLICE": exp.ArraySlice.from_arg_list,
+        "SLICE": lambda args: exp.ArraySlice(
+            this=seq_get(args, 0),
+            start=seq_get(args, 1),
+            end=seq_get(args, 2),
+            is_length=True,
+        ),
         "TO_CHAR": _build_to_char,
         "TO_UNIXTIME": exp.TimeToUnix.from_arg_list,
         "TO_UTF8": lambda args: exp.Encode(
             this=seq_get(args, 0), charset=exp.Literal.string("utf-8")
         ),
         "MD5": exp.MD5Digest.from_arg_list,
+        "SHA1": exp.SHA1Digest.from_arg_list,
         "SHA256": lambda args: exp.SHA2Digest(
             this=seq_get(args, 0), length=exp.Literal.number(256)
         ),

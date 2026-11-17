@@ -23,6 +23,122 @@ class TestBigQuery(Validator):
     dialect = "bigquery"
     maxDiff = None
 
+    def test_information_schema_roundtrip(self):
+        for sql, expected in (
+            (
+                "SELECT SCHEMATA.schema_name FROM region-us.INFORMATION_SCHEMA.SCHEMATA",
+                "SELECT SCHEMATA.schema_name FROM `region-us.INFORMATION_SCHEMA.SCHEMATA` AS SCHEMATA",
+            ),
+            (
+                "SELECT SCHEMATA.schema_name FROM `region-us`.`INFORMATION_SCHEMA`.`SCHEMATA`",
+                "SELECT SCHEMATA.schema_name FROM `region-us.INFORMATION_SCHEMA.SCHEMATA` AS `SCHEMATA`",
+            ),
+            (
+                "SELECT s.schema_name FROM region-us.INFORMATION_SCHEMA.SCHEMATA AS s",
+                "SELECT s.schema_name FROM `region-us.INFORMATION_SCHEMA.SCHEMATA` AS s",
+            ),
+            (
+                "SELECT schema_name FROM `region-us.INFORMATION_SCHEMA.SCHEMATA`",
+                "SELECT schema_name FROM `region-us.INFORMATION_SCHEMA.SCHEMATA` AS `region-us.INFORMATION_SCHEMA.SCHEMATA`",
+            ),
+        ):
+            with self.subTest(sql):
+                self.validate_identity(sql, expected)
+                self.validate_identity(expected)
+
+    def test_variance(self):
+        for name in ("var_samp", "VAR_SAMP", "variance", "VARIANCE"):
+            with self.subTest(name=name):
+                self.validate_identity(f"SELECT {name}(x) FROM t")
+                self.validate_identity(
+                    f"SELECT {name}(x) OVER (PARTITION BY device_id ORDER BY time_represented ROWS BETWEEN 3 PRECEDING AND CURRENT ROW) FROM t"
+                )
+
+        self.validate_all(
+            "SELECT var_samp(x) FROM t",
+            write={
+                "clickhouse": "SELECT varSamp(x) FROM t",
+                "mysql": "SELECT VAR_SAMP(x) FROM t",
+                "oracle": "SELECT VAR_SAMP(x) FROM t",
+                "postgres": "SELECT VAR_SAMP(x) FROM t",
+            },
+        )
+
+    def test_pivot_output_column_names(self):
+        for sql, expected in (
+            (
+                "SELECT * FROM (SELECT CAST('2020-01-31' AS DATE) AS d, 1 AS v) "
+                "PIVOT(SUM(v) AS amount FOR d IN (CAST('2020-01-31' AS DATE)))",
+                "SELECT `_1`.`amount_2020_01_31` AS `amount_2020_01_31` "
+                "FROM (SELECT CAST('2020-01-31' AS DATE) AS `d`, 1 AS `v`) AS `_0` "
+                "PIVOT(SUM(`_0`.`v`) AS `amount` FOR `_0`.`d` "
+                "IN (CAST('2020-01-31' AS DATE))) AS `_1`",
+            ),
+            (
+                "SELECT * FROM (SELECT CAST('2020-1-3' AS DATE) AS d, 1 AS v) "
+                "PIVOT(SUM(v) AS amount FOR d IN "
+                "((CAST('2020-1-3' AS DATE)), CAST('0001-01-01' AS DATE)))",
+                "SELECT `_1`.`amount_2020_01_03` AS `amount_2020_01_03`, "
+                "`_1`.`amount_1_01_01` AS `amount_1_01_01` "
+                "FROM (SELECT CAST('2020-1-3' AS DATE) AS `d`, 1 AS `v`) AS `_0` "
+                "PIVOT(SUM(`_0`.`v`) AS `amount` FOR `_0`.`d` "
+                "IN ((CAST('2020-1-3' AS DATE)), CAST('0001-01-01' AS DATE))) AS `_1`",
+            ),
+            (
+                "SELECT * FROM (SELECT '2020-01-31' AS d, 1 AS v) "
+                "PIVOT(SUM(v) AS amount FOR d IN ('2020-01-31'))",
+                "SELECT `_1`.`amount_2020-01-31` AS `amount_2020-01-31` "
+                "FROM (SELECT '2020-01-31' AS `d`, 1 AS `v`) AS `_0` "
+                "PIVOT(SUM(`_0`.`v`) AS `amount` FOR `_0`.`d` IN ('2020-01-31')) AS `_1`",
+            ),
+            (
+                "SELECT * FROM (SELECT DATE '2020-01-31' AS d, 1 AS v) "
+                "PIVOT(SUM(v) AS amount FOR d IN (DATE '2020-01-31' AS `jan-uary`))",
+                "SELECT `_1`.`amount_jan-uary` AS `amount_jan-uary` "
+                "FROM (SELECT CAST('2020-01-31' AS DATE) AS `d`, 1 AS `v`) AS `_0` "
+                "PIVOT(SUM(`_0`.`v`) AS `amount` FOR `_0`.`d` "
+                "IN (CAST('2020-01-31' AS DATE) AS `jan-uary`)) AS `_1`",
+            ),
+            (
+                "SELECT * FROM (SELECT CAST('2020-01-31' AS DATE) AS d, 1 AS v) "
+                "PIVOT(SUM(v) FOR d IN (CAST('2020-01-31' AS DATE), "
+                "(CAST('2020-1-3' AS DATE)), CAST('0001-01-01' AS DATE), "
+                "(CAST('2020-01-31' AS DATE)) AS `jan-uary`))",
+                "SELECT `_1`.`_2020_01_31` AS `_2020_01_31`, "
+                "`_1`.`_2020_01_03` AS `_2020_01_03`, `_1`.`_1_01_01` AS `_1_01_01`, "
+                "`_1`.`jan-uary` AS `jan-uary` "
+                "FROM (SELECT CAST('2020-01-31' AS DATE) AS `d`, 1 AS `v`) AS `_0` "
+                "PIVOT(SUM(`_0`.`v`) FOR `_0`.`d` IN (CAST('2020-01-31' AS DATE), "
+                "(CAST('2020-1-3' AS DATE)), CAST('0001-01-01' AS DATE), "
+                "(CAST('2020-01-31' AS DATE)) AS `jan-uary`)) AS `_1`",
+            ),
+        ):
+            with self.subTest(sql):
+                self.validate_identity(
+                    qualify(
+                        self.parse_one(sql), dialect="bigquery", validate_qualify_columns=False
+                    ).sql("bigquery"),
+                    expected,
+                )
+
+    def test_pivot_date_output_column_names_duckdb(self):
+        sql = (
+            "SELECT * FROM (SELECT CAST('2020-01-31' AS DATE) AS k, 1 AS v) "
+            "PIVOT(SUM(v) FOR k IN (CAST('2020-01-31' AS DATE), "
+            "CAST('2020-1-3' AS DATE), CAST('2020-01-01' AS DATE) AS january))"
+        )
+        self.assertEqual(
+            qualify(self.parse_one(sql), dialect="bigquery", validate_qualify_columns=False).sql(
+                "duckdb"
+            ),
+            'SELECT "_1"."_2020_01_31" AS "_2020_01_31", '
+            '"_1"."_2020_01_03" AS "_2020_01_03", "_1"."january" AS "january" '
+            'FROM (SELECT CAST(\'2020-01-31\' AS DATE) AS "k", 1 AS "v") AS "_0" '
+            'PIVOT(SUM("v") FOR "k" IN (CAST(\'2020-01-31\' AS DATE) AS "_2020_01_31", '
+            "CAST('2020-1-3' AS DATE) AS \"_2020_01_03\", "
+            'CAST(\'2020-01-01\' AS DATE) AS "january")) AS "_1"',
+        )
+
     def test_identifier_escapes(self):
         for escaped, name in (
             (r"a\nb", "a\nb"),
@@ -79,6 +195,42 @@ class TestBigQuery(Validator):
                         "risingwave": f"DECODE('{hex_value}', 'hex')",
                     },
                 )
+
+    def test_timestamp_diff_date_overloads(self):
+        for sql, expected in (
+            (
+                "SELECT TIMESTAMP_DIFF(DATE '2024-02-01', DATE '2024-01-31', MONTH)",
+                "SELECT DATE_DIFF('MONTH', CAST('2024-01-31' AS DATE), CAST('2024-02-01' AS DATE))",
+            ),
+            (
+                "SELECT TIMESTAMP_DIFF(DATE(2024, 2, 1), DATE(2024, 1, 31), MONTH)",
+                "SELECT DATE_DIFF('MONTH', MAKE_DATE(2024, 1, 31), MAKE_DATE(2024, 2, 1))",
+            ),
+            (
+                "SELECT TIMESTAMP_DIFF(DATETIME(2024, 1, 1, 1, 0, 15), DATETIME(2024, 1, 1, 0, 0, 45), MINUTE)",
+                "SELECT DATE_DIFF('MINUTE', MAKE_TIMESTAMP(2024, 1, 1, 0, 0, 45), MAKE_TIMESTAMP(2024, 1, 1, 1, 0, 15))",
+            ),
+            (
+                "SELECT TIMESTAMP_DIFF(DATE '2024-01-07', DATE '2024-01-06', WEEK)",
+                "SELECT DATE_DIFF('WEEK', DATE_TRUNC('WEEK', CAST('2024-01-06' AS DATE) + INTERVAL '1' DAY), DATE_TRUNC('WEEK', CAST('2024-01-07' AS DATE) + INTERVAL '1' DAY))",
+            ),
+        ):
+            with self.subTest(sql):
+                expression = annotate_types(self.parse_one(sql), dialect="bigquery")
+                self.assertEqual(expression.sql("duckdb"), expected)
+
+        for dtype, expected in (
+            ("DATE", "SELECT DATE_DIFF('DAY', t.s, t.e) FROM t"),
+            ("DATETIME", "SELECT DATE_DIFF('DAY', t.s, t.e) FROM t"),
+            ("TIMESTAMP", "SELECT DATE_SUB('HOUR', t.s, t.e) // 24 FROM t"),
+        ):
+            with self.subTest(dtype):
+                expression = annotate_types(
+                    self.parse_one("SELECT TIMESTAMP_DIFF(t.e, t.s, DAY) FROM t"),
+                    schema={"t": {"e": dtype, "s": dtype}},
+                    dialect="bigquery",
+                )
+                self.assertEqual(expression.sql("duckdb"), expected)
 
     def test_bigquery(self):
         # Presto's SHA512 takes VARBINARY, so annotated string args are wrapped in TO_UTF8
@@ -383,6 +535,8 @@ class TestBigQuery(Validator):
             check_command_warning=True,
         )
         self.validate_identity("BEGIN TRANSACTION")
+        with self.assertLogs(parser_logger):
+            self.assertIsInstance(self.parse_one("BEGIN /* c */ TRANSACTION"), exp.Command)
         self.validate_identity("COMMIT TRANSACTION")
         self.validate_identity("ROLLBACK TRANSACTION")
         for load_data_sql in (
@@ -481,15 +635,15 @@ class TestBigQuery(Validator):
         )
         self.validate_identity(
             "SELECT * FROM region_or_dataset.INFORMATION_SCHEMA.TABLES",
-            "SELECT * FROM region_or_dataset.`INFORMATION_SCHEMA.TABLES` AS TABLES",
+            "SELECT * FROM `region_or_dataset.INFORMATION_SCHEMA.TABLES` AS TABLES",
         )
         self.validate_identity(
             "SELECT * FROM region_or_dataset.INFORMATION_SCHEMA.TABLES AS some_name",
-            "SELECT * FROM region_or_dataset.`INFORMATION_SCHEMA.TABLES` AS some_name",
+            "SELECT * FROM `region_or_dataset.INFORMATION_SCHEMA.TABLES` AS some_name",
         )
         self.validate_identity(
             "SELECT * FROM proj.region_or_dataset.INFORMATION_SCHEMA.TABLES",
-            "SELECT * FROM proj.region_or_dataset.`INFORMATION_SCHEMA.TABLES` AS TABLES",
+            "SELECT * FROM `proj.region_or_dataset.INFORMATION_SCHEMA.TABLES` AS TABLES",
         )
         self.validate_identity(
             "CREATE VIEW `d.v` OPTIONS (expiration_timestamp=TIMESTAMP '2020-01-02T04:05:06.007Z') AS SELECT 1 AS c",
@@ -950,7 +1104,7 @@ LANGUAGE js AS
             write={
                 "bigquery": "SELECT TIMESTAMP_DIFF(TIMESTAMP_SECONDS(60), TIMESTAMP_SECONDS(0), MINUTE)",
                 "databricks": "SELECT TIMESTAMPDIFF(MINUTE, CAST(FROM_UNIXTIME(0) AS TIMESTAMP), CAST(FROM_UNIXTIME(60) AS TIMESTAMP))",
-                "duckdb": "SELECT DATE_DIFF('MINUTE', TO_TIMESTAMP(0), TO_TIMESTAMP(60))",
+                "duckdb": "SELECT DATE_SUB('MINUTE', TO_TIMESTAMP(0), TO_TIMESTAMP(60))",
                 "presto": "SELECT DATE_DIFF('MINUTE', FROM_UNIXTIME(0), FROM_UNIXTIME(60))",
                 "snowflake": "SELECT TIMESTAMPDIFF(MINUTE, TO_TIMESTAMP(0), TO_TIMESTAMP(60))",
                 "trino": "SELECT DATE_DIFF('MINUTE', FROM_UNIXTIME(0), FROM_UNIXTIME(60))",
@@ -1302,7 +1456,7 @@ LANGUAGE js AS
             },
             write={
                 "bigquery": "SHA256(x)",
-                "spark2": "SHA2(x, 256)",
+                "spark2": "UNHEX(SHA2(x, 256))",
                 "clickhouse": "SHA256(x)",
                 "postgres": "SHA256(x)",
                 "presto": "SHA256(x)",
@@ -1322,7 +1476,7 @@ LANGUAGE js AS
             write={
                 "clickhouse": "SHA512(x)",
                 "bigquery": "SHA512(x)",
-                "spark2": "SHA2(x, 512)",
+                "spark2": "UNHEX(SHA2(x, 512))",
                 "presto": "SHA512(x)",
                 "trino": "SHA512(x)",
             },
@@ -2885,6 +3039,60 @@ OPTIONS (
             "MOD(a + 1, b)",
         )
 
+    def test_at_time_zone(self):
+        # DATETIME over a TIMESTAMP, as transpiled from Presto, reads back unchanged
+        self.validate_identity("TIMESTAMP(DATETIME(CAST(x AS TIMESTAMP), 'America/Sao_Paulo'))")
+        self.validate_identity(
+            "SELECT TIMESTAMP(DATETIME(CAST(CAST('2012-10-31 00:00:00' AS DATETIME) AS TIMESTAMP), 'America/Sao_Paulo'))"
+        )
+
+    def test_like_escape(self):
+        # BigQuery's LIKE has no ESCAPE clause, literal patterns are rewritten to backslash escapes
+        self.validate_all(
+            r"SELECT x LIKE '%s3\\_data\\_lake%'",
+            read={
+                "trino": "SELECT x LIKE '%s3^_data^_lake%' ESCAPE '^'",
+            },
+        )
+        self.validate_all(
+            r"SELECT x LIKE 'a\\_b\\\\c'",
+            read={
+                "trino": r"SELECT x LIKE 'a\_b\\c' ESCAPE '\'",
+            },
+        )
+        self.validate_all(
+            r"SELECT x NOT LIKE 'a^b\\%'",
+            read={
+                "trino": "SELECT x NOT LIKE 'a^^b^%' ESCAPE '^'",
+            },
+        )
+        self.validate_all(
+            r"SELECT LOWER(x) LIKE LOWER('a\\\\b\\_')",
+            read={
+                "trino": r"SELECT LOWER(x) LIKE LOWER('a\b^_') ESCAPE '^'",
+            },
+        )
+        self.validate_all(
+            r"SELECT UPPER(x) LIKE UPPER('%s3\\_data\\_lake%')",
+            read={
+                "trino": "SELECT UPPER(x) LIKE UPPER('%s3^_data^_lake%') ESCAPE '^'",
+            },
+        )
+        # Any escape character, including a newline
+        self.validate_all(
+            "SELECT x LIKE '\\n'",
+            read={
+                "trino": "SELECT x LIKE '\n\n' ESCAPE '\n'",
+            },
+        )
+
+        # The rewritten patterns read back unchanged
+        self.validate_identity(r"SELECT x LIKE '%s3\\_data\\_lake%'")
+        self.validate_identity(r"SELECT x LIKE 'a\\_b\\\\c'")
+        self.validate_identity(r"SELECT x NOT LIKE 'a^b\\%'")
+        self.validate_identity(r"SELECT LOWER(x) LIKE LOWER('a\\\\b\\_')")
+        self.validate_identity(r"SELECT UPPER(x) LIKE UPPER('%s3\\_data\\_lake%')")
+
     def test_inline_constructor(self):
         self.validate_identity(
             """SELECT STRUCT<ARRAY<STRING>>(["2023-01-17"])""",
@@ -3760,7 +3968,7 @@ OPTIONS (
                     "hive": f"SELECT * FROM tbl LATERAL VIEW POSEXPLODE(col) AS {alias}, ref",
                     "spark2": f"SELECT * FROM tbl LATERAL VIEW POSEXPLODE(col) AS {alias}, ref",
                     "spark": f"SELECT * FROM tbl LATERAL VIEW POSEXPLODE(col) AS {alias}, ref",
-                    "databricks": f"SELECT * FROM tbl LATERAL VIEW POSEXPLODE(col) AS {alias}, ref",
+                    "databricks": f"SELECT * FROM tbl CROSS JOIN LATERAL (SELECT * EXCEPT (pos), pos AS {alias} FROM POSEXPLODE(col)) AS _t0(ref, {alias})",
                 },
             )
 

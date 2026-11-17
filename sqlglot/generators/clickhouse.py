@@ -6,6 +6,7 @@ import typing as t
 from sqlglot import exp, generator
 from sqlglot.dialects.dialect import (
     arg_max_or_min_no_count,
+    array_sort_order,
     inline_array_sql,
     jarowinkler_similarity,
     json_extract_segments,
@@ -28,6 +29,19 @@ from sqlglot.optimizer.simplify import simplify_parens
 from collections import defaultdict
 
 DATETIME_DELTA = t.Union[exp.DateAdd, exp.DateDiff, exp.DateSub, exp.TimestampSub, exp.TimestampAdd]
+
+
+@unsupported_args(("expression", "ClickHouse's arraySort does not support a comparator."))
+def _array_sort_sql(self: ClickHouseGenerator, expression: exp.ArraySort) -> str:
+    order = array_sort_order(expression)
+    if order is None:
+        self.unsupported("arraySort only takes literal orders")
+        return self.func("arraySort", expression.this)
+
+    asc, nulls_first = order
+    if nulls_first:
+        self.unsupported("arraySort and arrayReverseSort put NULLs last")
+    return self.func("arraySort" if asc else "arrayReverseSort", expression.this)
 
 
 def _unix_to_time_sql(self: ClickHouseGenerator, expression: exp.UnixToTime) -> str:
@@ -166,7 +180,7 @@ def _json_cast_sql(self: ClickHouseGenerator, expression: exp.JSONCast) -> str:
 
 class ClickHouseGenerator(generator.Generator):
     BYTE_STRING_FUNCTION = "unhex"
-    SELECT_KINDS: tuple[str, ...] = ()
+    SELECT_KINDS = ()
     TRY_SUPPORTED = False
     SUPPORTS_UESCAPE = False
     SUPPORTS_DECODE_CASE = False
@@ -186,10 +200,12 @@ class ClickHouseGenerator(generator.Generator):
     SUPPORTS_TO_NUMBER = False
     JOIN_HINTS = False
     TABLE_HINTS = False
+    MATCH_CONDITION_IN_ON = True
     GROUPINGS_SEP = ""
     SET_OP_MODIFIERS = False
     SET_OP_LIMITS = True
     ARRAY_SIZE_NAME = "LENGTH"
+    VARIANCE_NAME = "varSamp"
     WRAP_DERIVED_VALUES = False
     AUTO_REFRESH_BARE_INTERVALS = True
 
@@ -289,6 +305,7 @@ class ClickHouseGenerator(generator.Generator):
         exp.Transform: lambda self, e: self.func("arrayMap", e.expression, e.this),
         exp.ArrayRemove: remove_from_array_using_filter,
         exp.ArrayReverse: rename_func("arrayReverse"),
+        exp.ArraySort: _array_sort_sql,
         exp.ArraySlice: rename_func("arraySlice"),
         exp.ArraySum: rename_func("arraySum"),
         exp.ArrayMax: rename_func("arrayMax"),
@@ -332,6 +349,8 @@ class ClickHouseGenerator(generator.Generator):
         exp.JSONPathKey: json_path_key_only_name,
         exp.JSONPathRoot: lambda *_: "",
         exp.Length: length_or_char_length_sql,
+        exp.LogicalAnd: lambda self, e: self.func("minOrNull", e.this.neq(0)),
+        exp.LogicalOr: lambda self, e: self.func("maxOrNull", e.this.neq(0)),
         exp.Map: _map_sql,
         exp.Median: rename_func("median"),
         exp.Nullif: rename_func("nullIf"),
@@ -366,9 +385,9 @@ class ClickHouseGenerator(generator.Generator):
         exp.Xor: lambda self, e: self.func("xor", e.this, e.expression),
         exp.MD5Digest: rename_func("MD5"),
         exp.MD5: lambda self, e: self.func("LOWER", self.func("HEX", self.func("MD5", e.this))),
-        exp.SHA: rename_func("SHA1"),
+        exp.SHA: lambda self, e: self.func("LOWER", self.func("HEX", self.func("SHA1", e.this))),
         exp.SHA1Digest: rename_func("SHA1"),
-        exp.SHA2: sha256_sql,
+        exp.SHA2: lambda self, e: self.func("LOWER", self.func("HEX", sha256_sql(self, e))),
         exp.SHA2Digest: sha2_digest_sql,
         exp.Split: lambda self, e: self.func(
             "splitByString", e.args.get("expression"), e.this, e.args.get("limit")
@@ -378,7 +397,6 @@ class ClickHouseGenerator(generator.Generator):
         ),
         exp.UnixToTime: _unix_to_time_sql,
         exp.Trim: lambda self, e: trim_sql(self, e, default_trim_type="BOTH"),
-        exp.Variance: rename_func("varSamp"),
         exp.VariancePop: rename_func("varPop"),
         exp.WeekOfYear: rename_func("toISOWeek"),
         exp.YearOfWeekIso: rename_func("toISOYear"),
@@ -391,7 +409,7 @@ class ClickHouseGenerator(generator.Generator):
             rename_func("editDistance")
         ),
         exp.ParseDatetime: lambda self, e: self.func(
-            "parseDateTime", e.this, e.args.get("format"), e.args.get("zone")
+            "parseDateTime", e.this, self.format_time(e), e.args.get("zone")
         ),
     }
 
@@ -541,6 +559,9 @@ class ClickHouseGenerator(generator.Generator):
             arr = expression.right
             this = expression.left
         else:
+            return default(expression)
+
+        if isinstance(arr.this, exp.Query):
             return default(expression)
 
         return prefix + self.func("has", arr.this.unnest(), this)

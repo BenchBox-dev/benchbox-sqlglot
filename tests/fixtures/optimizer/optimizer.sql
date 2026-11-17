@@ -4,6 +4,24 @@ SELECT
   CASE WHEN "x"."a" > 1 THEN "x"."b" ELSE 2 END AS "result"
 FROM "x" AS "x";
 
+# title: Preserve POSITIONAL JOIN
+# dialect: duckdb
+SELECT x.a, y.c FROM x POSITIONAL JOIN y;
+WITH "x_2" AS (
+  SELECT
+    "x"."a" AS "a"
+  FROM "x" AS "x"
+), "y_2" AS (
+  SELECT
+    "y"."c" AS "c"
+  FROM "y" AS "y"
+)
+SELECT
+  "x"."a" AS "a",
+  "y"."c" AS "c"
+FROM "x_2" AS "x"
+POSITIONAL JOIN "y_2" AS "y";
+
 # title: lateral
 # execute: false
 SELECT a, m FROM z LATERAL VIEW EXPLODE([1, 2]) q AS m;
@@ -1710,3 +1728,27 @@ LEFT JOIN "y" AS "y"
   ON "x"."a" = CAST("y"."b" AS INT)
 ORDER BY
   "x"."a";
+
+# title: Preserve parenthesized joins
+SELECT x.a, y.b, z.b, w.c FROM (x LEFT JOIN y ON x.b = y.b) INNER JOIN (y AS z LEFT JOIN y AS w ON z.c = w.c) ON y.c = z.b ORDER BY x.a, y.b, z.b, w.c;
+SELECT
+  "x"."a" AS "a",
+  "y"."b" AS "b",
+  "z"."b" AS "b",
+  "w"."c" AS "c"
+FROM (
+  "x" AS "x"
+    LEFT JOIN "y" AS "y"
+      ON "x"."b" = "y"."b"
+)
+JOIN (
+  "y" AS "z"
+    LEFT JOIN "y" AS "w"
+      ON "w"."c" = "z"."c"
+)
+  ON "y"."c" = "z"."b"
+ORDER BY
+  "x"."a",
+  "y"."b",
+  "z"."b",
+  "w"."c";

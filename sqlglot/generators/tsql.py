@@ -16,6 +16,7 @@ from sqlglot.dialects.dialect import (
     strposition_sql,
     timestrtotime_sql,
     trim_sql,
+    unit_to_var,
 )
 from sqlglot.helper import seq_get
 from sqlglot.optimizer.scope import find_in_scope
@@ -49,6 +50,14 @@ def _format_sql(self: TSQLGenerator, expression: exp.NumberToStr | exp.TimeToStr
         fmt_sql = self.sql(fmt)
 
     return self.func("FORMAT", expression.this, fmt_sql, expression.args.get("culture"))
+
+
+def _sha2_sql(self: TSQLGenerator, expression: exp.SHA2 | exp.SHA2Digest) -> str:
+    return self.func(
+        "HASHBYTES",
+        exp.Literal.string(f"SHA2_{expression.args.get('length', 256)}"),
+        expression.this,
+    )
 
 
 def _string_agg_sql(self: TSQLGenerator, expression: exp.GroupConcat) -> str:
@@ -132,10 +141,11 @@ def _timestrtotime_sql(self: TSQLGenerator, expression: exp.TimeStrToTime):
 
 
 class TSQLGenerator(generator.Generator):
-    SELECT_KINDS: tuple[str, ...] = ()
+    SELECT_KINDS = ()
     TRY_SUPPORTED = False
     SUPPORTS_UESCAPE = False
     SUPPORTS_DECODE_CASE = False
+    SUPPORTS_MULTI_ARG_CHR = False
 
     AFTER_HAVING_MODIFIER_TRANSFORMS = generator.AFTER_HAVING_MODIFIER_TRANSFORMS
 
@@ -199,6 +209,7 @@ class TSQLGenerator(generator.Generator):
         exp.DType.TIMESTAMPNTZ: "DATETIME2",
         exp.DType.TIMESTAMPTZ: "DATETIMEOFFSET",
         exp.DType.SMALLDATETIME: "SMALLDATETIME",
+        exp.DType.TINYINT: "SMALLINT",
         exp.DType.UTINYINT: "TINYINT",
         exp.DType.VARIANT: "SQL_VARIANT",
         exp.DType.UUID: "UNIQUEIDENTIFIER",
@@ -211,7 +222,7 @@ class TSQLGenerator(generator.Generator):
         exp.ArrayToString: rename_func("STRING_AGG"),
         exp.AutoIncrementColumnConstraint: lambda *_: "IDENTITY",
         exp.Ceil: rename_func("CEILING"),
-        exp.Chr: rename_func("CHAR"),
+        exp.Chr: lambda self, e: self.chr_sql(e, "CHAR"),
         exp.DateAdd: date_delta_sql("DATEADD"),
         exp.CTE: transforms.preprocess([qualify_derived_table_outputs]),
         exp.CurrentDate: rename_func("GETDATE"),
@@ -249,9 +260,8 @@ class TSQLGenerator(generator.Generator):
         exp.Subquery: transforms.preprocess([qualify_derived_table_outputs]),
         exp.SHA: lambda self, e: self.func("HASHBYTES", exp.Literal.string("SHA1"), e.this),
         exp.SHA1Digest: lambda self, e: self.func("HASHBYTES", exp.Literal.string("SHA1"), e.this),
-        exp.SHA2: lambda self, e: self.func(
-            "HASHBYTES", exp.Literal.string(f"SHA2_{e.args.get('length', 256)}"), e.this
-        ),
+        exp.SHA2: _sha2_sql,
+        exp.SHA2Digest: _sha2_sql,
         exp.TemporaryProperty: lambda self, e: "",
         exp.TimeStrToTime: _timestrtotime_sql,
         exp.TimeToStr: _format_sql,
@@ -278,6 +288,24 @@ class TSQLGenerator(generator.Generator):
 
     def scope_resolution(self, rhs: str, scope_name: str) -> str:
         return f"{scope_name}::{rhs}"
+
+    # Inline unsupported check: mypyc cannot compile @unsupported_args on an
+    # override of an undecorated base-class method.
+    def datetrunc_sql(self, expression: exp.DateTrunc) -> str:
+        self._warn_unsupported_arg(expression, "zone")
+        self._warn_unsupported_arg(expression, "century_from_zero")
+        unit_expr = expression.unit
+        if isinstance(unit_expr, exp.WeekStart):
+            unit: exp.Expr | None = exp.var(
+                "ISO_WEEK" if unit_expr.name.upper() == "MONDAY" else self.weekstart_name(unit_expr)
+            )
+        else:
+            if unit_expr.is_string and unit_expr.name.upper() in ("WEEK_OF_MONTH", "WEEK_OF_YEAR"):
+                self.unsupported(f"Unexpected interval unit: {unit_expr.name}")
+            unit = unit_to_var(expression)
+            if isinstance(unit, exp.Var) and unit.name.upper() == "ISOWEEK":
+                unit = exp.var("ISO_WEEK")
+        return self.func("DATETRUNC", unit, expression.this)
 
     def select_sql(self, expression: exp.Select) -> str:
         self._prepare_limit_offset(expression)

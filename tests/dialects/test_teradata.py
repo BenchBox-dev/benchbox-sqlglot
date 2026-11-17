@@ -1,9 +1,182 @@
-from sqlglot import ErrorLevel, ParseError, UnsupportedError, exp, parse
+from sqlglot import ErrorLevel, ParseError, UnsupportedError, exp, parse, parse_one
+from sqlglot.optimizer.annotate_types import annotate_types
 from tests.dialects.test_dialect import Validator
 
 
 class TestTeradata(Validator):
     dialect = "teradata"
+
+    def test_characters(self):
+        self.validate_identity("characters(x)", "LENGTH(x)").assert_is(exp.Length)
+        for value in ("x", "'abc'", "''", "'a  '", "'\u00e9\u4e2d'", "NULL"):
+            self.validate_all(
+                f"CHARACTERS({value})",
+                write={
+                    "teradata": f"LENGTH({value})",
+                    "databricks": f"LENGTH({value})",
+                    "postgres": f"LENGTH({value})",
+                },
+            )
+
+    def test_curdate(self):
+        for sql in ("CURDATE()", "curdate()"):
+            self.validate_identity(sql, "CURRENT_DATE").assert_is(exp.CurrentDate)
+            self.validate_all(
+                f"SELECT {sql}",
+                write={
+                    "teradata": "SELECT CURRENT_DATE",
+                    "databricks": "SELECT CURRENT_DATE",
+                    "postgres": "SELECT CURRENT_DATE",
+                },
+            )
+        self.validate_identity('SELECT curdate, "curdate", t.curdate FROM t')
+        self.validate_identity("CREATE TABLE t (curdate DATE)")
+
+    def test_curtime(self):
+        for sql in ("CURTIME()", "curtime()"):
+            self.validate_identity(sql, "CURRENT_TIME").assert_is(exp.CurrentTime)
+            self.validate_identity(
+                f"SELECT {sql} AS request_time", "SELECT CURRENT_TIME AS request_time"
+            )
+        self.validate_identity('SELECT curtime, "curtime", t.curtime FROM t')
+        self.validate_identity("CREATE TABLE t (curtime TIME)")
+        self.validate_identity("SELECT t.CURTIME() FROM t")
+        self.assertIsInstance(parse_one("CURTIME()"), exp.Anonymous)
+
+    def test_current_time(self):
+        self.validate_identity("current_time", "CURRENT_TIME").assert_is(exp.CurrentTime)
+        for precision in (0, 3, 6):
+            self.validate_identity(f"CURRENT_TIME({precision})").assert_is(exp.CurrentTime)
+        self.validate_identity("SELECT CURRENT_TIME AS request_time")
+        self.validate_identity("CURRENT_TIME AT TIME ZONE 'America Pacific'")
+        self.validate_identity('SELECT t.current_time, "CURRENT_TIME" FROM t')
+
+    def test_dayofweek(self):
+        self.validate_identity("dayofweek(d)", "DAYOFWEEK(d)").assert_is(exp.DayOfWeek)
+        for value in (
+            "d",
+            "CURRENT_DATE",
+            "CAST('2026-11-15' AS DATE)",
+            "CAST('2026-11-15 12:00:00' AS TIMESTAMP)",
+            "NULL",
+        ):
+            expression = self.validate_identity(f"DAYOFWEEK({value})").assert_is(exp.DayOfWeek)
+            self.assertEqual(expression, self.parse_one(expression.sql(self.dialect)))
+        self.validate_all(
+            "DAYOFWEEK(d)",
+            read={"": "DAY_OF_WEEK(d)", "hive": "DAYOFWEEK(d)"},
+            write={"": "DAY_OF_WEEK(d)", "teradata": "DAYOFWEEK(d)", "hive": "DAYOFWEEK(d)"},
+        )
+        self.validate_identity('SELECT dayofweek, "dayofweek", t.dayofweek FROM t')
+        self.validate_identity("SELECT t.DAYOFWEEK(d) FROM t")
+
+    def test_hex_character_string(self):
+        for digits in ("", "0", "0A", "aBcD", "7B31327D"):
+            for suffix in ("XC", "xc", "XCV", "xcv"):
+                sql = f"SELECT '{digits}'{suffix} AS s"
+                expression = self.validate_identity(sql, f"SELECT '{digits}'XC AS s")
+                literal = expression.expressions[0].this.assert_is(exp.HexString)
+                self.assertEqual(literal.this, digits)
+                self.assertEqual(
+                    sql[literal.meta["start"] : literal.meta["end"] + 1], f"'{digits}'{suffix}"
+                )
+                self.assertTrue(literal.args.get("is_character"))
+                self.assertNotEqual(literal, exp.HexString(this=digits))
+                self.assertFalse(literal.is_string)
+                for dialect in ("", "teradata", "snowflake"):
+                    self.assertTrue(
+                        annotate_types(literal.copy(), dialect=dialect).is_type(exp.DType.VARCHAR)
+                    )
+                self.assertIsNone(expression.find(exp.Column))
+                self.assertEqual(expression, self.parse_one(expression.sql(self.dialect)))
+                self.assertEqual(expression, exp.Expr.load(expression.dump()))
+        for sql in (
+            "'0A'XC",
+            "('0A'XC)",
+            "VALUES ('0A'XC)",
+            "SELECT CASE WHEN a = 1 THEN '41'XC ELSE '42'XC END FROM t",
+            "SELECT EXISTS(SELECT '0A'XC)",
+            "SELECT EXISTS(SELECT '41'XC FROM u)",
+            "SELECT SUM(a) OVER (PARTITION BY '41'XC) FROM t",
+            "LENGTH('0A'XC)",
+            "COALESCE('0A'XC, NULL)",
+            "CAST('0A'XC AS VARCHAR(10))",
+            "TO_CHAR(CURRENT_DATE, '59595959'XC)",
+            "CAST('323032342D30312D3031'XC AS DATE FORMAT 'YYYY-MM-DD')",
+        ):
+            expression = self.validate_identity(sql)
+            self.assertEqual(expression, self.parse_one(expression.sql(self.dialect)))
+            self.validate_identity(sql.replace("XC", "XCV"), sql)
+        for sql, expected in (
+            ("SELECT '41'XC::VARCHAR(10)", "SELECT CAST('41'XC AS VARCHAR(10))"),
+            ("SELECT ('41'XC)::VARCHAR(10)", "SELECT CAST(('41'XC) AS VARCHAR(10))"),
+        ):
+            expression = self.validate_identity(sql, expected)
+            self.assertEqual(expression, self.parse_one(expression.sql(self.dialect)))
+            self.validate_identity(sql.replace("XC", "XCV"), expected)
+        for sql in (
+            "'0G'XC",
+            "'0 A'XC",
+            "'0''A'XC",
+            "SELECT '41' '42'XC",
+            "SELECT '41'XC '42'",
+            "SELECT value LIKE 'a' ESCAPE '21'XC",
+            "CAST('2026' AS DATE FORMAT '59595959'XC)",
+            "TS_OR_DS_TO_DATE('2020-01-01', '59595959'XC)",
+            "STR_TO_DATE('2020-01-01', '59595959'XC)",
+            "INTERVAL '31'XC DAY",
+            "CAST('2026' AS DATE DEFAULT '31'XC ON CONVERSION ERROR FORMAT 'YYYY')",
+        ):
+            with self.assertRaises(ParseError):
+                self.parse_one(sql)
+            with self.assertRaises(ParseError):
+                self.parse_one(sql.replace("XC", "XCV"))
+        self.validate_identity("SELECT '41'XCV", "SELECT '41'XC")
+        self.validate_identity("SELECT 'not hex' XC", "SELECT 'not hex' AS XC")
+        self.validate_identity("SELECT 'not hex' XCV", "SELECT 'not hex' AS XCV")
+        self.validate_identity("SELECT '0A' AS XC")
+        self.validate_identity("SELECT '0A' AS XCV")
+        self.validate_identity("SELECT '41'\"XC\"", "SELECT '41' AS \"XC\"")
+        self.validate_identity("SELECT '41'\"XCV\"", "SELECT '41' AS \"XCV\"")
+        self.validate_identity('SELECT xc, "XC", t.xc FROM t')
+        self.validate_identity('SELECT xcv, "XCV", t.xcv FROM t')
+        binary = self.validate_identity("X'0A'").assert_is(exp.HexString)
+        self.assertFalse(binary.args.get("is_character"))
+        self.assertTrue(annotate_types(binary.copy()).is_type(exp.DType.BINARY))
+        self.assertTrue(
+            annotate_types(binary.copy(), dialect="snowflake").is_type(exp.DType.BINARY)
+        )
+        self.assertEqual(binary.sql("dune"), "0x0A")
+        integer = exp.HexString(this="0A", is_integer=True)
+        self.assertTrue(annotate_types(integer.copy()).is_type(exp.DType.BIGINT))
+        self.assertTrue(
+            annotate_types(integer.copy(), dialect="snowflake").is_type(exp.DType.BINARY)
+        )
+        self.assertEqual(integer.sql("dune"), "0x0A")
+        self.validate_all(
+            "'0A'XC",
+            read={"teradata": "'0A'XCV"},
+            write={
+                "teradata": "'0A'XC",
+                **{
+                    dialect: UnsupportedError
+                    for dialect in ("", "hive", "duckdb", "dune", "snowflake", "sqlite", "dax")
+                },
+            },
+        )
+        self.assertEqual(
+            "'0A'XC", self.parse_one("'0A'XC").sql("dax", unsupported_level=ErrorLevel.IGNORE)
+        )
+
+    def test_hex_character_trunc(self):
+        self.validate_all(
+            "TRUNC(CURRENT_DATE, '4D4D'XC)",
+            write={
+                "teradata": "TRUNC(CURRENT_DATE, '4D4D'XC)",
+                "tsql": UnsupportedError,
+                "fabric": UnsupportedError,
+            },
+        )
 
     def test_execute(self):
         for sql, expected in (
@@ -87,6 +260,7 @@ class TestTeradata(Validator):
             write={
                 "": "(u - l) * RAND() + l",
                 "teradata": "RANDOM(l, u)",
+                "duckdb": "CAST((((CAST(FLOOR(RANDOM() * 4294967296) AS INT128) * 4294967296) + CAST(FLOOR(RANDOM() * 4294967296) AS INT128)) % ((CAST(u AS INT128) - CAST(l AS INT128)) + 1)) + CAST(l AS INT128) AS BIGINT)",
             },
         )
         self.validate_identity("TO_NUMBER(expr, fmt, nlsparam)")
@@ -339,6 +513,39 @@ class TestTeradata(Validator):
 
         self.validate_identity("CREATE TABLE z (a SYSUDTLIB.INT)")
 
+    def test_byteint(self):
+        from sqlglot.optimizer.annotate_types import annotate_types
+
+        self.validate_all(
+            "CAST(x AS BYTEINT)",
+            read={
+                "databricks": "CAST(x AS TINYINT)",
+            },
+            write={
+                "teradata": "CAST(x AS BYTEINT)",
+                "databricks": "CAST(x AS TINYINT)",
+                "postgres": "CAST(x AS SMALLINT)",
+                "tsql": "CAST(x AS SMALLINT)",
+            },
+        )
+        expression = self.validate_identity("CAST(127 AS BYTEINT)").assert_is(exp.Cast)
+        self.assertTrue(expression.to.is_type(exp.DType.TINYINT))
+        self.assertTrue(annotate_types(expression, dialect=self.dialect).is_type(exp.DType.TINYINT))
+        self.validate_all(
+            "CAST(-128 AS BYTEINT)",
+            write={
+                "teradata": "CAST(-128 AS BYTEINT)",
+                "tsql": "CAST(-128 AS SMALLINT)",
+            },
+        )
+        self.validate_identity("CAST(x AS byteint)", "CAST(x AS BYTEINT)")
+        table = self.validate_identity("CREATE TABLE z (a BYTEINT, b SMALLINT)")
+        self.assertEqual(
+            [datatype.this for datatype in table.find_all(exp.DataType)],
+            [exp.DType.TINYINT, exp.DType.SMALLINT],
+        )
+        self.validate_identity("CAST(x AS SMALLINT)")
+
     def test_cast(self):
         self.validate_all(
             "CAST('1992-01' AS DATE FORMAT 'YYYY-DD')",
@@ -429,6 +636,139 @@ class TestTeradata(Validator):
                 self.parse_one(sql, error_level=ErrorLevel.RAISE)
         with self.assertRaises(UnsupportedError):
             title.sql("postgres", unsupported_level=ErrorLevel.RAISE)
+
+    def test_named(self):
+        from sqlglot.lineage import lineage
+        from sqlglot.optimizer.annotate_types import annotate_types
+
+        for sql, expected in (
+            ("SELECT x (NAMED result) FROM t", "SELECT x AS result FROM t"),
+            ('SELECT x (NAMED "result name") FROM t', 'SELECT x AS "result name" FROM t'),
+            ("SELECT x (NAMED 'result name') FROM t", 'SELECT x AS "result name" FROM t'),
+            ("SELECT (x + 1) (NAMED result) FROM t", "SELECT (x + 1) AS result FROM t"),
+            (
+                "SELECT x (NAMED result, TITLE 'Heading', FORMAT '999') FROM t",
+                "SELECT x (FORMAT '999') (TITLE 'Heading') AS result FROM t",
+            ),
+            ("SELECT x FROM t WHERE x (NAMED result) > 1", None),
+            ("SELECT x (NAMED inner_result) + 1 AS result FROM t", None),
+            ("SELECT COALESCE(x (NAMED inner_result), 0) AS result FROM t", None),
+        ):
+            with self.subTest(sql=sql):
+                expression = self.validate_identity(sql, expected)
+                self.assertEqual(expression, self.parse_one(expected or sql))
+                self.assertEqual(expression, exp.Expr.load(expression.dump()))
+                self.assertIsNone(expression.find(exp.Anonymous))
+        self.assertEqual(
+            self.parse_one("SELECT x (NAMED result) FROM t").expressions[0].output_name, "result"
+        )
+        self.validate_all(
+            "SELECT x (NAMED result) FROM t",
+            write={
+                "teradata": "SELECT x AS result FROM t",
+                "postgres": "SELECT x AS result FROM t",
+            },
+        )
+        self.assertTrue(
+            annotate_types(self.parse_one("SELECT 1 (NAMED result)"))
+            .expressions[0]
+            .is_type(exp.DType.INT)
+        )
+        root = lineage(
+            "result",
+            "SELECT x (NAMED result) FROM t",
+            schema={"t": {"x": "INT"}},
+            dialect="teradata",
+        )
+        self.assertEqual(root.downstream[0].name, "t.x")
+        self.validate_identity('SELECT example_udf("NAMED")', 'SELECT EXAMPLE_UDF("NAMED")')
+        self.validate_identity("SELECT example_udf(NAMED(x))", "SELECT EXAMPLE_UDF(NAMED(x))")
+        for sql in (
+            "SELECT x (NAMED)",
+            "SELECT x (NAMED 123)",
+            "SELECT x (NAMED :alias)",
+            "SELECT x (NAMED a, NAMED b)",
+            "SELECT x (NAMED result,)",
+            "SELECT x (NAMED result, 'TITLE' 'Heading')",
+        ):
+            with self.subTest(sql=sql), self.assertRaises(ParseError):
+                self.parse_one(sql, error_level=ErrorLevel.RAISE)
+        for sql in (
+            "SELECT x FROM t WHERE x (NAMED result) > 1",
+            "SELECT x (NAMED inner_result) + 1 AS result FROM t",
+            "SELECT COALESCE(x (NAMED inner_result), 0) AS result FROM t",
+        ):
+            with self.subTest(sql=sql):
+                expression = self.parse_one(sql)
+                self.assertIsNotNone(expression.find(exp.TeradataNamed))
+                with self.assertRaises(UnsupportedError):
+                    expression.sql("postgres", unsupported_level=ErrorLevel.RAISE)
+
+    def test_named_as_precedence(self):
+        for sql in (
+            "SELECT x (NAMED result) AS a FROM t",
+            "SELECT x (NAMED result) a FROM t",
+            'SELECT x (NAMED "result name") AS a FROM t',
+        ):
+            with self.subTest(sql=sql):
+                expression = self.validate_identity(sql, "SELECT x AS a FROM t")
+                self.assertIs(type(expression.expressions[0]), exp.Alias)
+                self.assertIsNone(expression.find(exp.TeradataNamed))
+                self.assertEqual(
+                    expression.sql("postgres", unsupported_level=ErrorLevel.RAISE),
+                    "SELECT x AS a FROM t",
+                )
+        self.validate_identity(
+            "SELECT x (NAMED result) (TITLE 'Heading') (FORMAT '999') AS a FROM t",
+            "SELECT x (TITLE 'Heading') (FORMAT '999') AS a FROM t",
+        )
+        self.validate_identity(
+            "SELECT x (FORMAT '999') (NAMED result) (TITLE 'Heading') AS a FROM t",
+            "SELECT x (FORMAT '999') (TITLE 'Heading') AS a FROM t",
+        )
+        self.validate_identity(
+            "SELECT x (NAMED result /* note */) AS a FROM t",
+            "SELECT x /* note */ AS a FROM t",
+        )
+
+    def test_named_attribute_order(self):
+        from itertools import permutations
+
+        from sqlglot.lineage import lineage
+        from sqlglot.optimizer.annotate_types import annotate_types
+        from sqlglot.optimizer.qualify import qualify
+
+        schema = {"t": {"x": "INT"}}
+        orders = (
+            *permutations(("NAMED result", "TITLE 'Heading'")),
+            *permutations(("NAMED result", "FORMAT '999'")),
+            *permutations(("NAMED result", "TITLE 'Heading'", "FORMAT '999'")),
+        )
+        for attributes in orders:
+            for combined in (False, True):
+                phrases = (
+                    f"({', '.join(attributes)})"
+                    if combined
+                    else " ".join(f"({attribute})" for attribute in attributes)
+                )
+                sql = f"SELECT x {phrases} FROM t WHERE result > 1"
+                with self.subTest(sql=sql):
+                    expression = self.parse_one(sql)
+                    self.assertIs(type(expression.expressions[0]), exp.Alias)
+                    self.assertIsNone(expression.find(exp.TeradataNamed))
+                    self.assertEqual(expression.expressions[0].output_name, "result")
+                    self.assertEqual(expression, exp.Expr.load(expression.dump()))
+                    self.assertEqual(expression, self.parse_one(expression.sql("teradata")))
+                    qualified = qualify(expression.copy(), dialect="teradata", schema=schema)
+                    column = qualified.args["where"].find(exp.Column)
+                    self.assertEqual((column.table, column.name), ("t", "x"))
+                    self.assertTrue(
+                        annotate_types(qualified, schema=schema, dialect="teradata")
+                        .expressions[0]
+                        .is_type(exp.DType.INT)
+                    )
+                    root = lineage("result", expression, schema=schema, dialect="teradata")
+                    self.assertEqual(root.downstream[0].name, "t.x")
 
     def test_time(self):
         self.validate_identity("CAST(CURRENT_TIMESTAMP(6) AS TIMESTAMP WITH TIME ZONE)")
@@ -571,4 +911,165 @@ class TestTeradata(Validator):
         self.validate_identity(
             "SELECT AVG(x) OVER (ORDER BY d ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM t",
             "SELECT AVG(x) OVER (ORDER BY d) FROM t",
+        )
+
+    def test_trunc(self):
+        # Temporal vs. numeric disambiguation (and Unknown fallback)
+        self.parse_one("TRUNC(CAST(x AS DATE), 'MONTH')").assert_is(exp.DateTrunc)
+        self.parse_one("TRUNC(CAST(x AS TIMESTAMP), 'HH')").assert_is(exp.DateTrunc)
+        self.parse_one("TRUNC(CURRENT_DATE, 'Q')").assert_is(exp.DateTrunc)
+        self.parse_one("TRUNC(col, 'MM')").assert_is(exp.DateTrunc)
+        self.validate_identity("TRUNC(3.14159, 2)").assert_is(exp.Trunc)
+        self.validate_identity("TRUNC(3.14159)").assert_is(exp.Trunc)
+        self.validate_identity("TRUNC(price, 0)").assert_is(exp.Trunc)
+        self.validate_identity("TRUNC(foo, bar)").assert_is(exp.Anonymous)
+
+        # Temporal TRUNC without an explicit format defaults to 'DD' (canonical DAY)
+        self.validate_all(
+            "TRUNC(CAST('2024-05-15' AS DATE))",
+            write={
+                "teradata": "TRUNC(CAST('2024-05-15' AS DATE), 'DD')",
+                "oracle": "TRUNC(CAST('2024-05-15' AS DATE), 'DD')",
+                "duckdb": "DATE_TRUNC('DAY', CAST('2024-05-15' AS DATE))",
+                "bigquery": "DATE_TRUNC(CAST('2024-05-15' AS DATE), DAY)",
+                "tsql": "DATETRUNC(DAY, CAST('2024-05-15' AS DATE))",
+            },
+        )
+
+        # Teradata format abbreviations normalize into canonical DATE_TRUNC units and translate back
+        self.validate_all(
+            "TRUNC(CAST('2024-05-15' AS DATE), 'MM')",
+            write={
+                "teradata": "TRUNC(CAST('2024-05-15' AS DATE), 'MONTH')",
+                "duckdb": "DATE_TRUNC('MONTH', CAST('2024-05-15' AS DATE))",
+                "bigquery": "DATE_TRUNC(CAST('2024-05-15' AS DATE), MONTH)",
+                "snowflake": "DATE_TRUNC('MONTH', CAST('2024-05-15' AS DATE))",
+                "postgres": "DATE_TRUNC('MONTH', CAST('2024-05-15' AS DATE))",
+                "tsql": "DATETRUNC(MONTH, CAST('2024-05-15' AS DATE))",
+            },
+        )
+        self.validate_all(
+            "TRUNC(CAST('2024-05-15' AS DATE), 'Q')",
+            read={
+                "bigquery": "DATE_TRUNC(CAST('2024-05-15' AS DATE), QUARTER)",
+                "duckdb": "DATE_TRUNC('QUARTER', CAST('2024-05-15' AS DATE))",
+                "snowflake": "DATE_TRUNC('QUARTER', CAST('2024-05-15' AS DATE))",
+            },
+            write={
+                "teradata": "TRUNC(CAST('2024-05-15' AS DATE), 'Q')",
+                "oracle": "TRUNC(CAST('2024-05-15' AS DATE), 'Q')",
+                "duckdb": "DATE_TRUNC('QUARTER', CAST('2024-05-15' AS DATE))",
+                "bigquery": "DATE_TRUNC(CAST('2024-05-15' AS DATE), QUARTER)",
+                "tsql": "DATETRUNC(QUARTER, CAST('2024-05-15' AS DATE))",
+            },
+        )
+        # Teradata 'DAY'/'DY'/'D' mean start of week, whereas 'DD' means daily truncation
+        self.validate_all(
+            "TRUNC(CAST('2024-05-15' AS DATE), 'DD')",
+            read={
+                "bigquery": "DATE_TRUNC(CAST('2024-05-15' AS DATE), DAY)",
+                "duckdb": "DATE_TRUNC('DAY', CAST('2024-05-15' AS DATE))",
+                "snowflake": "DATE_TRUNC('DAY', CAST('2024-05-15' AS DATE))",
+            },
+            write={
+                "teradata": "TRUNC(CAST('2024-05-15' AS DATE), 'DD')",
+                "duckdb": "DATE_TRUNC('DAY', CAST('2024-05-15' AS DATE))",
+                "bigquery": "DATE_TRUNC(CAST('2024-05-15' AS DATE), DAY)",
+            },
+        )
+        self.validate_all(
+            "TRUNC(CAST('2024-05-15' AS DATE), 'DAY')",
+            read={
+                "teradata": "TRUNC(CAST('2024-05-15' AS DATE), 'D')",
+                "oracle": "TRUNC(CAST('2024-05-15' AS DATE), 'DAY')",
+                "bigquery": "DATE_TRUNC(CAST('2024-05-15' AS DATE), WEEK)",
+            },
+            write={
+                "teradata": "TRUNC(CAST('2024-05-15' AS DATE), 'DAY')",
+                "oracle": "TRUNC(CAST('2024-05-15' AS DATE), 'DAY')",
+                "duckdb": "CAST(DATE_TRUNC('WEEK', CAST('2024-05-15' AS DATE) + INTERVAL '1' DAY) + INTERVAL '-1' DAY AS DATE)",
+                "bigquery": "DATE_TRUNC(CAST('2024-05-15' AS DATE), WEEK)",
+                "tsql": "DATETRUNC(WEEK, CAST('2024-05-15' AS DATE))",
+                "snowflake": UnsupportedError,
+            },
+        )
+        self.validate_all(
+            "TRUNC(CAST('2024-05-15' AS DATE), 'IW')",
+            read={
+                "bigquery": "DATE_TRUNC(CAST('2024-05-15' AS DATE), WEEK(MONDAY))",
+                "duckdb": "DATE_TRUNC('WEEK', CAST('2024-05-15' AS DATE))",
+                "snowflake": "DATE_TRUNC('WEEK', CAST('2024-05-15' AS DATE))",
+            },
+            write={
+                "teradata": "TRUNC(CAST('2024-05-15' AS DATE), 'IW')",
+                "duckdb": "DATE_TRUNC('WEEK', CAST('2024-05-15' AS DATE))",
+                "bigquery": "DATE_TRUNC(CAST('2024-05-15' AS DATE), WEEK(MONDAY))",
+                "tsql": "DATETRUNC(ISO_WEEK, CAST('2024-05-15' AS DATE))",
+            },
+        )
+        self.validate_all(
+            "TRUNC(CAST(x AS TIMESTAMP), 'HH')",
+            write={
+                "teradata": "TRUNC(CAST(x AS TIMESTAMP), 'HH')",
+                "duckdb": "DATE_TRUNC('HOUR', CAST(x AS TIMESTAMP))",
+            },
+        )
+        self.validate_all(
+            "TRUNC(CAST(x AS DATE), 'HH')",
+            read={
+                "snowflake": "DATE_TRUNC('HOUR', CAST(x AS DATE))",
+            },
+        )
+        self.validate_identity("TRUNC(CAST(x AS TIMESTAMP), 'MI')")
+        self.validate_identity("TRUNC(x, 'YYYY')", "TRUNC(x, 'YEAR')")
+        self.validate_identity("TRUNC(x, 'IYYY')")
+        self.validate_identity("TRUNC(x, 'CC')")
+        self.validate_all(
+            "TRUNC(CAST('2024-05-15' AS DATE), 'CC')",
+            write={
+                "teradata": "TRUNC(CAST('2024-05-15' AS DATE), 'CC')",
+                "postgres": "DATE_TRUNC('CENTURY', CAST('2024-05-15' AS DATE))",
+                "duckdb": UnsupportedError,
+            },
+        )
+        # Preserve native calendar boundaries and reject unsupported translations.
+        for unit in ("W", "WW"):
+            self.validate_all(
+                f"TRUNC(CAST('2024-05-15' AS DATE), '{unit}')",
+                write={
+                    "teradata": f"TRUNC(CAST('2024-05-15' AS DATE), '{unit}')",
+                    "oracle": f"TRUNC(CAST('2024-05-15' AS DATE), '{unit}')",
+                    "exasol": f"TRUNC(CAST('2024-05-15' AS DATE), '{unit}')",
+                    "duckdb": UnsupportedError,
+                    "bigquery": UnsupportedError,
+                    "postgres": UnsupportedError,
+                    "snowflake": UnsupportedError,
+                    "tsql": UnsupportedError,
+                },
+            )
+
+        # Unsupported DateTrunc units/args warn/raise in Teradata
+        with self.assertRaises(UnsupportedError):
+            parse_one("DATE_TRUNC(d, SECOND)", read="bigquery").sql(
+                "teradata", unsupported_level=ErrorLevel.RAISE
+            )
+        with self.assertRaises(UnsupportedError):
+            parse_one("DATE_TRUNC(d, MONTH, 'UTC')", read="bigquery").sql(
+                "teradata", unsupported_level=ErrorLevel.RAISE
+            )
+
+        # Numeric TRUNC cross-dialect transpilation
+        self.validate_all(
+            "TRUNC(3.14159, 2)",
+            read={
+                "mysql": "TRUNCATE(3.14159, 2)",
+                "oracle": "TRUNC(3.14159, 2)",
+                "postgres": "TRUNC(3.14159, 2)",
+            },
+            write={
+                "teradata": "TRUNC(3.14159, 2)",
+                "mysql": "TRUNCATE(3.14159, 2)",
+                "tsql": "ROUND(3.14159, 2, 1)",
+                "spark": "CAST(3.14159 AS BIGINT)",
+            },
         )

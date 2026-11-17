@@ -1035,6 +1035,45 @@ SELECT COALESCE(x.a, x.b) AS new_b FROM x AS x;
 SELECT * REPLACE(1 AS a, a AS b) RENAME(b AS new_b) FROM x;
 SELECT 1 AS a, x.a AS new_b FROM x AS x;
 
+# title: REPLACE of a USING column
+# dialect: duckdb
+# execute_min_python: 3.10
+# note: DuckDB 1.4.5 returns duplicate USING columns with REPLACE.
+SELECT * REPLACE(b * 2 AS b) FROM x JOIN y USING (b);
+SELECT x.a AS a, COALESCE(x.b, y.b) * 2 AS b, y.c AS c FROM x AS x JOIN y AS y ON x.b = y.b;
+
+# title: RENAME of a USING column
+# dialect: duckdb
+SELECT * RENAME(b AS new_b) FROM x FULL JOIN y USING (b);
+SELECT x.a AS a, COALESCE(x.b, y.b) AS new_b, y.c AS c FROM x AS x FULL JOIN y AS y ON x.b = y.b;
+
+# title: REPLACE and RENAME of a USING column
+# dialect: snowflake
+# execute: false
+SELECT * REPLACE(b * 2 AS b) RENAME(b AS new_b) FROM x FULL JOIN y USING (b);
+SELECT COALESCE(X.B, Y.B) * 2 AS NEW_B, X.A AS A, Y.C AS C FROM X AS X FULL JOIN Y AS Y ON X.B = Y.B;
+
+# title: REPLACE only affects its own star
+# dialect: duckdb
+# execute_min_python: 3.10
+SELECT * REPLACE(b * 2 AS b), * FROM x JOIN y USING (b);
+SELECT x.a AS a, COALESCE(x.b, y.b) * 2 AS b, y.c AS c, x.a AS a, COALESCE(x.b, y.b) AS b, y.c AS c FROM x AS x JOIN y AS y ON x.b = y.b;
+
+# title: RENAME only affects its own star
+# dialect: duckdb
+SELECT * RENAME(b AS new_b), * FROM x FULL JOIN y USING (b);
+SELECT x.a AS a, COALESCE(x.b, y.b) AS new_b, y.c AS c, x.a AS a, COALESCE(x.b, y.b) AS b, y.c AS c FROM x AS x FULL JOIN y AS y ON x.b = y.b;
+
+# title: REPLACE only affects its own qualified star
+# dialect: duckdb
+SELECT x.* REPLACE(b * 2 AS b), x.* FROM x;
+SELECT x.a AS a, x.b * 2 AS b, x.a AS a, x.b AS b FROM x AS x;
+
+# title: EXCLUDE only affects its own star
+# dialect: duckdb
+SELECT * EXCLUDE(b), * FROM x;
+SELECT x.a AS a, x.a AS a, x.b AS b FROM x AS x;
+
 --------------------------------------
 -- Using
 --------------------------------------
@@ -1047,7 +1086,7 @@ WITH cte AS (SELECT a.b.c.d.f.g FROM tbl1) SELECT g FROM (SELECT g FROM tbl2) tb
 WITH cte AS (SELECT tbl1.a.b.c.d.f.g AS g FROM tbl1 AS tbl1) SELECT COALESCE(tbl2.g, cte.g) AS g FROM (SELECT tbl2.g AS g FROM tbl2 AS tbl2) AS tbl2 JOIN cte AS cte ON tbl2.g = cte.g;
 
 SELECT x.b FROM x JOIN y USING (b) JOIN z USING (b);
-SELECT x.b AS b FROM x AS x JOIN y AS y ON x.b = y.b JOIN z AS z ON x.b = z.b;
+SELECT x.b AS b FROM x AS x JOIN y AS y ON x.b = y.b JOIN z AS z ON COALESCE(x.b, y.b) = z.b;
 
 SELECT b FROM x AS x2 JOIN y AS y2 USING (b);
 SELECT COALESCE(x2.b, y2.b) AS b FROM x AS x2 JOIN y AS y2 ON x2.b = y2.b;
@@ -1056,7 +1095,7 @@ SELECT b FROM x JOIN y USING (b) WHERE b = 1 and y.b = 2;
 SELECT COALESCE(x.b, y.b) AS b FROM x AS x JOIN y AS y ON x.b = y.b WHERE COALESCE(x.b, y.b) = 1 AND y.b = 2;
 
 SELECT b FROM x JOIN y USING (b) JOIN z USING (b);
-SELECT COALESCE(x.b, y.b, z.b) AS b FROM x AS x JOIN y AS y ON x.b = y.b JOIN z AS z ON x.b = z.b;
+SELECT COALESCE(x.b, y.b, z.b) AS b FROM x AS x JOIN y AS y ON x.b = y.b JOIN z AS z ON COALESCE(x.b, y.b) = z.b;
 
 # dialect: duckdb
 SELECT * FROM x JOIN y USING(b);
@@ -1108,6 +1147,11 @@ SELECT x.b AS b FROM t AS t JOIN x AS x ON t.a = x.a;
 # execute: false
 SELECT a FROM t1 JOIN t2 USING(a);
 SELECT COALESCE(t1.a, t2.a) AS a FROM t1 AS t1 JOIN t2 AS t2 ON t1.a = t2.a;
+
+# title: Reuse the merged USING column without a known schema
+# execute: false
+SELECT a FROM t1 FULL JOIN t2 USING (a) JOIN t3 USING (a);
+SELECT COALESCE(t1.a, t2.a, t3.a) AS a FROM t1 AS t1 FULL JOIN t2 AS t2 ON t1.a = t2.a JOIN t3 AS t3 ON COALESCE(t1.a, t2.a) = t3.a;
 
 WITH m(a) AS (SELECT 1), n(b) AS (SELECT 1) SELECT * FROM m JOIN n AS foo(a) USING (a);
 WITH m AS (SELECT 1 AS a), n AS (SELECT 1 AS b) SELECT COALESCE(m.a, foo.a) AS a FROM m AS m JOIN n AS foo(a) ON m.a = foo.a;
@@ -1199,6 +1243,48 @@ SELECT t.aa AS aa FROM x AS x, UNNEST(x.a) AS t(aa);
 # execute: false
 SELECT aa FROM x, UNNEST(a) AS aa;
 SELECT aa AS aa FROM x AS x CROSS JOIN UNNEST(x.a) AS aa;
+
+# dialect: bigquery
+# execute: false
+# schema: {"t": {"rel": "STRUCT<arr ARRAY<INT>>"}}
+SELECT h FROM t, UNNEST(rel.arr) AS h;
+SELECT h AS h FROM t AS t CROSS JOIN UNNEST(t.rel.arr) AS h;
+
+# dialect: bigquery
+# execute: false
+# schema: {"t": {"rel": "STRUCT<deep STRUCT<arr ARRAY<INT>>>"}}
+SELECT EXISTS(SELECT 1 FROM UNNEST(rel.deep.arr) AS h) FROM t;
+SELECT EXISTS(SELECT 1 AS `1` FROM UNNEST(t.rel.deep.arr) AS h) AS _col_0 FROM t AS t;
+
+# dialect: duckdb
+# execute: false
+# schema: {"t": {"rel": "STRUCT(a INT)"}}
+SELECT v FROM t, LATERAL (SELECT rel.a AS v) AS l;
+SELECT l.v AS v FROM t AS t, LATERAL (SELECT t.rel.a AS v) AS l;
+
+# dialect: duckdb
+# execute: false
+# schema: {"t": {"rel": "STRUCT(arr INT[])"}}
+SELECT v FROM t, UNNEST(rel.arr) AS l(v);
+SELECT l.v AS v FROM t AS t JOIN UNNEST(t.rel.arr) AS l(v) ON TRUE;
+
+# dialect: spark
+# execute: false
+# schema: {"t": {"rel": "STRUCT<arr: ARRAY<INT>>"}}
+SELECT c FROM t LATERAL VIEW EXPLODE(rel.arr) l AS c;
+SELECT l.c AS c FROM t AS t LATERAL VIEW EXPLODE(t.rel.arr) l AS c;
+
+# dialect: bigquery
+# execute: false
+# schema: {"t": {"d": "DATE"}}
+SELECT day FROM UNNEST(GENERATE_DATE_ARRAY((SELECT MIN(d) FROM t), CURRENT_DATE)) AS day;
+SELECT day AS day FROM UNNEST(GENERATE_DATE_ARRAY((SELECT MIN(t.d) AS _col_0 FROM t AS t), CURRENT_DATE, INTERVAL '1' DAY)) AS day;
+
+# dialect: bigquery
+# execute: false
+# schema: {"t": {"doc": "STRUCT<arr ARRAY<STRUCT<a INT64, b STRING>>>"}}
+SELECT r.* FROM t, UNNEST(doc.arr) AS r;
+SELECT r.a AS a, r.b AS b FROM t AS t CROSS JOIN UNNEST(t.doc.arr) AS r;
 
 # dialect: bigquery
 # execute: false
@@ -1515,6 +1601,41 @@ SELECT x.a AS a, x.b AS b FROM x AS x SEMI JOIN y AS y ON x.b = y.b;
 # dialect: duckdb
 SELECT * FROM x ANTI JOIN y USING (b);
 SELECT x.a AS a, x.b AS b FROM x AS x ANTI JOIN y AS y ON x.b = y.b;
+
+# title: SEMI JOIN alias shadows a struct column only in its own ON clause
+# dialect: duckdb
+SELECT s.k FROM (VALUES (1, 10, {'k': 10}), (2, 20, {'k': 99})) AS t(id, k, s) SEMI JOIN (VALUES (20)) AS s(k) ON t.k = s.k WHERE s.k > 0;
+SELECT t.s.k AS k FROM (VALUES (1, 10, {'k': 10}), (2, 20, {'k': 99})) AS t(id, k, s) SEMI JOIN (VALUES (20)) AS s(k) ON t.k = s.k WHERE t.s.k > 0;
+
+# title: ANTI JOIN alias does not shadow a struct column in a later join
+# dialect: duckdb
+SELECT s.k FROM (VALUES (1, 10, {'k': 10}), (2, 20, {'k': 99})) AS t(id, k, s) ANTI JOIN (VALUES (20)) AS s(k) ON t.k = s.k JOIN (VALUES (10)) AS u(k) ON s.k = u.k;
+SELECT t.s.k AS k FROM (VALUES (1, 10, {'k': 10}), (2, 20, {'k': 99})) AS t(id, k, s) ANTI JOIN (VALUES (20)) AS s(k) ON t.k = s.k JOIN (VALUES (10)) AS u(k) ON t.s.k = u.k;
+
+# title: SEMI JOIN alias does not shadow a struct column in an earlier join
+# dialect: duckdb
+SELECT s.k FROM (VALUES (1, 10, {'k': 10}), (2, 20, {'k': 99})) AS t(id, k, s) JOIN (VALUES (99)) AS u(k) ON s.k = u.k SEMI JOIN (VALUES (20)) AS s(k) ON t.k = s.k;
+SELECT t.s.k AS k FROM (VALUES (1, 10, {'k': 10}), (2, 20, {'k': 99})) AS t(id, k, s) JOIN (VALUES (99)) AS u(k) ON t.s.k = u.k SEMI JOIN (VALUES (20)) AS s(k) ON t.k = s.k;
+
+# title: SEMI JOIN struct field matches another source alias
+# dialect: duckdb
+SELECT t.k FROM (VALUES (20, {'k': 99})) AS t(k, s) SEMI JOIN (VALUES ({'k': 20})) AS s(payload) ON t.k = s.payload.k CROSS JOIN (VALUES (1)) AS payload(v);
+SELECT t.k AS k FROM (VALUES (20, {'k': 99})) AS t(k, s) SEMI JOIN (VALUES ({'k': 20})) AS s(payload) ON t.k = s.payload.k CROSS JOIN (VALUES (1)) AS payload(v);
+
+# title: Consecutive SEMI and ANTI JOIN aliases are visible only in their own ON clauses
+# dialect: duckdb
+SELECT s.k, u.k FROM (VALUES (20, {'k': 99}, {'k': 88})) AS t(k, s, u) SEMI JOIN (VALUES (20)) AS s(k) ON t.k = s.k AND s.k = 20 ANTI JOIN (VALUES (20)) AS u(k) ON t.k = u.k AND s.k = 20;
+SELECT t.s.k AS k, t.u.k AS k FROM (VALUES (20, {'k': 99}, {'k': 88})) AS t(k, s, u) SEMI JOIN (VALUES (20)) AS s(k) ON t.k = s.k AND s.k = 20 ANTI JOIN (VALUES (20)) AS u(k) ON t.k = u.k AND t.s.k = 20;
+
+# title: SEMI JOIN alias without a matching column preserves struct fallback
+# dialect: duckdb
+SELECT t.id FROM (VALUES (1, 10, {'k': 10}), (2, 20, {'k': 99})) AS t(id, k, s) SEMI JOIN (VALUES (1)) AS s(v) ON t.k = s.k;
+SELECT t.id AS id FROM (VALUES (1, 10, {'k': 10}), (2, 20, {'k': 99})) AS t(id, k, s) SEMI JOIN (VALUES (1)) AS s(v) ON t.k = t.s.k;
+
+# title: ANTI JOIN alias without a matching column preserves nested struct fallback
+# dialect: duckdb
+SELECT t.id FROM (VALUES (1, 10, {'payload': {'k': 10}}), (2, 20, {'payload': {'k': 99}})) AS t(id, k, s) ANTI JOIN (VALUES (1)) AS s(v) ON t.k = s.payload.k;
+SELECT t.id AS id FROM (VALUES (1, 10, {'payload': {'k': 10}}), (2, 20, {'payload': {'k': 99}})) AS t(id, k, s) ANTI JOIN (VALUES (1)) AS s(v) ON t.k = t.s.payload.k;
 
 # title: bare USING column after SEMI JOIN resolves to the left table
 # dialect: duckdb

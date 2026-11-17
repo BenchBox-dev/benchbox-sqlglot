@@ -51,7 +51,9 @@ class EndsWith(Expression, Func):
 
 
 class Format(Expression, Func):
-    arg_types = {"this": True, "expressions": False}
+    """Formats values using printf syntax, or brace syntax when is_fmt is set."""
+
+    arg_types = {"this": True, "expressions": False, "is_fmt": False}
     is_var_len_args = True
 
 
@@ -253,7 +255,7 @@ class Trim(Expression, Func):
 
 
 class Unicode(Expression, Func):
-    arg_types = {"this": True, "empty_is_zero": False}
+    arg_types = {"this": True, "empty_is_zero": False, "empty_is_null": False}
 
 
 class Upper(Expression, Func):
@@ -438,6 +440,7 @@ class RegexpExtract(Expression, Func):
         "null_if_pos_overflow": False,
         "null_if_no_match": False,
         "empty_if_group_missing": False,
+        "inferred_group": False,
     }
 
 
@@ -449,6 +452,7 @@ class RegexpExtractAll(Expression, Func):
         "parameters": False,
         "position": False,
         "occurrence": False,
+        "inferred_group": False,
     }
 
 

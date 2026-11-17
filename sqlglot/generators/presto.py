@@ -231,7 +231,9 @@ def _explode_to_unnest_sql(self: PrestoGenerator, expression: exp.Lateral) -> st
     elif isinstance(explode, exp.Inline):
         explode.replace(exp.Explode(this=explode.this.copy()))
 
-    return explode_to_unnest_sql(self, expression)
+    return explode_to_unnest_sql(
+        self, expression, supports_left_join_unnest=self.SUPPORTS_LEFT_JOIN_UNNEST
+    )
 
 
 def amend_exploded_column_table(expression: exp.Expr) -> exp.Expr:
@@ -251,7 +253,7 @@ def amend_exploded_column_table(expression: exp.Expr) -> exp.Expr:
 
             # When transpiling a LATERAL VIEW EXPLODE Spark query, the exploded fields may be qualified
             # with the struct column, resulting in invalid Presto references that need to be amended
-            for column in find_all_in_scope(expression, exp.Column):
+            for column in find_all_in_scope(expression, exp.Column, include_udtfs=True):
                 if column.db.lower() == old_table:
                     column.set("table", column.args["db"].pop())
                 elif column.table.lower() == old_table:
@@ -263,9 +265,12 @@ def amend_exploded_column_table(expression: exp.Expr) -> exp.Expr:
 
 
 class PrestoGenerator(generator.Generator):
-    SELECT_KINDS: tuple[str, ...] = ()
+    SELECT_KINDS = ()
     SUPPORTS_DECODE_CASE = False
+    SUPPORTS_MULTI_ARG_CHR = False
     SUPPORTS_TEMPORAL_PRECISION = False
+    # https://github.com/prestodb/presto/issues/8200
+    SUPPORTS_LEFT_JOIN_UNNEST = False
 
     AFTER_HAVING_MODIFIER_TRANSFORMS = generator.AFTER_HAVING_MODIFIER_TRANSFORMS
 
@@ -415,7 +420,6 @@ class PrestoGenerator(generator.Generator):
         exp.TimeStrToUnix: lambda self, e: self.func(
             "TO_UNIXTIME", self.func("DATE_PARSE", e.this, type(self.dialect).TIME_FORMAT)
         ),
-        exp.TimeToStr: lambda self, e: self.func("DATE_FORMAT", e.this, self.format_time(e)),
         exp.TimeToUnix: rename_func("TO_UNIXTIME"),
         exp.ToChar: lambda self, e: self.func("DATE_FORMAT", e.this, self.format_time(e)),
         exp.TryCast: transforms.preprocess([transforms.epoch_cast_to_ts]),
@@ -516,6 +520,12 @@ class PrestoGenerator(generator.Generator):
             expression.set("expressions", None)
         return super().datatype_sql(expression)
 
+    def exists_sql(self, expression: exp.Exists) -> str:
+        if expression.expression:
+            return self.func("ANY_MATCH", expression.this, expression.expression)
+
+        return super().exists_sql(expression)
+
     def extract_sql(self, expression: exp.Extract) -> str:
         date_part = expression.name
 
@@ -579,6 +589,20 @@ class PrestoGenerator(generator.Generator):
             this = exp.Encode(this=this, charset=exp.Literal.string("utf-8"))
 
         return self.func("LOWER", self.func("TO_HEX", self.func(f"SHA{length}", self.sql(this))))
+
+    def timetostr_sql(self, expression: exp.TimeToStr) -> str:
+        if expression.args.get("joda"):
+            from sqlglot.dialects.presto import Presto
+
+            return self.func(
+                "FORMAT_DATETIME",
+                expression.this,
+                self.format_time(
+                    expression, Presto.INVERSE_JODA_TIME_MAPPING, Presto.INVERSE_JODA_TIME_TRIE
+                ),
+            )
+
+        return self.func("DATE_FORMAT", expression.this, self.format_time(expression))
 
     def strtounix_sql(self, expression: exp.StrToUnix) -> str:
         # Since `TO_UNIXTIME` requires a `TIMESTAMP`, we need to parse the argument into one.

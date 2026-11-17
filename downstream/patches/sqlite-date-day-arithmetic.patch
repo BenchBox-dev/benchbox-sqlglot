@@ -1,8 +1,8 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index 55dac3f2..b79d77b2 100644
+index cfd2dc82..b371b9ff 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
-@@ -562,7 +562,9 @@ class SQLiteGenerator(generator.Generator):
+@@ -573,7 +573,9 @@ class SQLiteGenerator(generator.Generator):
  
          sql = f"(JULIANDAY({self.sql(expression, 'this')}) - JULIANDAY({self.sql(expression, 'expression')}))"
  
@@ -14,10 +14,10 @@ index 55dac3f2..b79d77b2 100644
          elif unit == "YEAR":
              sql = f"{sql} / 365.0"
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index 88207a7d..6127d27d 100644
+index 6bdcdab7..e9516e55 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
-@@ -1455,3 +1455,40 @@ class TestSQLite(Validator):
+@@ -1810,3 +1810,40 @@ class TestSQLite(Validator):
                      self.validate_all(sql, write={"sqlite": expected, "duckdb": expected})
                      expression = self.parse_one(sql).expressions[0]
                      self.assertIsInstance(expression.this if negate else expression, exp.Is)

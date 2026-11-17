@@ -15,9 +15,9 @@ def unnest_subqueries(expression: E) -> E:
 
     Example:
         >>> import sqlglot
-        >>> expression = sqlglot.parse_one("SELECT * FROM x AS x WHERE (SELECT y.a AS a FROM y AS y WHERE x.a = y.a) = 1 ")
+        >>> expression = sqlglot.parse_one("SELECT * FROM x AS x WHERE (SELECT SUM(y.a) AS a FROM y AS y WHERE x.a = y.a) = 1 ")
         >>> unnest_subqueries(expression).sql()
-        'SELECT * FROM x AS x LEFT JOIN (SELECT y.a AS a FROM y AS y WHERE TRUE GROUP BY y.a) AS _u_0 ON x.a = _u_0.a WHERE _u_0.a = 1'
+        'SELECT * FROM x AS x LEFT JOIN (SELECT SUM(y.a) AS a, y.a AS _u_1 FROM y AS y WHERE TRUE GROUP BY y.a) AS _u_0 ON x.a = _u_0._u_1 WHERE _u_0.a = 1'
 
     Args:
         expression (sqlglot.Expr): expression to unnest
@@ -87,6 +87,10 @@ def unnest(select, parent_select, next_alias_name):
     predicate = select.find_ancestor(exp.Condition)
     if (
         not predicate
+        # EXISTS tests row presence, so joining its potentially many or NULL-valued rows is unsafe.
+        or isinstance(predicate, exp.Exists)
+        # Scalar IN-list elements cannot replace the entire membership predicate.
+        or (isinstance(predicate, exp.In) and predicate.expressions)
         # Do not unnest subqueries inside table-valued functions such as
         # FROM GENERATE_SERIES(...), FROM UNNEST(...) etc in order to preserve join order
         or (
@@ -95,9 +99,6 @@ def unnest(select, parent_select, next_alias_name):
         )
         or parent_select is not predicate.parent_select
         or not parent_select.args.get("from_")
-        # NOT IN has three-valued semantics that the LEFT-JOIN-anti rewrite doesn't preserve:
-        # a NULL in the subquery makes NOT IN evaluate to NULL for every outer row.
-        or (isinstance(predicate, exp.In) and _is_negated(predicate))
     ):
         return
 
@@ -149,18 +150,8 @@ def unnest(select, parent_select, next_alias_name):
         elif not isinstance(select.parent, exp.Subquery):
             return
 
-        join_type = "CROSS"
-        on_clause = None
-        if isinstance(predicate, exp.Exists):
-            # If a subquery returns no rows, cross-joining against it incorrectly eliminates all rows
-            # from the parent query. Therefore, we use a LEFT JOIN that always matches (ON TRUE), then
-            # check for non-NULL column values to determine whether the subquery contained rows.
-            column = column.is_(exp.null()).not_()
-            join_type = "LEFT"
-            on_clause = exp.true()
-
         _replace(select.parent, column)
-        parent_select.join(select, on=on_clause, join_type=join_type, join_alias=alias, copy=False)
+        parent_select.join(select, join_type="CROSS", join_alias=alias, copy=False)
 
         return
 
@@ -168,25 +159,34 @@ def unnest(select, parent_select, next_alias_name):
         return
 
     if isinstance(predicate, exp.Any):
-        predicate = predicate.find_ancestor(exp.EQ)
+        predicate = predicate.parent
 
-        if not predicate or parent_select is not predicate.parent_select:
+        if not isinstance(predicate, exp.EQ) or parent_select is not predicate.parent_select:
             return
+
+    # The join's non-NULL check maps UNKNOWN to FALSE, which is only safe in AND/OR filters.
+    ancestor = predicate.parent
+    while isinstance(ancestor, (exp.And, exp.Or, exp.Paren)):
+        # Moving a predicate from ON to WHERE is only safe for an inner-join conjunct.
+        if isinstance(ancestor, exp.Or) and isinstance(clause, exp.Join):
+            return
+        ancestor = ancestor.parent
+    if not isinstance(ancestor, (exp.Where, exp.Join)) or ancestor is not clause:
+        return
 
     if isinstance(clause, exp.Join):
-        # Moving a predicate from ON to WHERE is only safe for an inner-join conjunct.
-        ancestor = predicate.parent
-        while isinstance(ancestor, (exp.And, exp.Paren)):
-            ancestor = ancestor.parent
-        if ancestor is not clause:
-            return
-
-        # A later RIGHT/FULL join can preserve rows that the hoisted WHERE would discard.
+        # Later joins can pad or pair rows before the hoisted WHERE filters them.
         joins = parent_select.args.get("joins") or []
-        if any(join.side in ("RIGHT", "FULL") for join in joins[joins.index(clause) + 1 :]):
+        if any(
+            join.side in ("RIGHT", "FULL") or join.method == "POSITIONAL" or join.kind == "PASTE"
+            for join in joins[joins.index(clause) + 1 :]
+        ):
             return
 
     column = _other_operand(predicate)
+    if column is None or column.find(exp.Subquery):
+        return
+
     value = select.selects[0]
 
     join_key = exp.column(value.alias, alias)
@@ -234,12 +234,29 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
     if parent_predicate is not None and parent_predicate.parent_select is not parent_select:
         return
 
+    other = _other_operand(parent_predicate)
     if isinstance(parent_predicate, (exp.In, exp.Any, exp.All)) and (
         select.args.get("group")
         or select.args.get("having")
         or find_in_scope(select, exp.AggFunc, exp.Anonymous)
+        or (
+            isinstance(parent_predicate, exp.In)
+            and parent_predicate.args.get("query") is not select.parent
+        )
+        # Hoisting the other operand can suppress scalar errors or put subqueries in array lambdas.
+        or (other and other.find(exp.Subquery))
     ):
         return
+
+    # A missing join match makes IN / ANY NULL instead of FALSE, which is only safe in AND/OR filters
+    if isinstance(parent_predicate, (exp.In, exp.Any)):
+        ancestor = parent_predicate.parent
+        if isinstance(parent_predicate, exp.Any):
+            ancestor = ancestor.parent
+        while isinstance(ancestor, (exp.And, exp.Or, exp.Paren)):
+            ancestor = ancestor.parent
+        if not isinstance(ancestor, (exp.Where, exp.Having, exp.Qualify, exp.Join)):
+            return
 
     # determine location of join that owns the ON clause whose subquery we will decorrelate
     on_clause_join_index = None
@@ -314,6 +331,9 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
 
             # Key-grouped COUNT returns scalar NULL when no group matches.
             zero_fill = not group and isinstance(projection, exp.Count)
+        elif parent_predicate is not None:
+            # Grouping non-aggregate scalar values can suppress multiple-row errors.
+            return
 
     # Joined columns may not be grouped, so keep post-group subqueries correlated.
     parent_group = parent_select.args.get("group")
@@ -341,7 +361,8 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
         if ancestor is not where:
             return
 
-        if isinstance(predicate, exp.Binary):
+        # IS only accepts NULL, TRUE or FALSE on its right side, so that side can't be used as a key
+        if isinstance(predicate, exp.Binary) and not isinstance(predicate, exp.Is):
             key = (
                 predicate.right
                 if any(node is column for node in predicate.left.walk())
@@ -374,9 +395,9 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
     for key, _, predicate in keys:
         # The key is projected by the subquery and the other side is moved out of it, so
         # neither can reference columns from the opposite scope
-        other = predicate.right if key is predicate.left else predicate.left
+        other_key = predicate.right if key is predicate.left else predicate.left
         if any(id(c) in external_ids for c in key.find_all(exp.Column)) or any(
-            id(c) not in external_ids for c in other.find_all(exp.Column)
+            id(c) not in external_ids for c in other_key.find_all(exp.Column)
         ):
             return
 
@@ -395,9 +416,6 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
     # When the subquery is embedded inside a function (e.g. COALESCE, TRIM) in the SELECT list,
     # the ancestor chain contains no Predicate node AND the subquery is not a direct projection.
     if parent_predicate is None and not is_subquery_projection:
-        return
-
-    if isinstance(parent_predicate, exp.In) and _is_negated(parent_predicate):
         return
 
     # if the value of the subquery is not an agg or a key, we need to collect it into an array
@@ -451,7 +469,6 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
         )
 
     alias = exp.column(value.alias, table_alias)
-    other = _other_operand(parent_predicate)
     op_type = type(parent_predicate.parent) if parent_predicate else None
 
     if isinstance(parent_predicate, exp.Exists):
@@ -459,9 +476,19 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
         parent_predicate = _replace(parent_predicate, f"NOT {alias} IS NULL")
     elif isinstance(parent_predicate, exp.All):
         assert issubclass(op_type, exp.Binary)
-        predicate = op_type(this=other, expression=exp.column("_x"))
+        if value.this in group_by:
+            predicate = op_type(this=other, expression=alias)
+        else:
+            predicate = exp.ArrayAll(
+                this=alias,
+                expression=exp.Lambda(
+                    this=op_type(this=other, expression=exp.column("_x")),
+                    expressions=[exp.to_identifier("_x")],
+                ),
+            )
+        # ALL is true over an empty set, represented by a missing LEFT JOIN match.
         parent_predicate = _replace(
-            parent_predicate.parent, f"ARRAY_ALL({alias}, _x -> {predicate})"
+            parent_predicate.parent, exp.paren(alias.is_(exp.null()).or_(predicate))
         )
     elif isinstance(parent_predicate, exp.Any):
         assert issubclass(op_type, exp.Binary)
@@ -532,13 +559,6 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
         # Move the generated LEFT JOIN before the join that owns the ON clause
         joins = parent_select.args["joins"]
         parent_select.set("joins", joins.pop(), index=on_clause_join_index, overwrite=False)
-
-
-def _is_negated(expression: exp.Expression) -> bool:
-    parent = expression.parent
-    while isinstance(parent, exp.Paren):
-        parent = parent.parent
-    return isinstance(parent, exp.Not)
 
 
 def _replace(expression: exp.Expr, condition: exp.ExpOrStr) -> exp.Expr:
@@ -615,17 +635,10 @@ def _has_order_aggregate(select: exp.Select) -> bool:
 
 
 def _other_operand(expression: object) -> exp.Expr | None:
-    if isinstance(expression, exp.In):
-        return expression.this
-
     if isinstance(expression, (exp.Any, exp.All)):
-        return _other_operand(expression.parent)
+        expression = expression.parent
 
-    if isinstance(expression, exp.Binary):
-        return (
-            expression.right
-            if isinstance(expression.left, (exp.Subquery, exp.Any, exp.Exists, exp.All))
-            else expression.left
-        )
+    if isinstance(expression, (exp.In, exp.Binary)):
+        return expression.this
 
     return None

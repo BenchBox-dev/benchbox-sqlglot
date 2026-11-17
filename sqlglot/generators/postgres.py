@@ -273,9 +273,11 @@ def _round_sql(self: PostgresGenerator, expression: exp.Round) -> str:
 
 
 class PostgresGenerator(generator.Generator):
-    SELECT_KINDS: tuple[str, ...] = ()
+    SELECT_KINDS = ()
+    VARIANCE_NAME = "VAR_SAMP"
     TRY_SUPPORTED = False
     SUPPORTS_DECODE_CASE = False
+    SUPPORTS_MULTI_ARG_CHR = False
     EXACT_DIVISION_TYPE = exp.DType.DECIMAL
 
     AFTER_HAVING_MODIFIER_TRANSFORMS = generator.AFTER_HAVING_MODIFIER_TRANSFORMS
@@ -319,6 +321,13 @@ class PostgresGenerator(generator.Generator):
 
         return sql
 
+    def arraysize_sql(self, expression: exp.ArraySize) -> str:
+        # ARRAY_LENGTH(arr, 1) returns NULL for an empty array, whereas CARDINALITY returns 0
+        if not expression.expression:
+            return self.func("CARDINALITY", expression.this)
+
+        return super().arraysize_sql(expression)
+
     def star_sql(self, expression: exp.Star) -> str:
         if self.STAR_EXCEPT == "EXCEPT" and expression.args.get("except_"):
             self.unsupported("PostgreSQL does not support EXCEPT in the SELECT projection")
@@ -354,6 +363,9 @@ class PostgresGenerator(generator.Generator):
         exp.BitwiseXor: lambda self, e: self.binary(e, "#"),
         exp.BitwiseXorAgg: rename_func("BIT_XOR"),
         exp.ColumnDef: transforms.preprocess([_auto_increment_to_serial, _serial_to_generated]),
+        exp.ConvertToCharset: lambda self, e: self.func(
+            "CONVERT", e.this, e.args.get("source"), e.args["dest"]
+        ),
         exp.CurrentDate: no_paren_current_date_sql,
         exp.CurrentTimestamp: lambda *_: "CURRENT_TIMESTAMP",
         exp.CurrentUser: lambda *_: "CURRENT_USER",
@@ -443,7 +455,6 @@ class PostgresGenerator(generator.Generator):
         exp.Uuid: lambda *_: "GEN_RANDOM_UUID()",
         exp.TimeToUnix: lambda self, e: self.func("DATE_PART", exp.Literal.string("epoch"), e.this),
         exp.VariancePop: rename_func("VAR_POP"),
-        exp.Variance: rename_func("VAR_SAMP"),
         exp.Xor: bool_xor_sql,
         exp.Year: _day_month_year_sql,
         exp.Unicode: rename_func("ASCII"),

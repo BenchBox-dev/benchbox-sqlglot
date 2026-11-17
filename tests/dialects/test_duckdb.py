@@ -10,6 +10,143 @@ from tests.dialects.test_dialect import Validator
 class TestDuckDB(Validator):
     dialect = "duckdb"
 
+    def test_format(self):
+        for sql in (
+            "FORMAT('{}-{}', 1, 2)",
+            "FORMAT('{:02x}', 15)",
+            "FORMAT('%s', 1)",
+            "FORMAT('{{{}}}', 'a')",
+            "SELECT FORMAT(fmt, 1) FROM (VALUES ('{}')) AS t(fmt)",
+        ):
+            with self.subTest(sql=sql):
+                expression = self.validate_identity(sql)
+                self.assertTrue(expression.find(exp.Format).args.get("is_fmt"))
+                self.validate_all(
+                    sql,
+                    write=dict.fromkeys(
+                        ("bigquery", "spark", "sqlite", "postgres", "snowflake"),
+                        UnsupportedError,
+                    ),
+                )
+
+        expression = self.validate_identity("PRINTF('%d-%s', 1, 'a')")
+        self.assertIsInstance(expression, exp.Format)
+        self.assertFalse(expression.args.get("is_fmt"))
+        self.validate_all(
+            "PRINTF('%d-%s', 1, 'a')",
+            read={
+                "bigquery": "FORMAT('%d-%s', 1, 'a')",
+                "spark": "FORMAT_STRING('%d-%s', 1, 'a')",
+                "sqlite": "FORMAT('%d-%s', 1, 'a')",
+            },
+            write={
+                "bigquery": "FORMAT('%d-%s', 1, 'a')",
+                "spark": "FORMAT_STRING('%d-%s', 1, 'a')",
+                "sqlite": "FORMAT('%d-%s', 1, 'a')",
+            },
+        )
+        self.validate_all(
+            "PRINTF('%04d-%.2f-%%', 1, 1.25)",
+            read={
+                "bigquery": "FORMAT('%04d-%.2f-%%', 1, 1.25)",
+                "sqlite": "FORMAT('%04d-%.2f-%%', 1, 1.25)",
+            },
+        )
+        self.validate_identity("SELECT PRINTF(fmt, 1, 'a') FROM (VALUES ('%d-%s')) AS t(fmt)")
+
+        for fmt, expected in (
+            ("%s", "{}"),
+            ("%s-%s", "{}-{}"),
+            ("{%s}-%s-%%", "{{{}}}-{}-%"),
+            ("%%s-%s", "%s-{}"),
+            ("%%%s", "%{}"),
+            ("%%d-%s", "%d-{}"),
+        ):
+            with self.subTest(fmt=fmt):
+                self.validate_all(
+                    f"FORMAT('{expected}', 1, 'a')",
+                    read={"postgres": f"FORMAT('{fmt}', 1, 'a')"},
+                )
+
+    def test_format_uppercase(self):
+        for arg in ("1", "'abc'", "TRUE"):
+            with self.subTest(arg=arg):
+                self.validate_all(
+                    f"UPPER(FORMAT('{{}}', {arg}))",
+                    read={"spark": f"FORMAT_STRING('%S', {arg})"},
+                )
+
+    def test_format_literal(self):
+        for literal in ("'hello'", "''", "'100%'", "'%%s'", "'it''s %s'"):
+            expression = self.validate_identity(f"FORMAT({literal})")
+            for dialect in ("bigquery", "spark", "sqlite", "postgres", "snowflake"):
+                with self.subTest(literal=literal, dialect=dialect):
+                    self.assertEqual(
+                        expression.sql(dialect, unsupported_level=ErrorLevel.RAISE),
+                        parse_one(literal, read="duckdb").sql(dialect),
+                    )
+
+        self.validate_all(
+            "FORMAT('hello', NULL)",
+            write=dict.fromkeys(
+                ("bigquery", "spark", "sqlite", "postgres", "snowflake"), UnsupportedError
+            ),
+        )
+
+    def test_binary_strposition(self):
+        for sql, schema, expected in (
+            (
+                "SELECT POSITION(X'BC', X'ABCD')",
+                None,
+                "SELECT (LENGTH(REGEXP_EXTRACT('xx' || HEX(UNHEX('ABCD')), '^(xx(?:..)*?)' || HEX(UNHEX('BC')), 1)) // 2)",
+            ),
+            (
+                "SELECT POSITION(t.needle, t.haystack) FROM t",
+                {"t": {"needle": "BINARY", "haystack": "BINARY"}},
+                "SELECT (LENGTH(REGEXP_EXTRACT('xx' || HEX(t.haystack), '^(xx(?:..)*?)' || HEX(t.needle), 1)) // 2) FROM t",
+            ),
+            (
+                "SELECT 2 * POSITION(X'BC', X'ABCD')",
+                None,
+                "SELECT 2 * (LENGTH(REGEXP_EXTRACT('xx' || HEX(UNHEX('ABCD')), '^(xx(?:..)*?)' || HEX(UNHEX('BC')), 1)) // 2)",
+            ),
+            (
+                "SELECT 6 / POSITION(X'AB', X'ABCD')",
+                None,
+                "SELECT 6 / (LENGTH(REGEXP_EXTRACT('xx' || HEX(UNHEX('ABCD')), '^(xx(?:..)*?)' || HEX(UNHEX('AB')), 1)) // 2)",
+            ),
+        ):
+            with self.subTest(sql=sql):
+                expression = annotate_types(
+                    parse_one(sql, read="snowflake"), schema=schema, dialect="snowflake"
+                )
+                self.assertEqual(expression.sql("duckdb"), expected)
+
+    def test_binary_strposition_start(self):
+        for name in ("POSITION", "CHARINDEX"):
+            with self.subTest(name=name):
+                expression = annotate_types(
+                    parse_one(
+                        f"SELECT {name}(t.needle, t.haystack, t.start_pos) FROM t",
+                        read="snowflake",
+                    ),
+                    schema={"t": {"needle": "BINARY", "haystack": "BINARY", "start_pos": "BIGINT"}},
+                    dialect="snowflake",
+                )
+                self.assertEqual(
+                    expression.sql("duckdb"),
+                    "SELECT CASE WHEN t.haystack IS NULL OR t.needle IS NULL OR "
+                    "CASE WHEN t.start_pos <= 0 THEN 1 ELSE t.start_pos END IS NULL THEN NULL "
+                    "WHEN CASE WHEN t.start_pos <= 0 THEN 1 ELSE t.start_pos END > "
+                    "GREATEST(OCTET_LENGTH(t.haystack), 1) THEN 0 "
+                    "ELSE COALESCE(NULLIF((LENGTH(REGEXP_EXTRACT('xx' || SUBSTRING(HEX(t.haystack), "
+                    "((LEAST(CASE WHEN t.start_pos <= 0 THEN 1 ELSE t.start_pos END, "
+                    "COALESCE(OCTET_LENGTH(t.haystack), 0) + 1) - 1) * 2) + 1), "
+                    "'^(xx(?:..)*?)' || HEX(t.needle), 1)) // 2), 0) + "
+                    "(LEAST(CASE WHEN t.start_pos <= 0 THEN 1 ELSE t.start_pos END, "
+                    "COALESCE(OCTET_LENGTH(t.haystack), 0) + 1) - 1), 0) END FROM t",
+                )
+
     def test_min_max(self):
         for name, func in (("MIN", exp.Min), ("MAX", exp.Max)):
             with self.subTest(name=name):
@@ -63,6 +200,40 @@ class TestDuckDB(Validator):
     def test_date_trunc(self):
         for unit in ("MONTH", "HOUR"):
             self.validate_identity(f"DATE_TRUNC('{unit}', CAST('2024-05-09' AS DATE))")
+
+        self.validate_all(
+            "DATE_TRUNC('CENTURY', CAST('2024-05-15' AS DATE))",
+            write={
+                "duckdb": "DATE_TRUNC('CENTURY', CAST('2024-05-15' AS DATE))",
+                "oracle": UnsupportedError,
+                "teradata": UnsupportedError,
+                "postgres": UnsupportedError,
+                "exasol": UnsupportedError,
+            },
+        )
+
+    def test_date_trunc_century(self):
+        for unit in ("CENTURY", "CENTURIES", "C", "CENT"):
+            for dtype in ("DATE", "TIMESTAMP"):
+                with self.subTest(unit=unit, dtype=dtype):
+                    sql = f"DATE_TRUNC('{unit}', CAST('2024-05-15' AS {dtype}))"
+                    expression = self.validate_identity(sql)
+                    self.assertEqual(
+                        expression.sql("duckdb", unsupported_level=ErrorLevel.RAISE), sql
+                    )
+                    self.assertEqual(
+                        self.parse_one(sql.replace("DATE_TRUNC", "DATETRUNC")), expression
+                    )
+                    for dialect in ("postgres", "exasol"):
+                        with self.assertRaises(UnsupportedError):
+                            expression.sql(dialect, unsupported_level=ErrorLevel.RAISE)
+
+        for dtype in ("DATE", "TIMESTAMP"):
+            sql = f"DATE_TRUNC('CENTURY', CAST('2024-05-15' AS {dtype}))"
+            expression = parse_one(sql, read="postgres")
+            self.assertEqual(expression.sql("postgres", unsupported_level=ErrorLevel.RAISE), sql)
+            with self.assertRaisesRegex(UnsupportedError, "century boundaries"):
+                expression.sql("duckdb", unsupported_level=ErrorLevel.RAISE)
 
     def test_join_by_type(self):
         for table in ("directed", "straight_join"):
@@ -667,7 +838,7 @@ class TestDuckDB(Validator):
                     "duckdb": f"SELECT * FROM t1 {join_type} JOIN t2 ON t1.x = t2.x",
                     "hive": f"SELECT * FROM t1 {join_type} JOIN t2 ON t1.x = t2.x",
                     "mysql": f"SELECT * FROM t1 WHERE {exists}(SELECT 1 FROM t2 WHERE t1.x = t2.x)",
-                    "oracle": f"SELECT * FROM t1 {join_type} JOIN t2 ON t1.x = t2.x",
+                    "oracle": f"SELECT * FROM t1 WHERE {exists}(SELECT 1 FROM t2 WHERE t1.x = t2.x)",
                     "postgres": f"SELECT * FROM t1 WHERE {exists}(SELECT 1 FROM t2 WHERE t1.x = t2.x)",
                     "presto": f"SELECT * FROM t1 WHERE {exists}(SELECT 1 FROM t2 WHERE t1.x = t2.x)",
                     "redshift": f"SELECT * FROM t1 WHERE {exists}(SELECT 1 FROM t2 WHERE t1.x = t2.x)",
@@ -1863,7 +2034,7 @@ class TestDuckDB(Validator):
             "WITH t AS (SELECT i, i * i * i * i * i AS i5 FROM RANGE(1, 5) t(i)) SELECT * FROM t",
             write={
                 "duckdb": "WITH t AS (SELECT i, i * i * i * i * i AS i5 FROM RANGE(1, 5) AS t(i)) SELECT * FROM t",
-                "sqlite": "WITH t AS (SELECT i, i * i * i * i * i AS i5 FROM (SELECT value AS i FROM GENERATE_SERIES(1, 5)) AS t) SELECT * FROM t",
+                "sqlite": "WITH t AS (SELECT i, i * i * i * i * i AS i5 FROM (SELECT value AS i FROM GENERATE_SERIES(1, 5 - 1)) AS t) SELECT * FROM t",
             },
         )
 
@@ -2027,6 +2198,7 @@ class TestDuckDB(Validator):
         )
         self.validate_identity("LISTAGG(x, ', ')")
         self.validate_identity("STRING_AGG(x, ', ')", "LISTAGG(x, ', ')")
+        self.validate_identity("STRING_AGG(x, NULL)", "LISTAGG(x, NULL)")
 
         self.validate_all(
             "SELECT CONCAT(foo)",
@@ -2323,6 +2495,15 @@ class TestDuckDB(Validator):
                     target,
                     read={"spark2": source, "spark": source, "databricks": source},
                 )
+
+    def test_presto_array_slice(self):
+        self.validate_all(
+            "SELECT ARRAY_SLICE([10, 20, 30, 40, 50], 3, 5)",
+            read={
+                "presto": "SELECT SLICE(ARRAY[10, 20, 30, 40, 50], 3, 3)",
+                "trino": "SELECT SLICE(ARRAY[10, 20, 30, 40, 50], 3, 3)",
+            },
+        )
 
     def test_array_slice_to_length(self):
         self.validate_all(
@@ -2784,6 +2965,14 @@ class TestDuckDB(Validator):
             self.validate_all(sql, write={"bigquery": sql, "duckdb": sql})
         self.validate_identity("SELECT [{'a': (SELECT 1)}]")
         self.validate_identity("SELECT LIST_VALUE((SELECT 1))", "SELECT [(SELECT 1)]")
+
+    def test_array_all(self):
+        for array in ("[]", "[1, 2]", "[1, NULL]", "[0, NULL]", "[NULL]", "CAST(NULL AS INT[])"):
+            with self.subTest(array=array):
+                self.validate_all(
+                    f"SELECT LIST_REDUCE(LIST_TRANSFORM({array}, LAMBDA x : x > 0), LAMBDA _a, _b : _a AND _b, TRUE)",
+                    read={"": f"SELECT ARRAY_ALL({array}, x -> x > 0)"},
+                )
 
     def test_cast(self):
         self.validate_identity("x::int[3]", "CAST(x AS INT[3])")
