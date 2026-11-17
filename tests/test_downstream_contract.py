@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from downstream.refresh import blank_only_hunks
+from downstream.refresh import STAGED_DIR, blank_only_hunks
 
 CREDENTIAL_JOBS = {("benchbox-upstream.yml", "publish"), ("benchbox-upstream.yml", "readiness")}
 
@@ -79,6 +79,16 @@ class TestDownstreamContract(unittest.TestCase):
                     content = (root / patch["patch"]).read_bytes()
                     self.assertEqual(blank_only_hunks(content), [])
 
+    def test_staged_resolutions_belong_to_carried_patches(self):
+        root = Path(__file__).resolve().parents[1]
+        manifest = json.loads((root / "downstream" / "patches.json").read_text())
+        carried = {p["id"] for p in manifest["patches"] if p["status"] == "carried"}
+        for staged in sorted((root / STAGED_DIR).glob("*")):
+            with self.subTest(staged=staged.name):
+                self.assertEqual(staged.suffix, ".patch")
+                self.assertIn(staged.stem, carried)
+                self.assertEqual(blank_only_hunks(staged.read_bytes()), [])
+
     def test_every_changed_path_has_an_owner(self):
         root = Path(__file__).resolve().parents[1]
         manifest = json.loads((root / "downstream" / "patches.json").read_text())
@@ -117,7 +127,7 @@ class TestDownstreamContract(unittest.TestCase):
             for path in changed
             if path not in owned
             and path not in infrastructure
-            and not path.startswith("downstream/patches/")
+            and not path.startswith(("downstream/patches/", STAGED_DIR + "/"))
         ]
         self.assertEqual(
             unowned,

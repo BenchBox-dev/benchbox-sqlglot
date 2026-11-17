@@ -570,6 +570,23 @@ issue body. A probe that cannot run (for example a failed fetch) is a note in
 the summary and does not fail the run. Drift issues never block or change a
 refresh; fix them before upstream tags a release that contains the change.
 
+**Staged resolutions.** A carried patch must keep rebuilding the current source
+from the current upstream base, so a fix for drift cannot replace it before the
+tag arrives. Stage the fix instead: commit `downstream/staged/<patch-id>.patch`,
+a patch for the entry's files made against upstream `main` (check out upstream
+`main`, apply the old patch, resolve the conflict, and save `git diff --binary`).
+Whenever the carried patch conflicts or is empty, `refresh candidate`, `refresh
+auto` and the drift probe try the staged patch for that entry instead. If it
+applies, the probe treats the patch as healthy and closes its drift issue (the
+summary names it as staged), and the next refresh continues automatically:
+`integrate` writes the staged result as the new normalized patch and deletes the
+staged file. If the staged patch fails too, the refresh stops on that entry as
+before and the issue names both failures. The carried patch is always tried
+first, so a tag that predates the upstream change still uses it and the staged
+file waits for a later tag. A staged file must belong to a carried entry and may
+not add hunks of only blank lines; the contract test checks both. Staging is
+routine maintenance and does not need a refresh by hand.
+
 **Recovery.** To hold a refresh add the `no-auto-merge` label or mark the pull
 request draft. To resolve a conflict, refresh by hand with the steps below on a
 branch with a different name, merge it, and the controller sees `main` current. To

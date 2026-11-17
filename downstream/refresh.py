@@ -89,36 +89,69 @@ def check_originals(root: Path, sha: str, entries: list[dict]) -> None:
                 )
 
 
-def apply_entry(root: Path, destination: Path, entry: dict, head: str) -> None:
+STAGED_DIR = "downstream/staged"
+STAGED_TRAILER = "Staged-resolution: "
+
+
+def staged_patch(entry: dict) -> str:
+    return f"{STAGED_DIR}/{entry['id']}.patch"
+
+
+def try_patch(destination: Path, entry: dict, patch_path: Path) -> RefreshConflict | None:
+    applied = subprocess.run(
+        ["git", "-C", str(destination), "apply", "--3way", "--index", str(patch_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if applied.returncode:
+        conflicted = git(destination, "diff", "--name-only", "--diff-filter=U").splitlines()
+        return RefreshConflict(entry["id"], conflicted, applied.stderr.strip()[-1000:])
+    if command(destination, "diff", "--cached", "--quiet", check=False).returncode == 0:
+        return RefreshConflict(
+            entry["id"],
+            [],
+            "The patch changes nothing on this upstream tag, so upstream may already contain it; "
+            "retire it with a reviewed reason instead of carrying an empty patch.",
+            empty=True,
+        )
+    return None
+
+
+def apply_entry(root: Path, destination: Path, entry: dict, head: str) -> bool:
+    message = subject(entry)
+    used_staged = False
     if entry["status"] == "original":
         command(destination, "checkout", head, "--", *entry["paths"])
     else:
         patch_path = root / entry["patch"]
         if not patch_path.is_file():
             raise ValueError(f"Missing normalized patch: {patch_path}")
-        applied = subprocess.run(
-            ["git", "-C", str(destination), "apply", "--3way", "--index", str(patch_path)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if applied.returncode:
-            conflicted = git(destination, "diff", "--name-only", "--diff-filter=U").splitlines()
-            raise RefreshConflict(entry["id"], conflicted, applied.stderr.strip()[-1000:])
-        if command(destination, "diff", "--cached", "--quiet", check=False).returncode == 0:
-            raise RefreshConflict(
-                entry["id"],
-                [],
-                "The patch changes nothing on this upstream tag, so upstream may already contain it; "
-                "retire it with a reviewed reason instead of carrying an empty patch.",
-                empty=True,
-            )
-    command(destination, "commit", "--allow-empty", "-m", subject(entry))
+        failure = try_patch(destination, entry, patch_path)
+        staged = root / staged_patch(entry)
+        if failure and staged.is_file():
+            command(destination, "reset", "--quiet", "--hard", "HEAD")
+            command(destination, "clean", "--quiet", "-fd")
+            fallback = try_patch(destination, entry, staged)
+            if fallback:
+                raise RefreshConflict(
+                    entry["id"],
+                    fallback.paths,
+                    f"The carried patch failed ({failure}) and its staged resolution "
+                    f"{staged_patch(entry)} failed too ({fallback})",
+                    empty=fallback.empty,
+                )
+            failure = None
+            used_staged = True
+            message += f"\n\n{STAGED_TRAILER}{staged_patch(entry)}"
+        if failure:
+            raise failure
+    command(destination, "commit", "--allow-empty", "-m", message)
+    return used_staged
 
 
-def replay(root: Path, destination: Path, entries: list[dict], head: str) -> None:
-    for entry in entries:
-        apply_entry(root, destination, entry, head)
+def replay(root: Path, destination: Path, entries: list[dict], head: str) -> list[str]:
+    return [entry["id"] for entry in entries if apply_entry(root, destination, entry, head)]
 
 
 def add_worktree(root: Path, destination: Path, branch: str, start: str) -> None:
@@ -146,10 +179,12 @@ def candidate(root: Path, tag: str, destination: Path, branch: str, retired: set
     head = git(root, "rev-parse", "HEAD")
     check_originals(root, sha, entries)
     add_worktree(root, destination, branch, sha)
-    replay(root, destination, entries, head)
+    staged = replay(root, destination, entries, head)
     print(
         f"Candidate source ready at {destination}; resolve any conflicts explicitly and run source checks"
     )
+    if staged:
+        print("Used staged resolutions for: " + ", ".join(staged))
 
 
 def upstream_main(root: Path) -> str:
@@ -164,13 +199,14 @@ def probe(root: Path, sha: str, work: Path) -> dict:
     work.mkdir(parents=True, exist_ok=True)
     scratch = Path(tempfile.mkdtemp(dir=work))
     destination = scratch / "probe"
-    report: dict = {"upstream": sha, "status": "applies", "failures": []}
+    report: dict = {"upstream": sha, "status": "applies", "failures": [], "staged": []}
     try:
         check_originals(root, sha, entries)
         command(root, "worktree", "add", "--quiet", "--detach", str(destination), sha)
         for entry in entries:
             try:
-                apply_entry(root, destination, entry, head)
+                if apply_entry(root, destination, entry, head):
+                    report["staged"].append(entry["id"])
             except RefreshConflict as conflict:
                 report["failures"].append(
                     {
@@ -299,11 +335,17 @@ def integrate(
     data["upstream"]["tag"] = tag
     data["upstream"]["sha"] = sha
     data["version"] = tag[1:] + ".1"
-    for patch in entries:
+    for patch, commit in zip(entries, commits):
         if patch["status"] != "carried":
             continue
         (destination / patch["patch"]).write_bytes(contents[patch["id"]])
         command(destination, "add", "--", patch["patch"])
+        body = git(root, "show", "-s", "--format=%b", commit)
+        if (
+            f"{STAGED_TRAILER}{staged_patch(patch)}" in body
+            and (destination / staged_patch(patch)).exists()
+        ):
+            command(destination, "rm", "--quiet", "--", staged_patch(patch))
     for patch in data["patches"]:
         if patch["id"] in retirements:
             reason = retirements[patch["id"]].strip()

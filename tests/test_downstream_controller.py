@@ -1726,6 +1726,25 @@ class TestPatchDriftAndSignals(unittest.TestCase):
         self.assertIn("`early` conflict: a.py", text)
         self.assertIn("`late` conflict: b.py", text)
 
+    def test_a_staged_resolution_closes_the_drift_issue_and_is_named_in_the_summary(self):
+        env = Env(self)
+        env.apply(self.drifting(env, ("early", ["a.py"])).plan())
+        controller = env.controller()
+        controller.prober = lambda root, sha, work: {
+            "upstream": sha,
+            "status": "applies",
+            "failures": [],
+            "staged": ["early"],
+        }
+        plan = controller.plan()
+        self.assertIn("close_drift_issues", ops(plan))
+        self.assertNotIn("signals", plan)
+        self.assertIn(
+            "`early` applies only through its staged resolution", summary(plan, "dry-run")
+        )
+        env.apply(plan)
+        self.assertEqual(drift_issues(env)[0]["state"], "closed")
+
 
 if __name__ == "__main__":
     unittest.main()
