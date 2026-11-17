@@ -1,0 +1,26 @@
+{
+  "acceptance": [
+    "When a carried patch conflicts or is empty and downstream/staged/<id>.patch exists, refresh candidate/auto applies the staged patch for that entry; if it applies, the refresh continues and integrate writes it as the new normalized patch and removes the staged file.",
+    "The drift probe applies the same fallback; a patch whose staged version applies is not drifting, its drift issue closes, and the run summary names it as staged.",
+    "A staged patch that also fails is reported as drift with both failures named; a staged file for an unknown or non-carried entry, or one that adds only blank lines, fails the contract test.",
+    "Staged files are owned paths in the contract test and are excluded from the current-source reconstruction check.",
+    "MAINTAINING.md explains how to stage a resolution and that it is consumed by the next refresh.",
+    "After merge, #96 and #97 get staged resolutions (separate PR) and the next scheduled run closes them."
+  ],
+  "context": "Owner decision 2026-11-17 (choice dialog): staged resolutions chosen over manual refresh at each conflicting tag. Certification counts a release as no-manual when no person acts between the upstream tag and core's merge; staging before the tag is routine maintenance.\n\nDecision gate: none further. If upstream reorders or renames files so a staged patch would touch paths outside its entry's recorded paths, stop and report.\n\nVerification rubric: (1) refresh tests: conflict with a staged fallback refreshes, integrate replaces the patch and deletes the staged file; staged that also fails reports conflict; (2) probe and controller tests: staged fallback closes the drift issue; (3) contract tests for staged files; (4) all downstream suites pass; (5) live: after staging #96/#97, a dry run reports no drift.\n\nGuardrails: the normal patch is always tried first; staged files never change the current source on main; refresh still stops at the first unresolved conflict; no workflow changes (so no human review needed); the controller's write confinement is unchanged.",
+  "description": "A carried patch must rebuild the current source from the current upstream base (contract test test_normalized_series_reconstructs_current_source), so a patch adapted to new upstream code cannot land before the tag. Drift issues therefore warn but cannot be acted on, and every release that touches patched lines needs a manual refresh (v30.31.0 and v30.33.0 did; drift issues #96 sqlite-date-literals and #97 sqlite-index-null-ordering mean the next tag will too). Add staged resolutions: downstream/staged/<patch-id>.patch, adapted to upstream main, used when the normal patch fails.",
+  "links": [
+    "https://github.com/BenchBox-dev/benchbox-sqlglot/issues/96",
+    "https://github.com/BenchBox-dev/benchbox-sqlglot/issues/97"
+  ],
+  "sessions": [
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:bd184ef6cba18bd45c9ce20f",
+      "at": "2026-11-17T18:11:27Z",
+      "client": "omp-coding-agent",
+      "op": "create",
+      "op_id": "7737b6973c574b33891f295af95044e3",
+      "session_id": "c158dd8cd73d4a429b866d69454f6d3a"
+    }
+  ]
+}
