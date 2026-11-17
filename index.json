@@ -30,15 +30,10 @@
       "title": "Drift check reports only the first failing carried patch and closes issues for patches that still fail"
     },
     "fork-workflow-actions-run-on-deprecated-node20-20261117": {
-      "claim": {
-        "expires_at": "2026-11-18T14:24:44Z",
-        "generation": "f37aac69d1ba4453b8ba92091cc5578c",
-        "renewals": 0,
-        "worker": "mcp:omp-coding-agent:joe@joe-mac-mini.local:ce9df2a2bfb8b81b8c6dddfc"
-      },
+      "claim": null,
       "needs": [],
       "priority": "low",
-      "status": "active",
+      "status": "done",
       "title": "Fork workflows pin actions that GitHub forces from Node.js 20 onto Node.js 24"
     },
     "merged-refresh-branches-never-deleted-20261112": {
