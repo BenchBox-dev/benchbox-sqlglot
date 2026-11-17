@@ -396,6 +396,15 @@ and no upstream logic. The controller never releases or submits upstream PRs;
 wheel delivery stays with `benchbox-delivery.yml`, which runs after the merged
 refresh's required workflows succeed.
 
+**Timing.** The controller's cron is 05:41 UTC, but GitHub starts scheduled runs
+late: from 2026-11-09 to 2026-11-16 they started between 12:30Z and 13:59Z. BenchBox
+core's `sqlglot-delivery.yml` checks for a newly delivered wheel every 6 hours (at
+:37 past 00, 06, 12 and 18 UTC), and its runs start 7 to 10 hours late as well.
+Nothing orders core after the fork, so after a refresh merges and its wheel is
+delivered, expect core's adoption pull request within about 6 hours plus GitHub's
+schedule delay. An upstream tag therefore reaches core in roughly a day; dispatch
+the controller, or core's delivery workflow, to go faster.
+
 Refresh itself is `python -m downstream.refresh auto --tag TAG --work-dir DIR
 --report FILE` in a clean checkout of `main`. `auto` fetches the tag, builds the
 candidate and the integration branch exactly as the steps below do (with no
