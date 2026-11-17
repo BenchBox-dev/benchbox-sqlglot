@@ -15,6 +15,13 @@
       "status": "done",
       "title": "A refresh that stops on conflict leaves the controller run green"
     },
+    "drift-probe-stops-at-first-failing-patch-20261117": {
+      "claim": null,
+      "needs": [],
+      "priority": "high",
+      "status": "open",
+      "title": "Drift check reports only the first failing carried patch and closes issues for patches that still fail"
+    },
     "merged-refresh-branches-never-deleted-20261112": {
       "claim": null,
       "needs": [],
