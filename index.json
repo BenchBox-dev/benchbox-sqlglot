@@ -23,10 +23,15 @@
       "title": "Controller refresh and drift issues are opened with no assignee, label or notification route"
     },
     "drift-probe-stops-at-first-failing-patch-20261117": {
-      "claim": null,
+      "claim": {
+        "expires_at": "2026-11-18T14:24:33Z",
+        "generation": "41f0f356c83b47368b0d4e7934e834e4",
+        "renewals": 0,
+        "worker": "mcp:omp-coding-agent:joe@joe-mac-mini.local:ce9df2a2bfb8b81b8c6dddfc"
+      },
       "needs": [],
       "priority": "high",
-      "status": "open",
+      "status": "active",
       "title": "Drift check reports only the first failing carried patch and closes issues for patches that still fail"
     },
     "fork-workflow-actions-run-on-deprecated-node20-20261117": {
