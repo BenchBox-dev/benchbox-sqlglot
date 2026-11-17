@@ -42,6 +42,7 @@ BUNDLE_FILE = "refresh.bundle"
 PR_MARKER = re.compile(r"<!-- benchbox-upstream (\{[^\n]*?\}) -->")
 DRIFT_MARKER = re.compile(r"<!-- benchbox-upstream-drift (\{[^\n]*?\}) -->")
 SIGNALLED = frozenset({"conflict", "failed"})
+ISSUE_ROUTE = {"assignees": ["joeharris76"], "labels": ["benchbox-upstream"]}
 ISSUE_MARKER = re.compile(r"<!-- benchbox-upstream-issue (\{[^\n]*?\}) -->")
 TAG = re.compile(r"^v\d+\.\d+\.\d+$")
 CHECK_PASS = {"success"}
@@ -280,7 +281,7 @@ def drift_title(entry: str) -> str:
     return f"Carried patch {entry} no longer applies to upstream main"
 
 
-def drift_body(key: dict, upstream: str, detail: str, run_url: str) -> str:
+def drift_body(key: dict, upstream: str, detail: str, without: list[str], run_url: str) -> str:
     marker = (
         "<!-- benchbox-upstream-drift "
         + json.dumps({**key, "upstream": upstream}, sort_keys=True, separators=(",", ":"))
@@ -293,9 +294,16 @@ def drift_body(key: dict, upstream: str, detail: str, run_url: str) -> str:
         else "stopped applying; the next refresh onto a tag that contains this upstream change "
         "will stop on it"
     )
+    caveat = (
+        "This result was found with the earlier failing patches "
+        + ", ".join(f"`{entry}`" for entry in without)
+        + " left out, so it may follow from them rather than from upstream main alone.\n\n"
+        if without
+        else ""
+    )
     return (
         f"{marker}\n\nReplaying the carried patches on upstream main `{upstream}`, "
-        f"`{key['entry']}` {meaning}.\n\n```\n{detail[-1500:]}\n```\n\n"
+        f"`{key['entry']}` {meaning}.\n\n{caveat}```\n{detail[-1500:]}\n```\n\n"
         "Prepare the fix before upstream tags a release: adapt the patch, offer it upstream, or "
         "plan its retirement as described under Upstream refresh in downstream/MAINTAINING.md. "
         "The controller updates this issue as upstream main moves and closes it when the patch "
@@ -690,34 +698,50 @@ class Controller:
                 f"The patch drift probe did not run: {type(error).__name__}: {error}"
             )
             return
-        out["drift"] = {k: report[k] for k in ("status", "upstream", "entry") if k in report}
-        issues = self.drift_issues()
-        if report["status"] == "applies":
-            if issues:
-                out["actions"].append({"op": "close_drift_issues", "keep": None})
-            return
-        key = {
-            "entry": report.get("entry") or "manifest",
-            "kind": report["status"],
-            "paths": sorted(report.get("paths", [])),
-        }
-        same = next((i for i in issues if i["key"]["entry"] == key["entry"]), None)
-        if any(i["key"]["entry"] != key["entry"] for i in issues):
-            out["actions"].append({"op": "close_drift_issues", "keep": key["entry"]})
-        body = drift_body(key, upstream, report.get("detail", ""), self.run_url)
-        if same is None or same["body"] != body:
-            out["actions"].append(
+        failures = report.get("failures", [])
+        if report["status"] == "failed":
+            failures = [
                 {
-                    "op": "upsert_drift_issue",
-                    "entry": key["entry"],
-                    "title": drift_title(key["entry"]),
-                    "body": body,
+                    "entry": "manifest",
+                    "kind": "failed",
+                    "paths": [],
+                    "detail": report.get("detail", ""),
+                    "without": [],
                 }
-            )
-        if same is None or {k: same["key"].get(k) for k in key} != key:
-            out.setdefault("signals", []).append(
-                f"Carried patch {key['entry']} no longer applies to upstream main ({key['kind']})"
-            )
+            ]
+        out["drift"] = {
+            "status": report["status"],
+            "upstream": upstream,
+            "failures": [
+                {"entry": f["entry"], "kind": f["kind"], "paths": sorted(f["paths"])}
+                for f in failures
+            ],
+        }
+        issues = self.drift_issues()
+        failing = sorted({f["entry"] for f in failures})
+        if any(i["key"]["entry"] not in failing for i in issues):
+            out["actions"].append({"op": "close_drift_issues", "keep": failing})
+        for failure in failures:
+            key = {
+                "entry": failure["entry"],
+                "kind": failure["kind"],
+                "paths": sorted(failure["paths"]),
+            }
+            same = next((i for i in issues if i["key"]["entry"] == key["entry"]), None)
+            body = drift_body(key, upstream, failure["detail"], failure["without"], self.run_url)
+            if same is None or same["body"] != body:
+                out["actions"].append(
+                    {
+                        "op": "upsert_drift_issue",
+                        "entry": key["entry"],
+                        "title": drift_title(key["entry"]),
+                        "body": body,
+                    }
+                )
+            if same is None or {k: same["key"].get(k) for k in key} != key:
+                out.setdefault("signals", []).append(
+                    f"Carried patch {key['entry']} no longer applies to upstream main ({key['kind']})"
+                )
 
     def known_failure(self, issues: list[dict], tag: str, base: str) -> bool:
         key = next((i["key"] for i in issues if i["key"]["tag"] == tag), None)
@@ -1227,7 +1251,14 @@ def summary(plan: dict, mode: str) -> str:
     if plan.get("detail"):
         lines.append(f"- detail: {plan['detail'][:500]}")
     if plan.get("drift"):
-        lines.append(f"- patch drift on upstream main: `{json.dumps(plan['drift'])}`")
+        drift = plan["drift"]
+        lines.append(
+            f"- patch drift on upstream main `{drift.get('upstream')}`: `{drift['status']}`"
+        )
+        for failure in drift.get("failures", []):
+            lines.append(
+                f"  - `{failure['entry']}` {failure['kind']}: {', '.join(failure['paths']) or 'no paths'}"
+            )
     for signal in plan.get("signals", []):
         lines.append(f"- needs follow-up: {signal}")
     for action in plan.get("actions", []):
@@ -1367,7 +1398,9 @@ def upsert_issue(controller: Controller, op: dict) -> dict:
     api = controller.api
     existing = [i for i in controller.controller_issues() if i["key"]["tag"] == op["tag"]]
     if not existing:
-        created = api.send("POST", "issues", {"title": op["title"], "body": op["body"]})
+        created = api.send(
+            "POST", "issues", {"title": op["title"], "body": op["body"], **ISSUE_ROUTE}
+        )
         return {"status": "opened", "number": created["number"]}
     issue = existing[0]
     if issue["body"] == op["body"]:
@@ -1397,7 +1430,9 @@ def upsert_drift_issue(controller: Controller, op: dict) -> dict:
     api = controller.api
     existing = [i for i in controller.drift_issues() if i["key"]["entry"] == op["entry"]]
     if not existing:
-        created = api.send("POST", "issues", {"title": op["title"], "body": op["body"]})
+        created = api.send(
+            "POST", "issues", {"title": op["title"], "body": op["body"], **ISSUE_ROUTE}
+        )
         return {"status": "opened", "number": created["number"]}
     issue = existing[0]
     if issue["body"] == op["body"]:
@@ -1409,7 +1444,7 @@ def upsert_drift_issue(controller: Controller, op: dict) -> dict:
 def close_drift_issues(controller: Controller, op: dict) -> dict:
     closed = []
     for issue in controller.drift_issues():
-        if issue["key"]["entry"] != op.get("keep"):
+        if issue["key"]["entry"] not in (op.get("keep") or []):
             controller.api.send(
                 "PATCH",
                 f"issues/{issue['number']}",

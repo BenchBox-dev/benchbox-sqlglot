@@ -529,6 +529,13 @@ An unchanged failed input is skipped on later runs until the tag or `main`
 changes, `retry` is set, or the issue is closed. A healthy pull request, an
 up-to-date `main` or a successful refresh closes it.
 
+**Issue routing.** Every refresh or drift issue the controller opens is
+assigned to `joeharris76` and labelled `benchbox-upstream`, so GitHub notifies
+the maintainer when it appears. Act on it before upstream tags its next release,
+usually within a day: a drift issue gives warning only while there is time to
+adapt the patch. Assignment and labelling happen in `publish` when the issue is
+created; updates leave them as they are.
+
 **Run status.** A pass that first raises a `conflict` or `failed` refresh issue,
 or changes its key (a new tag or `main` commit, or a `retry` dispatch), still
 writes its plan and then fails `prepare`, so the run is red once and `publish`
@@ -542,9 +549,12 @@ upstream repository: `git apply` on a scratch worktree only, nothing from
 upstream is run. When a patch stops applying, or applies but changes nothing
 because upstream may already contain it, the pass opens or updates one
 App-authored issue for that patch with a `benchbox-upstream-drift` marker
-(patch, kind, files and upstream commit), closes drift issues for other patches,
-and closes all of them once every patch applies. Patches apply in order, so only
-the first failing patch is reported. A new drift issue, or a change in the
+(patch, kind, files and upstream commit), and closes a patch's drift issue only
+when that patch applies again. A failing patch does not stop the replay: it is
+left out and the remaining patches are still tried, so every failing patch gets
+its own issue. A later patch's issue names the earlier failing patches it was
+replayed without, because its failure may follow from them rather than from
+upstream. The run summary lists every failing patch. A new drift issue, or a change in the
 patch, kind or files, makes the run red once, by the run status rule above; an
 upstream commit that moves without changing the finding only updates the
 issue body. A probe that cannot run (for example a failed fetch) is a note in

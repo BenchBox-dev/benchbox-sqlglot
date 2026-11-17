@@ -89,32 +89,36 @@ def check_originals(root: Path, sha: str, entries: list[dict]) -> None:
                 )
 
 
+def apply_entry(root: Path, destination: Path, entry: dict, head: str) -> None:
+    if entry["status"] == "original":
+        command(destination, "checkout", head, "--", *entry["paths"])
+    else:
+        patch_path = root / entry["patch"]
+        if not patch_path.is_file():
+            raise ValueError(f"Missing normalized patch: {patch_path}")
+        applied = subprocess.run(
+            ["git", "-C", str(destination), "apply", "--3way", "--index", str(patch_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if applied.returncode:
+            conflicted = git(destination, "diff", "--name-only", "--diff-filter=U").splitlines()
+            raise RefreshConflict(entry["id"], conflicted, applied.stderr.strip()[-1000:])
+        if command(destination, "diff", "--cached", "--quiet", check=False).returncode == 0:
+            raise RefreshConflict(
+                entry["id"],
+                [],
+                "The patch changes nothing on this upstream tag, so upstream may already contain it; "
+                "retire it with a reviewed reason instead of carrying an empty patch.",
+                empty=True,
+            )
+    command(destination, "commit", "--allow-empty", "-m", subject(entry))
+
+
 def replay(root: Path, destination: Path, entries: list[dict], head: str) -> None:
     for entry in entries:
-        if entry["status"] == "original":
-            command(destination, "checkout", head, "--", *entry["paths"])
-        else:
-            patch_path = root / entry["patch"]
-            if not patch_path.is_file():
-                raise ValueError(f"Missing normalized patch: {patch_path}")
-            applied = subprocess.run(
-                ["git", "-C", str(destination), "apply", "--3way", "--index", str(patch_path)],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if applied.returncode:
-                conflicted = git(destination, "diff", "--name-only", "--diff-filter=U").splitlines()
-                raise RefreshConflict(entry["id"], conflicted, applied.stderr.strip()[-1000:])
-            if command(destination, "diff", "--cached", "--quiet", check=False).returncode == 0:
-                raise RefreshConflict(
-                    entry["id"],
-                    [],
-                    "The patch changes nothing on this upstream tag, so upstream may already contain it; "
-                    "retire it with a reviewed reason instead of carrying an empty patch.",
-                    empty=True,
-                )
-        command(destination, "commit", "--allow-empty", "-m", subject(entry))
+        apply_entry(root, destination, entry, head)
 
 
 def add_worktree(root: Path, destination: Path, branch: str, start: str) -> None:
@@ -160,18 +164,27 @@ def probe(root: Path, sha: str, work: Path) -> dict:
     work.mkdir(parents=True, exist_ok=True)
     scratch = Path(tempfile.mkdtemp(dir=work))
     destination = scratch / "probe"
-    report: dict = {"upstream": sha, "status": "applies"}
+    report: dict = {"upstream": sha, "status": "applies", "failures": []}
     try:
         check_originals(root, sha, entries)
         command(root, "worktree", "add", "--quiet", "--detach", str(destination), sha)
-        replay(root, destination, entries, head)
-    except RefreshConflict as conflict:
-        report.update(
-            status="empty" if conflict.empty else "conflict",
-            entry=conflict.entry,
-            paths=conflict.paths,
-            detail=str(conflict),
-        )
+        for entry in entries:
+            try:
+                apply_entry(root, destination, entry, head)
+            except RefreshConflict as conflict:
+                report["failures"].append(
+                    {
+                        "entry": conflict.entry,
+                        "kind": "empty" if conflict.empty else "conflict",
+                        "paths": conflict.paths,
+                        "detail": str(conflict),
+                        "without": [failure["entry"] for failure in report["failures"]],
+                    }
+                )
+                command(destination, "reset", "--quiet", "--hard", "HEAD")
+                command(destination, "clean", "--quiet", "-fd")
+        if report["failures"]:
+            report["status"] = "drifted"
     except (subprocess.CalledProcessError, ValueError) as error:
         report.update(status="failed", detail=str(error))
     finally:

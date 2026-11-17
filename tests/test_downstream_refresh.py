@@ -429,10 +429,12 @@ class TestDownstreamRefresh(unittest.TestCase):
             )
             upstream = git(root, "rev-parse", "v1.1.0^{commit}")
             report = probe(root, upstream, directory / "work")
+            self.assertEqual(report["status"], "drifted")
             self.assertEqual(
-                (report["status"], report["entry"], report["paths"], report["upstream"]),
-                ("conflict", "runtime", ["runtime.py"], upstream),
+                [(f["entry"], f["kind"], f["paths"], f["without"]) for f in report["failures"]],
+                [("runtime", "conflict", ["runtime.py"], [])],
             )
+            self.assertEqual(report["upstream"], upstream)
             clean = probe(root, git(root, "rev-parse", "v1.0.0"), directory / "work")
             self.assertEqual(clean["status"], "applies")
             self.assertEqual(git(root, "worktree", "list", "--porcelain").count("worktree "), 1)
@@ -444,7 +446,63 @@ class TestDownstreamRefresh(unittest.TestCase):
             directory = Path(temporary)
             root = self.automatic_fixture(directory, DOWNSTREAM_RUNTIME)
             report = probe(root, git(root, "rev-parse", "v1.1.0^{commit}"), directory / "work")
-            self.assertEqual((report["status"], report["entry"]), ("empty", "runtime"))
+            self.assertEqual(
+                [(f["entry"], f["kind"]) for f in report["failures"]], [("runtime", "empty")]
+            )
+
+    def test_probe_keeps_replaying_after_a_failed_patch_and_names_what_it_left_out(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            root = self.automatic_fixture(
+                directory,
+                "VALUE = 'rewritten upstream'\nMIDDLE = 1\nOTHER = 'upstream'\n",
+                upstream_files={"extra.py": "EXTRA = 'rewritten upstream'\n"},
+            )
+            self.command(root, "switch", "-qc", "base-extra", "v1.0.0")
+            (root / "extra.py").write_text("EXTRA = 'upstream'\n")
+            self.commit(root, ["extra.py"], "Add extra upstream file")
+            self.command(root, "switch", "-q", "main")
+            self.command(root, "merge", "-q", "--no-edit", "base-extra")
+            (root / "extra.py").write_text("EXTRA = 'downstream'\n")
+            (root / "tail.py").write_text("TAIL = 'downstream'\n")
+            patches = {}
+            for name, paths in (("extra", ["extra.py"]), ("tail", ["tail.py"])):
+                self.command(root, "add", "-N", *paths)
+                patches[name] = subprocess.check_output(
+                    ["git", "-C", str(root), "diff", "--binary", "--", *paths]
+                )
+                (root / f"downstream/{name}.patch").write_bytes(patches[name])
+            data = json.loads((root / "downstream/patches.json").read_text())
+            for name, paths in (("extra", ["extra.py"]), ("tail", ["tail.py"])):
+                data["patches"].append(
+                    {
+                        "id": name,
+                        "status": "carried",
+                        "paths": paths,
+                        "patch": f"downstream/{name}.patch",
+                        "upstream_state": "not_offered",
+                        "upstream_reason": "Fixture patch",
+                    }
+                )
+            (root / "downstream/patches.json").write_text(json.dumps(data))
+            self.commit(
+                root,
+                [
+                    "extra.py",
+                    "tail.py",
+                    "downstream/extra.patch",
+                    "downstream/tail.patch",
+                    "downstream/patches.json",
+                ],
+                "Carry two more patches",
+            )
+            report = probe(root, git(root, "rev-parse", "v1.1.0^{commit}"), directory / "work")
+            self.assertEqual(
+                [(f["entry"], f["kind"], f["without"]) for f in report["failures"]],
+                [("runtime", "conflict", []), ("extra", "conflict", ["runtime"])],
+            )
+            self.assertEqual(git(root, "worktree", "list", "--porcelain").count("worktree "), 1)
+            self.assertEqual(list((directory / "work").iterdir()), [])
 
     def test_blank_only_hunks_flags_padding_and_keeps_real_changes(self):
         padded = (
