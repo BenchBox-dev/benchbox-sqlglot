@@ -1,0 +1,23 @@
+{
+  "acceptance": [
+    "Every action pin in the fork's .github/workflows that targets Node.js 20 is moved to a release that targets Node.js 24, still pinned by full commit SHA with a version comment.",
+    "A run of each changed workflow (dispatch or PR) logs no 'Node.js 20 is deprecated' annotation.",
+    "A dry-run dispatch of benchbox-upstream.yml still completes prepare, readiness and publish as before."
+  ],
+  "context": "Decision gate: none for same-major or minimal upgrades. If the only Node 24 release of an action is a new major with breaking inputs (for example upload-artifact or download-artifact behaviour changes), read its release notes and record the change in the PR body; get owner approval only if the workflow's behaviour or permissions would change.\n\nVerification rubric: (1) list every 'uses:' pin in the fork workflows before and after; (2) each changed workflow runs once without the Node 20 annotation; (3) downstream contract tests that read the workflows pass; (4) the controller dry run and the write-confinement contract test pass.\n\nGuardrails: keep full-SHA pins (no tags or branches); no permission, token or job-structure changes; workflow changes go through a human-reviewed fork PR; one PR for all pins.",
+  "description": "Every benchbox-upstream.yml run since at least 2026-11-15 (for example run 43881204346) logs: 'Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02, astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e.' The runs still pass, but these pins are running on a runtime they were not released for, and other fork workflows may use the same pins. The controller is unattended, so a runtime break would stop refreshes silently until someone reads the failed run.",
+  "links": [
+    "https://github.com/BenchBox-dev/benchbox-sqlglot/actions/runs/43881204346",
+    "https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/"
+  ],
+  "sessions": [
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:ce9df2a2bfb8b81b8c6dddfc",
+      "at": "2026-11-17T13:47:00Z",
+      "client": "omp-coding-agent",
+      "op": "create",
+      "op_id": "b96c143f752d48108bc82e20bb16c6f8",
+      "session_id": "d52eac94f3f947e6a9ea0075a89eb42e"
+    }
+  ]
+}
