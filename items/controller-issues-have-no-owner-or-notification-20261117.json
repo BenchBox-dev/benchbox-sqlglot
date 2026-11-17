@@ -4,7 +4,7 @@
     "The route is applied by the publish job, so the prepare job stays read-only and the write-confinement contract test passes unchanged.",
     "downstream/MAINTAINING.md names who is expected to act on a controller issue, how they are notified and the expected response time before the next upstream tag."
   ],
-  "context": "Decision gate: the owner chooses the route before any code changes, from (a) assign a named GitHub user on open; (b) apply a label the owner watches (for example benchbox-upstream) and subscribe to it; (c) also create or update a core tracker item when a drift or conflict issue opens; (d) document the red run as the only signal and accept the risk. Options can be combined. Record the choice in the context.\n\nVerification rubric: (1) controller tests show the chosen assignee or label on upsert_issue and upsert_drift_issue operations; (2) the App's issue permissions cover the route (assigning needs no extra scope; labels must exist or be created by the publisher); (3) readiness still passes with the App's current permissions, or the permission change is approved and readiness updated; (4) after merge, the next issue the controller opens shows the route.\n\nGuardrails: no new write permission in prepare or readiness; no App permission beyond issues:write without owner approval (readiness refuses excess permissions); do not post comments on every run, only on open or key change, to keep the first-red rule's noise level; no cross-repository writes unless the owner chose option (c).",
+  "context": "Decision gate: the owner chooses the route before any code changes, from (a) assign a named GitHub user on open; (b) apply a label the owner watches (for example benchbox-upstream) and subscribe to it; (c) also create or update a core tracker item when a drift or conflict issue opens; (d) document the red run as the only signal and accept the risk. Options can be combined. Record the choice in the context.\n\nVerification rubric: (1) controller tests show the chosen assignee or label on upsert_issue and upsert_drift_issue operations; (2) the App's issue permissions cover the route (assigning needs no extra scope; labels must exist or be created by the publisher); (3) readiness still passes with the App's current permissions, or the permission change is approved and readiness updated; (4) after merge, the next issue the controller opens shows the route.\n\nGuardrails: no new write permission in prepare or readiness; no App permission beyond issues:write without owner approval (readiness refuses excess permissions); do not post comments on every run, only on open or key change, to keep the first-red rule's noise level; no cross-repository writes unless the owner chose option (c).\n\nOwner decision 2026-11-17 (choice dialog): assign joeharris76 and apply the label benchbox-upstream to every refresh or drift issue the controller opens or reopens. No core tracker write (option c declined). Same fork PR as the drift probe fix.",
   "description": "The fork controller opens refresh-conflict issues (#88) and drift issues (#91, #92) with no assignee, no labels and no comments, and the fork has no CODEOWNERS file. The only other signal is the red scheduled run, whose failure email goes only to whoever GitHub treats as the workflow's actor. Drift for spark-databricks-regexp-trunc was reported on 2026-11-15 (#91), about a day before upstream tagged v30.32.0, and postgres-exact-division on 2026-11-16 (#92), hours before the tag; neither was acted on, so the early warning bought no time. The drift check only helps if a named owner sees it within a day.",
   "links": [
     "https://github.com/BenchBox-dev/benchbox-sqlglot/issues/91",
@@ -18,6 +18,14 @@
       "client": "omp-coding-agent",
       "op": "create",
       "op_id": "11da453a1509469b922063c55899ab51",
+      "session_id": "d52eac94f3f947e6a9ea0075a89eb42e"
+    },
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:ce9df2a2bfb8b81b8c6dddfc",
+      "at": "2026-11-17T13:54:13Z",
+      "client": "omp-coding-agent",
+      "op": "update",
+      "op_id": "3e2aef605f564d868fb5842f84f62391",
       "session_id": "d52eac94f3f947e6a9ea0075a89eb42e"
     }
   ]
