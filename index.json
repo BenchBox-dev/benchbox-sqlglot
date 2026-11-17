@@ -15,6 +15,13 @@
       "status": "done",
       "title": "A refresh that stops on conflict leaves the controller run green"
     },
+    "controller-issues-have-no-owner-or-notification-20261117": {
+      "claim": null,
+      "needs": [],
+      "priority": "medium",
+      "status": "open",
+      "title": "Controller refresh and drift issues are opened with no assignee, label or notification route"
+    },
     "drift-probe-stops-at-first-failing-patch-20261117": {
       "claim": null,
       "needs": [],
