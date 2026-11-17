@@ -319,6 +319,59 @@ class TestDownstreamRefresh(unittest.TestCase):
             self.assertEqual(git(root, "branch", "--list", "refresh/*"), "")
             self.assertEqual(git(root, "worktree", "list", "--porcelain").count("worktree "), 1)
 
+    def stage(self, root, directory, tag, text):
+        scratch = directory / "stage"
+        self.command(root, "worktree", "add", "-q", "--detach", str(scratch), tag)
+        (scratch / "runtime.py").write_text(text)
+        content = subprocess.check_output(["git", "-C", str(scratch), "diff", "--binary"])
+        self.command(root, "worktree", "remove", "--force", str(scratch))
+        (root / "downstream/staged").mkdir(exist_ok=True)
+        (root / "downstream/staged/runtime.patch").write_bytes(content)
+        self.commit(root, ["downstream/staged/runtime.patch"], "Stage runtime resolution")
+
+    def test_auto_uses_a_staged_resolution_and_consumes_it(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            upstream = "VALUE = 'rewritten upstream'\nMIDDLE = 1\nOTHER = 'upstream'\n"
+            adapted = "VALUE = 'downstream'\nMIDDLE = 1\nOTHER = 'upstream'\nEXTRA = 1\n"
+            root = self.automatic_fixture(directory, upstream)
+            self.stage(root, directory, "v1.1.0", adapted)
+            report = auto(root, "v1.1.0", directory / "work")
+            self.assertEqual(report["status"], "refreshed")
+            integration = Path(report["worktree"])
+            self.assertEqual((integration / "runtime.py").read_text(), adapted)
+            self.assertFalse((integration / "downstream/staged/runtime.patch").exists())
+            self.command(integration, "apply", "--check", "-R", "downstream/runtime.patch")
+            self.assertEqual(git(integration, "status", "--porcelain"), "")
+
+    def test_a_staged_resolution_that_also_fails_stops_the_refresh(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            root = self.automatic_fixture(
+                directory, "VALUE = 'rewritten upstream'\nMIDDLE = 1\nOTHER = 'upstream'\n"
+            )
+            self.stage(
+                root, directory, "v1.0.0", "VALUE = 'staged'\nMIDDLE = 1\nOTHER = 'upstream'\n"
+            )
+            report = auto(root, "v1.1.0", directory / "work")
+            self.assertEqual((report["status"], report["entry"]), ("conflict", "runtime"))
+            self.assertIn("downstream/staged/runtime.patch failed too", report["detail"])
+            self.assertEqual(git(root, "branch", "--list", "refresh/*"), "")
+
+    def test_probe_counts_a_staged_resolution_as_applying(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            upstream = "VALUE = 'rewritten upstream'\nMIDDLE = 1\nOTHER = 'upstream'\n"
+            root = self.automatic_fixture(directory, upstream)
+            self.stage(root, directory, "v1.1.0", DOWNSTREAM_RUNTIME)
+            report = probe(root, git(root, "rev-parse", "v1.1.0^{commit}"), directory / "work")
+            self.assertEqual(
+                (report["status"], report["failures"], report["staged"]),
+                ("applies", [], ["runtime"]),
+            )
+            unchanged = probe(root, git(root, "rev-parse", "v1.0.0"), directory / "work")
+            self.assertEqual((unchanged["status"], unchanged["staged"]), ("applies", []))
+
     def test_auto_refuses_a_tag_that_is_not_newer(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

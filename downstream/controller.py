@@ -716,6 +716,7 @@ class Controller:
                 {"entry": f["entry"], "kind": f["kind"], "paths": sorted(f["paths"])}
                 for f in failures
             ],
+            "staged": report.get("staged", []),
         }
         issues = self.drift_issues()
         failing = sorted({f["entry"] for f in failures})
@@ -1259,6 +1260,8 @@ def summary(plan: dict, mode: str) -> str:
             lines.append(
                 f"  - `{failure['entry']}` {failure['kind']}: {', '.join(failure['paths']) or 'no paths'}"
             )
+        for entry in drift.get("staged", []):
+            lines.append(f"  - `{entry}` applies only through its staged resolution")
     for signal in plan.get("signals", []):
         lines.append(f"- needs follow-up: {signal}")
     for action in plan.get("actions", []):
