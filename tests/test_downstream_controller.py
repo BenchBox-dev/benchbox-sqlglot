@@ -20,6 +20,7 @@ from downstream.controller import (
     Remote,
     app_jwt,
     apply,
+    drift_title,
     event_from_env,
     event_refusal,
     issue_marker_text,
@@ -30,6 +31,7 @@ from downstream.controller import (
     readiness_summary,
     refresh_at,
     run_mode,
+    summary,
 )
 from downstream.delivery import ACTIONS_APP
 
@@ -1570,7 +1572,10 @@ class TestPatchDriftAndSignals(unittest.TestCase):
         moved = upstream_main(env, CONFLICTING)
         plan = env.plan(upstream=moved)
         self.assertEqual(plan["outcome"], "refreshed")
-        self.assertEqual((plan["drift"]["status"], plan["drift"]["entry"]), ("conflict", "runtime"))
+        self.assertEqual(
+            plan["drift"]["failures"],
+            [{"entry": "runtime", "kind": "conflict", "paths": ["runtime.py"]}],
+        )
         self.assertIn("upsert_drift_issue", ops(plan))
         self.assertEqual(len(plan["signals"]), 1)
         self.assertIn("runtime", plan["signals"][0])
@@ -1597,7 +1602,7 @@ class TestPatchDriftAndSignals(unittest.TestCase):
         env = Env(self)
         moved = upstream_main(env, "VALUE = 'downstream'\nMIDDLE = 1\nOTHER = 'upstream'\n")
         plan = env.plan(upstream=moved)
-        self.assertEqual(plan["drift"]["status"], "empty")
+        self.assertEqual(plan["drift"]["failures"][0]["kind"], "empty")
         body = next(a["body"] for a in plan["actions"] if a["op"] == "upsert_drift_issue")
         self.assertIn("retirement", body)
 
@@ -1659,6 +1664,67 @@ class TestPatchDriftAndSignals(unittest.TestCase):
         output.assert_called_with("mutate", "true")
         state = json.loads((env.out / "state.json").read_text())
         self.assertIn("upsert_drift_issue", ops(state))
+
+    def drifting(self, env, *failures):
+        controller = env.controller()
+        controller.prober = lambda root, sha, work: {
+            "upstream": sha,
+            "status": "drifted" if failures else "applies",
+            "failures": [
+                {
+                    "entry": entry,
+                    "kind": "conflict",
+                    "paths": paths,
+                    "detail": f"Carried patch {entry} does not apply cleanly",
+                    "without": [f[0] for f in failures[:index]],
+                }
+                for index, (entry, paths) in enumerate(failures)
+            ],
+        }
+        return controller
+
+    def test_every_failing_patch_gets_its_own_issue_until_that_patch_applies(self):
+        env = Env(self)
+        first = self.drifting(env, ("early", ["a.py"]), ("late", ["b.py"])).plan()
+        self.assertEqual([f["entry"] for f in first["drift"]["failures"]], ["early", "late"])
+        self.assertEqual(len(first["signals"]), 2)
+        env.apply(first)
+        late = next(i for i in drift_issues(env) if "`late`" in i["body"])
+        self.assertIn("`early`", late["body"])
+        healed_early = self.drifting(env, ("late", ["b.py"])).plan()
+        self.assertNotIn("signals", healed_early)
+        env.apply(healed_early)
+        open_issues = {i["title"]: i["state"] for i in drift_issues(env)}
+        self.assertEqual(open_issues[drift_title("early")], "closed")
+        self.assertEqual(open_issues[drift_title("late")], "open")
+        self.assertNotIn("`early`", env.api.issues[late["number"]]["body"])
+        moved = self.drifting(env, ("late", ["b.py", "c.py"])).plan()
+        self.assertEqual(
+            moved["signals"], ["Carried patch late no longer applies to upstream main (conflict)"]
+        )
+        self.assertEqual(
+            [a["entry"] for a in moved["actions"] if a["op"] == "upsert_drift_issue"], ["late"]
+        )
+
+    def test_controller_issues_are_assigned_and_labelled_when_opened(self):
+        env = Env(self)
+        env.apply(self.drifting(env, ("early", ["a.py"])).plan())
+        conflict = Env(self, CONFLICTING)
+        conflict.apply(conflict.plan())
+        opened = [
+            w[2] for e in (env, conflict) for w in e.api.writes if w[:2] == ("POST", "issues")
+        ]
+        self.assertEqual(len(opened), 2)
+        for body in opened:
+            self.assertEqual(body["assignees"], ["joeharris76"])
+            self.assertEqual(body["labels"], ["benchbox-upstream"])
+
+    def test_the_summary_lists_every_failing_patch(self):
+        env = Env(self)
+        plan = self.drifting(env, ("early", ["a.py"]), ("late", ["b.py"])).plan()
+        text = summary(plan, "dry-run")
+        self.assertIn("`early` conflict: a.py", text)
+        self.assertIn("`late` conflict: b.py", text)
 
 
 if __name__ == "__main__":
