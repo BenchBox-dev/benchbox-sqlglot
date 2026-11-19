@@ -5,6 +5,7 @@
   ],
   "context": "Decision gate (owner): approved 2026-11-19 by Joe Harris (choice dialog) for an upstream offer to tobymao/sqlglot.\n\nVerification rubric: (1) the reduced change applies to current upstream main and stands alone, without the fork patches it stacks on; (2) its dialect tests pass, with execution checked on real SQLite; (3) the fork's downstream contract tests pass after the patches.json edit.\n\nGuardrails: the offered change is the fork patch reduced to upstream-only behaviour with no benchbox package references; one change per PR; the patch stays carried in patches.json until upstream merges and a refresh retires it with equivalence evidence.\n\nUpstream rules (tobymao/sqlglot AGENTS.md): Conventional Commits title ending with [CLAUDE]; minimal scope; tests in tests/dialects.",
   "description": "SQLite DATEDIFF in DAY units round trip, without an unsupported warning (upstream v30.31.0 already lowers DATE_SUB). No BenchBox-specific behaviour. In the fork it stacks on sqlite-temporal-lowering, which upstream declined, so the offer needs a standalone version against upstream main.",
+  "drop_reason": "Nothing to offer: upstream main (7d21ccc1) already writes DATEDIFF ... DAY for SQLite without an unsupported warning, and test_datediff covers it; the fork patch only adds an equivalent branch and can retire at the next refresh (recorded in BenchBox-dev/benchbox-sqlglot#120). A separate upstream bug found while checking (DAY truncates elapsed time instead of counting day boundaries) was filed as https://github.com/tobymao/sqlglot/issues/9271 with owner approval on 2026-11-19.",
   "sessions": [
     {
       "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:89a930e0aeb2aa473ce86dcc",
@@ -21,6 +22,15 @@
       "generation": "f7fc92c1a99e46628f5aebde9168f60c",
       "op": "take",
       "op_id": "6dd34b8e96484f8d8a20384467ccae94",
+      "session_id": "8a84fd1bf95e45c480b957489ce38167"
+    },
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:89a930e0aeb2aa473ce86dcc",
+      "at": "2026-11-19T20:46:07Z",
+      "client": "omp-coding-agent",
+      "generation": "f7fc92c1a99e46628f5aebde9168f60c",
+      "op": "drop",
+      "op_id": "ae0ecdd864334ca88c518ce3c48ce817",
       "session_id": "8a84fd1bf95e45c480b957489ce38167"
     }
   ]
