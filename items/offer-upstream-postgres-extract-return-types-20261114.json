@@ -5,7 +5,7 @@
     "An upstream pull request for the reduced postgres-extract-return-types change is opened and linked; patches.json moves postgres-extract-return-types to upstream_state offered with that tobymao/sqlglot URL and a reason saying where it stands.",
     "The upstream PR's tests pass on the real engine locally or in upstream CI, with the evidence recorded in context."
   ],
-  "context": "Decision gate (owner): approve this offer before any upstream contact.\n\nVerification rubric: (1) the reduced change applies to current upstream main; (2) its dialect tests pass on the real engine; (3) the fork's downstream contract tests pass after the patches.json edit.\n\nGuardrails: no pull request, issue or comment on tobymao/sqlglot until the owner approves this specific offer in this item's context; the offered change must be the fork patch reduced to upstream-only behaviour; the patch stays carried in patches.json until upstream merges and a refresh retires it with equivalence evidence.\n\nUpstream rules (tobymao/sqlglot AGENTS.md): Conventional Commits title ending with the agent model ([CLAUDE], [CODEX]); minimal scope; tests in tests/dialects that run on the real engine; no fork-only behaviour or benchbox package references.",
+  "context": "Decision gate (owner): approve this offer before any upstream contact.\n\nVerification rubric: (1) the reduced change applies to current upstream main; (2) its dialect tests pass on the real engine; (3) the fork's downstream contract tests pass after the patches.json edit.\n\nGuardrails: no pull request, issue or comment on tobymao/sqlglot until the owner approves this specific offer in this item's context; the offered change must be the fork patch reduced to upstream-only behaviour; the patch stays carried in patches.json until upstream merges and a refresh retires it with equivalence evidence.\n\nUpstream rules (tobymao/sqlglot AGENTS.md): Conventional Commits title ending with the agent model ([CLAUDE], [CODEX]); minimal scope; tests in tests/dialects that run on the real engine; no fork-only behaviour or benchbox package references.\n\nOwner approval 2026-11-19 (Joe Harris, choice dialog): approved for upstream offer to tobymao/sqlglot. Scope chosen: the postgres-extract-return-types / sqlite-date-extraction pair plus the generic SQLite fixes (sqlite-set-operation-operands, empty-group-by-generator with sqlite-empty-group-by, sqlite-date-day-arithmetic). Pacing: open independent PRs together; open dependent ones after their prerequisite merges. PRs are opened as joeharris76 from BenchBox-dev/benchbox-sqlglot branches, titles end with [CLAUDE].",
   "description": "PostgreSQL dialect typing fix with no BenchBox behaviour; must first be reduced to the PostgreSQL EXTRACT and DATE_PART cases. Approved as an offer candidate in the triage of not-offered-patches-lack-upstream-follow-up-20261112 (owner decision 2026-11-14). Each carried patch upstream merges is one less that can stop a refresh.",
   "sessions": [
     {
@@ -15,6 +15,14 @@
       "op": "create",
       "op_id": "c4123774389449bd8e0c0dd28b1706c9",
       "session_id": "156c8e4b961b435fb161e0b220a81970"
+    },
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:89a930e0aeb2aa473ce86dcc",
+      "at": "2026-11-19T19:42:00Z",
+      "client": "omp-coding-agent",
+      "op": "update",
+      "op_id": "5ad782e9d87b40e5ad1cc2fd6e19c47f",
+      "session_id": "8a84fd1bf95e45c480b957489ce38167"
     }
   ]
 }
