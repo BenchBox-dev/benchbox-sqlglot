@@ -111,6 +111,13 @@
       "status": "open",
       "title": "Offer the sqlite-date-extraction carried patch upstream"
     },
+    "offer-upstream-sqlite-set-operation-operands-20261119": {
+      "claim": null,
+      "needs": [],
+      "priority": "low",
+      "status": "open",
+      "title": "Offer the sqlite-set-operation-operands carried patch upstream"
+    },
     "refresh-candidate-crashes-on-existing-workdir-20261112": {
       "claim": null,
       "needs": [],
