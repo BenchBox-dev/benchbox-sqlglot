@@ -584,7 +584,11 @@ staged file. If the staged patch fails too, the refresh stops on that entry as
 before and the issue names both failures. The carried patch is always tried
 first, so a tag that predates the upstream change still uses it and the staged
 file waits for a later tag. A staged file must belong to a carried entry and may
-not add hunks of only blank lines; the contract test checks both. Staging is
+not add hunks of only blank lines; the contract test checks both. Check a staged
+file in a fresh clone of the branch: `git apply --3way` falls back to the
+preimage blobs in your local object store, which the controller's clone does not
+have, so a patch that applies only through them passes locally and fails in CI.
+When upstream changes a staged file's context again, regenerate it. Staging is
 routine maintenance and does not need a refresh by hand.
 
 **Recovery.** To hold a refresh add the `no-auto-merge` label or mark the pull
