@@ -102,6 +102,13 @@
       "status": "open",
       "title": "Offer the spark-databricks-regexp-trunc carried patch upstream"
     },
+    "offer-upstream-sqlite-date-day-arithmetic-20261119": {
+      "claim": null,
+      "needs": [],
+      "priority": "low",
+      "status": "open",
+      "title": "Offer the sqlite-date-day-arithmetic carried patch upstream"
+    },
     "offer-upstream-sqlite-date-extraction-20261114": {
       "claim": null,
       "needs": [

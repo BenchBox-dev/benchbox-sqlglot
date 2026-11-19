@@ -1,0 +1,18 @@
+{
+  "acceptance": [
+    "An upstream pull request for the reduced sqlite-date-day-arithmetic change is opened and linked; patches.json moves sqlite-date-day-arithmetic to upstream_state offered with that tobymao/sqlglot URL and a reason saying where it stands.",
+    "The upstream PR's tests pass locally and in upstream CI, with the evidence recorded in context."
+  ],
+  "context": "Decision gate (owner): approved 2026-11-19 by Joe Harris (choice dialog) for an upstream offer to tobymao/sqlglot.\n\nVerification rubric: (1) the reduced change applies to current upstream main and stands alone, without the fork patches it stacks on; (2) its dialect tests pass, with execution checked on real SQLite; (3) the fork's downstream contract tests pass after the patches.json edit.\n\nGuardrails: the offered change is the fork patch reduced to upstream-only behaviour with no benchbox package references; one change per PR; the patch stays carried in patches.json until upstream merges and a refresh retires it with equivalence evidence.\n\nUpstream rules (tobymao/sqlglot AGENTS.md): Conventional Commits title ending with [CLAUDE]; minimal scope; tests in tests/dialects.",
+  "description": "SQLite DATEDIFF in DAY units round trip, without an unsupported warning (upstream v30.31.0 already lowers DATE_SUB). No BenchBox-specific behaviour. In the fork it stacks on sqlite-temporal-lowering, which upstream declined, so the offer needs a standalone version against upstream main.",
+  "sessions": [
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:89a930e0aeb2aa473ce86dcc",
+      "at": "2026-11-19T19:42:10Z",
+      "client": "omp-coding-agent",
+      "op": "create",
+      "op_id": "768bf01f46204fe1b69bfca5d7bc32bd",
+      "session_id": "8a84fd1bf95e45c480b957489ce38167"
+    }
+  ]
+}
