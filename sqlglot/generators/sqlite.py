@@ -84,6 +84,7 @@ def _generated_to_auto_increment(expression: exp.Expr) -> exp.Expr:
 
 
 class SQLiteGenerator(generator.Generator):
+    SUPPORTS_EMPTY_GROUP_BY = False
     SELECT_KINDS = ()
     TRY_SUPPORTED = False
     SUPPORTS_UESCAPE = False

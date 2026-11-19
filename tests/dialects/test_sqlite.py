@@ -1763,6 +1763,28 @@ class TestSQLite(Validator):
             check_command_warning=True,
         )
 
+    def test_empty_group_by(self):
+        self.validate_all(
+            "SELECT COUNT(*) FROM t GROUP BY ()",
+            write={
+                "duckdb": "SELECT COUNT(*) FROM t GROUP BY ()",
+                "sqlite": "SELECT COUNT(*) FROM t",
+            },
+        )
+        self.validate_all(
+            "SELECT COUNT(*) FROM t GROUP BY () HAVING COUNT(*) > 1",
+            write={"sqlite": "SELECT COUNT(*) FROM t HAVING COUNT(*) > 1"},
+        )
+        with self.assertRaises(UnsupportedError):
+            parse_one("SELECT x FROM t GROUP BY ()", read="duckdb").sql(
+                "sqlite", unsupported_level=ErrorLevel.RAISE
+            )
+
+        with closing(sqlite3.connect(":memory:")) as conn:
+            conn.execute("CREATE TABLE t (x INTEGER)")
+            conn.executemany("INSERT INTO t VALUES (?)", [(1,), (2,), (3,)])
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM t").fetchall(), [(3,)])
+
     def test_is_operator_null_safe_comparison(self):
         # issue #8855: SQLite's IS / IS NOT is a null-safe equality against any
         # expression; DuckDB and Postgres only accept NULL/TRUE/FALSE/UNKNOWN
