@@ -65,8 +65,11 @@
       "id": "postgres-extract-return-types",
       "source": "eb360e1e2962b467ca093b9f6ab1000f9ced1a02",
       "status": "carried",
-      "upstream_state": "not_offered",
-      "upstream_reason": "PostgreSQL dialect typing fix with no BenchBox-specific behavior; a candidate once reduced to the PostgreSQL EXTRACT and DATE_PART cases.",
+      "upstream_state": "offered",
+      "upstream": [
+        "https://github.com/tobymao/sqlglot/issues/9272"
+      ],
+      "upstream_reason": "Offered on 2026-11-19 as tobymao/sqlglot#9272, linking the full patch as a suggested fix (upstream now accepts pull requests only from collaborators). The offered change is this patch unchanged apart from a shorter test, so the fork does not split it.",
       "depends": [],
       "paths": [
         "sqlglot/expressions/temporal.py",
@@ -111,11 +114,11 @@
       "id": "sqlite-date-interval-arithmetic",
       "source": "b60935672d3fc52c4982077131d4cb5140a69b72",
       "status": "carried",
-      "upstream_state": "declined",
+      "upstream_state": "not_offered",
       "upstream": [
         "https://github.com/tobymao/sqlglot/issues/8347"
       ],
-      "upstream_reason": "SQLite dialect interval lowering with no BenchBox-specific behavior. Upstream closed tobymao/sqlglot#8347 (binary DATE + INTERVAL on SQLite) as not planned on 2026-09-13 without comment, so the fork keeps it.",
+      "upstream_reason": "SQLite dialect interval lowering with no BenchBox-specific behavior. Upstream closed tobymao/sqlglot#8347 (binary DATE + INTERVAL on SQLite) as not planned on 2026-09-13; upstream's CONTRIBUTING.md says not planned means the core team will not do it themselves and welcomes contributions, so it is a candidate rather than a refusal. Not offered yet.",
       "depends": [],
       "paths": [
         "sqlglot/generators/sqlite.py",
@@ -201,11 +204,11 @@
       "id": "sqlite-temporal-lowering",
       "source": "5b2282616d5490b0a548771074385b0df3a849c9",
       "status": "carried",
-      "upstream_state": "declined",
+      "upstream_state": "not_offered",
       "upstream": [
         "https://github.com/tobymao/sqlglot/issues/8347"
       ],
-      "upstream_reason": "SQLite dialect temporal lowering with no BenchBox-specific behavior; it covers the month and year offsets of binary DATE + INTERVAL. Upstream closed tobymao/sqlglot#8347 (binary DATE + INTERVAL on SQLite) as not planned on 2026-09-13 without comment, so the fork keeps it.",
+      "upstream_reason": "SQLite dialect temporal lowering with no BenchBox-specific behavior; it covers the month and year offsets of binary DATE + INTERVAL. Upstream closed tobymao/sqlglot#8347 as not planned on 2026-09-13, which upstream's CONTRIBUTING.md defines as open to contributions rather than refused. Not offered yet: it depends on sqlite-date-extraction and sqlite-date-interval-arithmetic.",
       "depends": [
         "postgres-extract-return-types",
         "sqlite-date-extraction",
@@ -373,7 +376,10 @@
       "source": "a83f3dd0d29fbeda10ea1606e0903461ba1c4abc",
       "status": "carried",
       "upstream_state": "not_offered",
-      "upstream_reason": "SQLite DATEDIFF ... DAY round trip with no BenchBox-specific behavior; upstream v30.31.0 added its own DATE_SUB lowering, so only DATEDIFF remains. Not offered yet: it applies on top of sqlite-temporal-lowering, which the fork declined, so it needs a version independent of that entry first.",
+      "upstream": [
+        "https://github.com/tobymao/sqlglot/issues/9271"
+      ],
+      "upstream_reason": "Nothing left to offer: upstream main already writes DATEDIFF ... DAY for SQLite without an unsupported warning, and this patch now only adds an equivalent branch, so a refresh can retire it with equivalence evidence. tobymao/sqlglot#9271 reports a separate upstream bug in the same output: it truncates elapsed time instead of counting day boundaries.",
       "depends": [
         "sqlite-temporal-lowering"
       ],
@@ -391,11 +397,11 @@
       "id": "sqlite-day-offset-date",
       "source": "7b929efa68cdd9a924c11f67b2f9dcac6712aa9a",
       "status": "carried",
-      "upstream_state": "declined",
+      "upstream_state": "not_offered",
       "upstream": [
         "https://github.com/tobymao/sqlglot/issues/8347"
       ],
-      "upstream_reason": "SQLite DATE offset generator fix with no BenchBox-specific behavior; it changes how binary DATE + INTERVAL n DAY is written. Upstream closed tobymao/sqlglot#8347 (binary DATE + INTERVAL on SQLite) as not planned on 2026-09-13 without comment, so the fork keeps it.",
+      "upstream_reason": "SQLite DATE offset generator fix with no BenchBox-specific behavior; it changes how binary DATE + INTERVAL n DAY is written. Upstream closed tobymao/sqlglot#8347 as not planned on 2026-09-13, which upstream's CONTRIBUTING.md defines as open to contributions rather than refused. Not offered yet: it builds on sqlite-temporal-lowering.",
       "depends": [
         "sqlite-date-day-arithmetic"
       ],
@@ -541,8 +547,11 @@
       "id": "empty-group-by-generator",
       "source": "355725b7ee694ee067b92f0f8eaf058d9be0f558",
       "status": "carried",
-      "upstream_state": "not_offered",
-      "upstream_reason": "Generator flag for engines that reject GROUP BY (); a candidate.",
+      "upstream_state": "offered",
+      "upstream": [
+        "https://github.com/tobymao/sqlglot/issues/9270"
+      ],
+      "upstream_reason": "Offered on 2026-11-19 with sqlite-empty-group-by as tobymao/sqlglot#9270, linking a fix that adds this flag and turns it off for SQLite only. The fork also turns it off for Snowflake and Spark 2, which the offer leaves out because it could not show those engines reject GROUP BY ().",
       "depends": [],
       "paths": [
         "sqlglot/generator.py",
@@ -752,8 +761,11 @@
       "id": "sqlite-set-operation-operands",
       "source": "11bbf0319c08bba01fd19af2135a0a3f669ae9e3",
       "status": "carried",
-      "upstream_state": "not_offered",
-      "upstream_reason": "SQLite set-operation operand parenthesization fix with no BenchBox-specific behavior. Not offered yet: it depends on empty-group-by-generator being offered and on sqlite-date-integer-semantics, which reads the fork's benchbox package and needs a typed-only reduction first.",
+      "upstream_state": "offered",
+      "upstream": [
+        "https://github.com/tobymao/sqlglot/issues/9269"
+      ],
+      "upstream_reason": "Offered on 2026-11-19 as tobymao/sqlglot#9269, linking a standalone one-line fix in Generator.setop_sql as a suggested fix (upstream now accepts pull requests only from collaborators).",
       "depends": [
         "empty-group-by-generator",
         "sqlite-date-integer-semantics"
@@ -1080,8 +1092,11 @@
       "id": "sqlite-empty-group-by",
       "source": "329cb733961942c521bdd44adc3f7c58fec15837",
       "status": "carried",
-      "upstream_state": "not_offered",
-      "upstream_reason": "SQLite generator flag value with no BenchBox-specific behavior. Not offered yet: it depends on empty-group-by-generator being offered and on sqlite-date-literals, which reads the fork's benchbox package and needs a typed-only reduction first.",
+      "upstream_state": "offered",
+      "upstream": [
+        "https://github.com/tobymao/sqlglot/issues/9270"
+      ],
+      "upstream_reason": "Offered on 2026-11-19 with empty-group-by-generator as tobymao/sqlglot#9270. The offered fix drops GROUP BY () only; the fork's rewrite of a global HAVING into a subquery, needed before SQLite 3.39, stays carried.",
       "depends": [
         "empty-group-by-generator",
         "sqlite-date-literals"
