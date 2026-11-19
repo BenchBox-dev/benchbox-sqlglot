@@ -1793,3 +1793,23 @@ class TestSQLite(Validator):
                     self.validate_all(sql, write={"sqlite": expected, "duckdb": expected})
                     expression = self.parse_one(sql).expressions[0]
                     self.assertIsInstance(expression.this if negate else expression, exp.Is)
+
+    def test_parenthesized_set_operation_operands(self):
+        self.validate_all(
+            "SELECT * FROM (SELECT DISTINCT a FROM t) EXCEPT SELECT * FROM (SELECT DISTINCT a FROM u)",
+            read={"duckdb": "(SELECT DISTINCT a FROM t) EXCEPT (SELECT DISTINCT a FROM u)"},
+        )
+        self.validate_all(
+            "SELECT * FROM (SELECT 1) UNION ALL SELECT * FROM (SELECT 2) ORDER BY 1 NULLS LAST LIMIT 3",
+            read={"duckdb": "(SELECT 1) UNION ALL (SELECT 2) ORDER BY 1 LIMIT 3"},
+        )
+        self.validate_all(
+            "SELECT * FROM (SELECT a FROM t ORDER BY a DESC LIMIT 3) UNION ALL SELECT * FROM (SELECT a FROM u ORDER BY a NULLS LAST LIMIT 2)",
+            read={
+                "duckdb": "(SELECT a FROM t ORDER BY a DESC LIMIT 3) UNION ALL (SELECT a FROM u ORDER BY a LIMIT 2)"
+            },
+        )
+        self.validate_all(
+            "SELECT a FROM t EXCEPT SELECT * FROM (SELECT a FROM u) ORDER BY a NULLS LAST",
+            read={"duckdb": "SELECT a FROM t EXCEPT (SELECT a FROM u) ORDER BY a"},
+        )

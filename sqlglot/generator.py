@@ -2073,7 +2073,7 @@ class Generator:
                 elif (
                     not self.SET_OP_PARENTHESIZED_OPERANDS
                     and isinstance(node, exp.Subquery)
-                    and isinstance(node.unnest(), exp.SetOperation)
+                    and isinstance(node.unnest(), exp.Query)
                 ):
                     node = exp.select("*").from_(node, copy=False)
                 sqls.append(open_parens + self.indent(self.sql(node), level=depth, pad=0))
