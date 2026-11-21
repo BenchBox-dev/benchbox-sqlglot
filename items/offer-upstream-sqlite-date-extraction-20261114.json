@@ -4,7 +4,7 @@
     "An upstream pull request for the reduced sqlite-date-extraction change is opened and linked; patches.json moves sqlite-date-extraction to upstream_state offered with that tobymao/sqlglot URL and a reason saying where it stands.",
     "The upstream PR's tests pass on the real engine locally or in upstream CI, with the evidence recorded in context."
   ],
-  "context": "Decision gate (owner): approve this offer before any upstream contact.\n\nVerification rubric: (1) the reduced change applies to current upstream main; (2) its dialect tests pass on the real engine; (3) the fork's downstream contract tests pass after the patches.json edit.\n\nGuardrails: no pull request, issue or comment on tobymao/sqlglot until the owner approves this specific offer in this item's context; the offered change must be the fork patch reduced to upstream-only behaviour; the patch stays carried in patches.json until upstream merges and a refresh retires it with equivalence evidence.\n\nUpstream rules (tobymao/sqlglot AGENTS.md): Conventional Commits title ending with the agent model ([CLAUDE], [CODEX]); minimal scope; tests in tests/dialects that run on the real engine; no fork-only behaviour or benchbox package references.\n\nOwner approval 2026-11-19 (Joe Harris, choice dialog): approved for upstream offer to tobymao/sqlglot. Scope chosen: the postgres-extract-return-types / sqlite-date-extraction pair plus the generic SQLite fixes (sqlite-set-operation-operands, empty-group-by-generator with sqlite-empty-group-by, sqlite-date-day-arithmetic). Pacing: open independent PRs together; open dependent ones after their prerequisite merges. PRs are opened as joeharris76 from BenchBox-dev/benchbox-sqlglot branches, titles end with [CLAUDE]. Opened after the postgres-extract-return-types PR merges upstream.\n\n2026-11-19: still waiting for its prerequisite. postgres-extract-return-types was offered as tobymao/sqlglot#9272 (an issue, because upstream now accepts PRs only from collaborators). Offer this one after upstream fixes #9272.",
+  "context": "Decision gate (owner): approve this offer before any upstream contact.\n\nVerification rubric: (1) the reduced change applies to current upstream main; (2) its dialect tests pass on the real engine; (3) the fork's downstream contract tests pass after the patches.json edit.\n\nGuardrails: no pull request, issue or comment on tobymao/sqlglot until the owner approves this specific offer in this item's context; the offered change must be the fork patch reduced to upstream-only behaviour; the patch stays carried in patches.json until upstream merges and a refresh retires it with equivalence evidence.\n\nUpstream rules (tobymao/sqlglot AGENTS.md): Conventional Commits title ending with the agent model ([CLAUDE], [CODEX]); minimal scope; tests in tests/dialects that run on the real engine; no fork-only behaviour or benchbox package references.\n\nOwner approval 2026-11-19 (Joe Harris, choice dialog): approved for upstream offer to tobymao/sqlglot. Scope chosen: the postgres-extract-return-types / sqlite-date-extraction pair plus the generic SQLite fixes (sqlite-set-operation-operands, empty-group-by-generator with sqlite-empty-group-by, sqlite-date-day-arithmetic). Pacing: open independent PRs together; open dependent ones after their prerequisite merges. PRs are opened as joeharris76 from BenchBox-dev/benchbox-sqlglot branches, titles end with [CLAUDE]. Opened after the postgres-extract-return-types PR merges upstream.\n\n2026-11-19: still waiting for its prerequisite. postgres-extract-return-types was offered as tobymao/sqlglot#9272 (an issue, because upstream now accepts PRs only from collaborators). Offer this one after upstream fixes #9272.\n\n2026-11-21: its prerequisite was fixed upstream (#9288). Reassess: the fork patch now reads date_part; check whether upstream SQLite EXTRACT already lowers YEAR/MONTH/DAY from DATE before offering.",
   "description": "SQLite date extraction lowering with typed inputs; depends on postgres-extract-return-types, so it is offered after that one. Approved as an offer candidate in the triage of not-offered-patches-lack-upstream-follow-up-20261112 (owner decision 2026-11-14). Each carried patch upstream merges is one less that can stop a refresh.",
   "sessions": [
     {
@@ -30,6 +30,14 @@
       "op": "update",
       "op_id": "61f2e6b9926443a086a6d13c6756d184",
       "session_id": "8a84fd1bf95e45c480b957489ce38167"
+    },
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:403bcf9486d8f969cb9cf3e9",
+      "at": "2026-11-21T14:12:35Z",
+      "client": "omp-coding-agent",
+      "op": "update",
+      "op_id": "34f192a735b44c0a9a2f077c74e591ba",
+      "session_id": "870e5e6a1aeb442681dd4415260da6c8"
     }
   ]
 }
