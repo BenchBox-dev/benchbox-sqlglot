@@ -717,6 +717,7 @@ class Controller:
                 for f in failures
             ],
             "staged": report.get("staged", []),
+            "retired": report.get("retired", []),
         }
         issues = self.drift_issues()
         failing = sorted({f["entry"] for f in failures})
@@ -1262,6 +1263,8 @@ def summary(plan: dict, mode: str) -> str:
             )
         for entry in drift.get("staged", []):
             lines.append(f"  - `{entry}` applies only through its staged resolution")
+        for entry in drift.get("retired", []):
+            lines.append(f"  - `{entry}` is replaced upstream; the next refresh retires it")
     for signal in plan.get("signals", []):
         lines.append(f"- needs follow-up: {signal}")
     for action in plan.get("actions", []):

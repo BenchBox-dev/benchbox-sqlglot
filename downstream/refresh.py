@@ -97,6 +97,27 @@ def staged_patch(entry: dict) -> str:
     return f"{STAGED_DIR}/{entry['id']}.patch"
 
 
+RETIRE_SUFFIX = ".retire.json"
+
+
+def staged_retirement(entry_id: str) -> str:
+    return f"{STAGED_DIR}/{entry_id}{RETIRE_SUFFIX}"
+
+
+def staged_retirements(root: Path, sha: str) -> dict[str, dict]:
+    found = {}
+    for path in sorted((root / STAGED_DIR).glob("*" + RETIRE_SUFFIX)):
+        marker = json.loads(path.read_text())
+        contained = subprocess.run(
+            ["git", "-C", str(root), "merge-base", "--is-ancestor", marker["commit"], sha],
+            capture_output=True,
+            check=False,
+        )
+        if contained.returncode == 0:
+            found[path.name.removesuffix(RETIRE_SUFFIX)] = marker
+    return found
+
+
 def try_patch(destination: Path, entry: dict, patch_path: Path) -> RefreshConflict | None:
     applied = subprocess.run(
         ["git", "-C", str(destination), "apply", "--3way", "--index", str(patch_path)],
@@ -175,7 +196,8 @@ def candidate(root: Path, tag: str, destination: Path, branch: str, retired: set
     clean(root)
     data = manifest(root)
     sha = validate_tag(root, data, tag)
-    entries = carried(data, retired)
+    retiring = staged_retirements(root, sha)
+    entries = carried(data, retired | set(retiring))
     head = git(root, "rev-parse", "HEAD")
     check_originals(root, sha, entries)
     add_worktree(root, destination, branch, sha)
@@ -185,6 +207,8 @@ def candidate(root: Path, tag: str, destination: Path, branch: str, retired: set
     )
     if staged:
         print("Used staged resolutions for: " + ", ".join(staged))
+    if retiring:
+        print("Retired by upstream through staged markers: " + ", ".join(sorted(retiring)))
 
 
 def upstream_main(root: Path) -> str:
@@ -194,12 +218,19 @@ def upstream_main(root: Path) -> str:
 
 
 def probe(root: Path, sha: str, work: Path) -> dict:
-    entries = carried(manifest(root), set())
+    retiring = staged_retirements(root, sha)
+    entries = carried(manifest(root), set(retiring))
     head = git(root, "rev-parse", "HEAD")
     work.mkdir(parents=True, exist_ok=True)
     scratch = Path(tempfile.mkdtemp(dir=work))
     destination = scratch / "probe"
-    report: dict = {"upstream": sha, "status": "applies", "failures": [], "staged": []}
+    report: dict = {
+        "upstream": sha,
+        "status": "applies",
+        "failures": [],
+        "staged": [],
+        "retired": sorted(retiring),
+    }
     try:
         check_originals(root, sha, entries)
         command(root, "worktree", "add", "--quiet", "--detach", str(destination), sha)
@@ -276,6 +307,8 @@ def integrate(
     changed = set(git(root, "diff", "--name-only", sha, candidate_sha).splitlines())
     if not changed <= set(paths):
         raise ValueError("Candidate includes changes outside the reviewed patch source paths")
+    markers = staged_retirements(root, sha)
+    retirements = {**{key: marker["reason"] for key, marker in markers.items()}, **retirements}
     entries = carried(data, set(retirements))
     if any(not reason.strip() for reason in retirements.values()):
         raise ValueError("Retirement requires a reviewed reason and upstream evidence")
@@ -348,11 +381,24 @@ def integrate(
             command(destination, "rm", "--quiet", "--", staged_patch(patch))
     for patch in data["patches"]:
         if patch["id"] in retirements:
-            reason = retirements[patch["id"]].strip()
+            retired_files = [patch["patch"], staged_patch(patch)]
+            if patch["id"] in markers:
+                marker = markers[patch["id"]]
+                patch["upstream"] = marker["upstream"]
+                patch["tests"] = marker["tests"]
+                retired_files.append(staged_retirement(patch["id"]))
+            command(
+                destination,
+                "rm",
+                "--quiet",
+                "--ignore-unmatch",
+                "--",
+                *retired_files,
+            )
             patch["status"] = "upstreamed"
-            patch["reason"] = reason
-            patch.pop("upstream_state", None)
-            patch.pop("upstream_reason", None)
+            patch["reason"] = retirements[patch["id"]].strip()
+            for key in ("upstream_state", "upstream_reason", "patch", "paths", "depends"):
+                patch.pop(key, None)
     (destination / "downstream/patches.json").write_text(json.dumps(data, indent=2) + "\n")
     command(destination, "add", "--", "downstream/patches.json")
     command(destination, "commit", "-m", f"chore: refresh SQLGlot from upstream {tag}")
@@ -480,6 +526,7 @@ def auto(root: Path, tag: str, work_dir: Path) -> dict:
             version=refreshed["version"],
             upstream_sha=refreshed["upstream"]["sha"],
             entries=len(carried(refreshed, set())),
+            retired=sorted(staged_retirements(root, refreshed["upstream"]["sha"])),
         )
     discard(root, candidate_path, candidate_branch)
     if report.get("status") != "refreshed":

@@ -1745,6 +1745,23 @@ class TestPatchDriftAndSignals(unittest.TestCase):
         env.apply(plan)
         self.assertEqual(drift_issues(env)[0]["state"], "closed")
 
+    def test_a_retired_patch_closes_the_drift_issue_and_is_named_in_the_summary(self):
+        env = Env(self)
+        env.apply(self.drifting(env, ("early", ["a.py"])).plan())
+        controller = env.controller()
+        controller.prober = lambda root, sha, work: {
+            "upstream": sha,
+            "status": "applies",
+            "failures": [],
+            "staged": [],
+            "retired": ["early"],
+        }
+        plan = controller.plan()
+        self.assertIn("close_drift_issues", ops(plan))
+        self.assertIn(
+            "`early` is replaced upstream; the next refresh retires it", summary(plan, "dry-run")
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
