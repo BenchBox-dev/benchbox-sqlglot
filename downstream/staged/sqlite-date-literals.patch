@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index 6a9c463f2..b1da63a70 100644
+index cac697107..3b389f9d1 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
 @@ -1,5 +1,6 @@
@@ -9,7 +9,7 @@ index 6a9c463f2..b1da63a70 100644
  import re
  import typing as t
  
-@@ -42,6 +43,43 @@ TRUNC_FORMATS = {
+@@ -43,6 +44,43 @@ TRUNC_FORMATS = {
  }
  
  
@@ -53,7 +53,7 @@ index 6a9c463f2..b1da63a70 100644
  def _moments_sql(self: SQLiteGenerator, expression: exp.Expr) -> str:
      if is_expandable(expression):
          return self.sql(expand_moments(expression))
-@@ -181,7 +219,6 @@ class SQLiteGenerator(generator.Generator):
+@@ -206,7 +244,6 @@ class SQLiteGenerator(generator.Generator):
          exp.CurrentTimestamp: lambda *_: "CURRENT_TIMESTAMP",
          exp.CurrentVersion: lambda *_: "SQLITE_VERSION()",
          exp.ColumnDef: transforms.preprocess([_generated_to_auto_increment]),
@@ -61,7 +61,7 @@ index 6a9c463f2..b1da63a70 100644
          exp.If: rename_func("IIF"),
          exp.ILike: no_ilike_sql,
          exp.JSONArrayAgg: unsupported_args("order", "null_handling", "return_type", "strict")(
-@@ -206,7 +243,6 @@ class SQLiteGenerator(generator.Generator):
+@@ -230,7 +267,6 @@ class SQLiteGenerator(generator.Generator):
          ),
          exp.StrPosition: lambda self, e: strposition_sql(self, e, func_name="INSTR"),
          exp.TableSample: no_tablesample_sql,
@@ -69,16 +69,7 @@ index 6a9c463f2..b1da63a70 100644
          exp.TimeToStr: lambda self, e: self.func("STRFTIME", self.format_time(e), e.this),
          exp.TryCast: no_trycast_sql,
          exp.TsOrDsToTimestamp: lambda self, e: self.sql(e, "this"),
-@@ -503,7 +539,7 @@ class SQLiteGenerator(generator.Generator):
-             # SQLite carries an overflowing month end into the next month, while the
-             # source engines clamp it, so only inputs that cannot overflow are lowered:
-             # a NULL, or a literal whose day of month is at most 28.
--            literal = date.this
-+            literal = self._canonical_literal(date.this)
-             if isinstance(literal, exp.Null) or (
-                 isinstance(literal, exp.Literal)
-                 and literal.is_string
-@@ -586,33 +622,31 @@ class SQLiteGenerator(generator.Generator):
+@@ -648,33 +684,31 @@ class SQLiteGenerator(generator.Generator):
                  node.replace(exp.Anonymous(this="DATETIME", expressions=[node.copy()]))
  
      def eq_sql(self, expression: exp.EQ) -> str:
@@ -119,7 +110,7 @@ index 6a9c463f2..b1da63a70 100644
          return super().between_sql(expression)
  
      def datetrunc_sql(self, expression: exp.DateTrunc) -> str:
-@@ -621,11 +655,51 @@ class SQLiteGenerator(generator.Generator):
+@@ -683,11 +717,51 @@ class SQLiteGenerator(generator.Generator):
      def timestamptrunc_sql(self, expression: exp.TimestampTrunc) -> str:
          return self._truncate_sql(expression)
  
@@ -174,10 +165,10 @@ index 6a9c463f2..b1da63a70 100644
              return self.func("TIME", expression.this)
          if expression.is_type("json", "jsonb"):
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index 60f583fcf..38868d21a 100644
+index 30981d7c1..bf400fab3 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
-@@ -2350,3 +2350,97 @@ class TestSQLite(Validator):
+@@ -2438,3 +2438,100 @@ class TestSQLite(Validator):
                          ]
                  with self.subTest(dialect=dialect, query=query):
                      self.assertEqual(outputs["sqlite"], outputs["duckdb"])
@@ -190,7 +181,10 @@ index 60f583fcf..38868d21a 100644
 +            ("CAST('1999-05-01' AS DATE)", "DATE('1999-05-01')"),
 +            ("CAST(' 1999-5-1 ' AS DATE)", "DATE('1999-05-01')"),
 +            ("CAST('1999-5-01' AS DATE) + INTERVAL '60' DAY", "DATE(DATE('1999-05-01'), '60 DAY')"),
-+            ("CAST('1999-5-01' AS DATE) - INTERVAL '2' MONTH", "DATE('1999-05-01', '-2 month')"),
++            (
++                "CAST('1999-5-01' AS DATE) - INTERVAL '2' MONTH",
++                "DATE(DATE('1999-05-01'), '-2 MONTH')",
++            ),
 +            ("CAST('1999-5-1 3:04' AS TIMESTAMP)", "DATETIME('1999-05-01 03:04:00')"),
 +            (
 +                "CAST('1999-5-1 3:04:05.25' AS TIMESTAMP)",

@@ -332,3 +332,9 @@ ClickHouse.
   including SQLite to SQLite, so `a / b` over integers is a real quotient, not SQLite's truncation. The owner
   accepted this for benchmark correctness over an opt-in rewrite like `safe_division`; integer-literal-only
   quotients keep their truncating meaning.
+- **SQLite interval arithmetic refuses what it cannot get right.** `x +/- INTERVAL` uses upstream's date
+  modifiers but stays Unsupported for a MONTH, QUARTER or YEAR offset of anything other than a NULL or a
+  literal date whose day is at most 28 (SQLite carries month-end overflow into the next month), for a DAY or
+  larger offset of an operand of unknown type (it may hold timestamp text that `DATE()` would truncate), and
+  for a `TIMESTAMPTZ` operand (tobymao/sqlglot#9302, #9303, #9304). Type date columns with
+  `sqlglot.benchbox.rewrites.mark_date_columns` to lower their offsets.
