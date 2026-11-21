@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from downstream.refresh import STAGED_DIR, blank_only_hunks
+from downstream.refresh import RETIRE_SUFFIX, STAGED_DIR, blank_only_hunks
 
 CREDENTIAL_JOBS = {("benchbox-upstream.yml", "publish"), ("benchbox-upstream.yml", "readiness")}
 
@@ -85,6 +85,19 @@ class TestDownstreamContract(unittest.TestCase):
         carried = {p["id"] for p in manifest["patches"] if p["status"] == "carried"}
         for staged in sorted((root / STAGED_DIR).glob("*")):
             with self.subTest(staged=staged.name):
+                if staged.name.endswith(RETIRE_SUFFIX):
+                    self.assertIn(staged.name.removesuffix(RETIRE_SUFFIX), carried)
+                    marker = json.loads(staged.read_text())
+                    self.assertEqual(set(marker), {"commit", "upstream", "tests", "reason"})
+                    self.assertRegex(marker["commit"], r"^[a-f0-9]{40}$")
+                    self.assertTrue(marker["upstream"])
+                    for link in marker["upstream"]:
+                        self.assertRegex(
+                            link, r"^https://github\.com/tobymao/sqlglot/(pull|issues)/\d+$"
+                        )
+                    self.assertTrue(marker["tests"])
+                    self.assertTrue(marker["reason"].strip())
+                    continue
                 self.assertEqual(staged.suffix, ".patch")
                 self.assertIn(staged.stem, carried)
                 self.assertEqual(blank_only_hunks(staged.read_bytes()), [])

@@ -1,0 +1,11 @@
+{
+  "commit": "0fc1041b68f30a6aab14b3301cb6fe0467fea662",
+  "upstream": [
+    "https://github.com/tobymao/sqlglot/issues/9269",
+    "https://github.com/tobymao/sqlglot/pull/9285"
+  ],
+  "tests": [
+    "tests.dialects.test_sqlite.TestSQLite.test_parenthesized_set_operands"
+  ],
+  "reason": "Upstream #9285 rewrites every parenthesized query operand of a set operation as SELECT * FROM (...) when SET_OP_PARENTHESIZED_OPERANDS is off, which covers this patch's plain SELECT, ORDER BY and LIMIT operands."
+}

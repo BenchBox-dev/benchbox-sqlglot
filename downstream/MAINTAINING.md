@@ -588,8 +588,24 @@ not add hunks of only blank lines; the contract test checks both. Check a staged
 file in a fresh clone of the branch: `git apply --3way` falls back to the
 preimage blobs in your local object store, which the controller's clone does not
 have, so a patch that applies only through them passes locally and fails in CI.
-When upstream changes a staged file's context again, regenerate it. Staging is
-routine maintenance and does not need a refresh by hand.
+When upstream changes a staged file's context again, regenerate it. A staged
+file is used only when the carried patch fails, so a change that must take
+effect while the carried patch still applies belongs in the staged file of an
+earlier entry whose carried patch conflicts. Staging is routine maintenance and
+does not need a refresh by hand.
+
+**Staged retirements.** When upstream merges its own version of a carried
+patch, the patch conflicts or becomes empty and cannot be staged away. Commit
+`downstream/staged/<patch-id>.retire.json` with the upstream `commit` that
+replaces it, the `upstream` issue or pull request links, the upstream `tests`
+that now cover the behaviour, and a reviewed `reason` stating the equivalence
+evidence. Whenever that commit is in the upstream base being replayed,
+`refresh candidate`, `refresh auto` and the drift probe skip the entry (the
+probe treats it as healthy, closes its drift issue and names it as retired), and
+`integrate` marks it `upstreamed` with that reason, links and tests, and deletes
+its patch, its staged files and the marker. On a tag that predates the commit,
+the carried patch is replayed as before. Restage any later entry that read the
+retired patch's code. The contract test checks the marker's fields.
 
 **Recovery.** To hold a refresh add the `no-auto-merge` label or mark the pull
 request draft. To resolve a conflict, refresh by hand with the steps below on a

@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index 9a785003..3364c8ca 100644
+index 4ba9c94b9..37e85961e 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
 @@ -17,7 +17,6 @@ from sqlglot.dialects.dialect import (
@@ -9,8 +9,8 @@ index 9a785003..3364c8ca 100644
 -from sqlglot.errors import OptimizeError
  from sqlglot.generator import unsupported_args
  from sqlglot.helper import is_int
- from sqlglot.parsers.sqlite import SQLITE_NOW
-@@ -257,69 +256,81 @@ class SQLiteGenerator(generator.Generator):
+ from sqlglot.optimizer.helpers import projection_has_aggregate
+@@ -298,69 +297,81 @@ class SQLiteGenerator(generator.Generator):
          self.unsupported("SQLite AUTOINCREMENT requires an INTEGER PRIMARY KEY")
          return ""
  
@@ -153,10 +153,10 @@ index 9a785003..3364c8ca 100644
  
      def _annotated(self, node: exp.Expr) -> exp.Expr:
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index fa924a26..7d711853 100644
+index 422df2540..a218afa54 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
-@@ -694,6 +694,10 @@ class TestSQLite(Validator):
+@@ -794,6 +794,10 @@ class TestSQLite(Validator):
  
                  for query, expected in (
                      ("SELECT 2020 / 3 > 673", (0 if dialect == "postgres" else 1,)),
@@ -167,7 +167,7 @@ index fa924a26..7d711853 100644
                      ("SELECT -EXTRACT(YEAR FROM DATE '2020-06-01') / 3 < -673", (1,)),
                      ("SELECT EXTRACT(YEAR FROM CAST(NULL AS DATE)) / 3 IS NULL", (1,)),
                      (
-@@ -725,6 +729,95 @@ class TestSQLite(Validator):
+@@ -825,6 +829,95 @@ class TestSQLite(Validator):
          finally:
              connection.close()
  

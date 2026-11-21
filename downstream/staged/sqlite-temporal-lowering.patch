@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index fc508f671..0f226e389 100644
+index 2d41d174..79e860ab 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
 @@ -1,5 +1,6 @@
@@ -9,7 +9,7 @@ index fc508f671..0f226e389 100644
  import typing as t
  
  from sqlglot import exp, generator, transforms
-@@ -22,6 +23,24 @@ from sqlglot.helper import is_int
+@@ -23,6 +24,24 @@ from sqlglot.optimizer.helpers import projection_has_aggregate
  from sqlglot.parsers.sqlite import SQLITE_NOW
  from sqlglot.tokens import TokenType
  
@@ -34,7 +34,7 @@ index fc508f671..0f226e389 100644
  
  def _transform_create(expression: exp.Expr) -> exp.Expr:
      """Move primary key to a column and place auto_increment after it."""
-@@ -303,31 +322,47 @@ class SQLiteGenerator(generator.Generator):
+@@ -344,24 +363,43 @@ class SQLiteGenerator(generator.Generator):
                      self.unsupported("SQLite extraction division requires known operand types")
          return super().div_sql(expression)
  
@@ -60,22 +60,19 @@ index fc508f671..0f226e389 100644
 -        formats = {"YEAR": "%Y", "MONTH": "%m", "DAY": "%d"}
 -        format_string = formats.get(expression.name.upper())
 -        value = expression.expression
-+        part = expression.name.upper()
-+        format_string = EXTRACT_FORMATS.get(part)
-         return_type = expression.args.get("return_type")
+-        date_part = expression.args.get("date_part")
 -        if format_string and not value.type:
 -            from sqlglot.optimizer.annotate_types import annotate_types
 -
 -            value = annotate_types(value.copy(), dialect=self.dialect, overwrite_types=False)
-         if (
-             format_string
--            and value.is_type(exp.DType.DATE)
-             and (
-                 not return_type
-                 or return_type.is_type(exp.DType.DECIMAL, *exp.DataType.INTEGER_TYPES)
-             )
+-        if format_string and value.is_type(exp.DType.DATE) and not date_part:
++        part = expression.name.upper()
++        format_string = EXTRACT_FORMATS.get(part)
++        if (
++            format_string
++            and not expression.args.get("date_part")
 +            and self._strftime_input(expression.expression, part in DATE_PARTS)
-         ):
++        ):
              return self.sql(
                  exp.cast(
 -                    exp.TimeToStr(this=value.copy(), format=exp.Literal.string(format_string)),
@@ -92,7 +89,7 @@ index fc508f671..0f226e389 100644
          )
          return super().extract_sql(expression)
  
-@@ -435,19 +470,33 @@ class SQLiteGenerator(generator.Generator):
+@@ -502,19 +540,33 @@ class SQLiteGenerator(generator.Generator):
          date, interval = expression.this, expression.expression
          if isinstance(expression, exp.Add) and isinstance(date, exp.Interval):
              date, interval = interval, date
@@ -134,7 +131,7 @@ index fc508f671..0f226e389 100644
          return None
  
      def add_sql(self, expression: exp.Add) -> str:
-@@ -460,6 +509,27 @@ class SQLiteGenerator(generator.Generator):
+@@ -527,6 +579,27 @@ class SQLiteGenerator(generator.Generator):
          self.unsupported("SQLite does not support this INTERVAL expression")
          return super().interval_sql(expression)
  
@@ -163,7 +160,7 @@ index fc508f671..0f226e389 100644
          if expression.is_type("date"):
              return self.func("DATE", expression.this)
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index 9c70b4fdc..1478a51d7 100644
+index 7127ccf2..8721544b 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
 @@ -4,6 +4,8 @@ from contextlib import closing
@@ -175,7 +172,7 @@ index 9c70b4fdc..1478a51d7 100644
  from sqlglot.generator import logger as generator_logger
  from sqlglot.helper import logger as helper_logger
  from sqlglot.optimizer.annotate_types import annotate_types
-@@ -670,7 +672,7 @@ class TestSQLite(Validator):
+@@ -795,7 +797,7 @@ class TestSQLite(Validator):
              "EXTRACT(YEAR FROM TIMESTAMP '2020-06-01 12:00:00')",
              "EXTRACT(HOUR FROM DATE '2020-06-01')",
              "EXTRACT(YEAR FROM INTERVAL '1' YEAR)",
@@ -184,7 +181,7 @@ index 9c70b4fdc..1478a51d7 100644
              "DATE_PART('year', DATE '2020-06-01')",
          ):
              with self.subTest(source=source), self.assertRaises(UnsupportedError):
-@@ -754,6 +756,223 @@ class TestSQLite(Validator):
+@@ -879,6 +881,223 @@ class TestSQLite(Validator):
                      "sqlite", unsupported_level=ErrorLevel.RAISE
                  )
          self.validate_identity("SELECT a + 1, b - 2 FROM t")

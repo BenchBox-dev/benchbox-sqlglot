@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index d8e8076a..8bb791f3 100644
+index e9f8f4a8..d25bcfbc 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
 @@ -16,6 +16,7 @@ from sqlglot.dialects.dialect import (
@@ -8,9 +8,9 @@ index d8e8076a..8bb791f3 100644
  )
 +from sqlglot.errors import OptimizeError
  from sqlglot.generator import unsupported_args
+ from sqlglot.optimizer.helpers import projection_has_aggregate
  from sqlglot.parsers.sqlite import SQLITE_NOW
- from sqlglot.tokens import TokenType
-@@ -236,6 +237,99 @@ class SQLiteGenerator(generator.Generator):
+@@ -277,6 +278,92 @@ class SQLiteGenerator(generator.Generator):
          self.unsupported("SQLite AUTOINCREMENT requires an INTEGER PRIMARY KEY")
          return ""
  
@@ -83,19 +83,12 @@ index d8e8076a..8bb791f3 100644
 +        formats = {"YEAR": "%Y", "MONTH": "%m", "DAY": "%d"}
 +        format_string = formats.get(expression.name.upper())
 +        value = expression.expression
-+        return_type = expression.args.get("return_type")
++        date_part = expression.args.get("date_part")
 +        if format_string and not value.type:
 +            from sqlglot.optimizer.annotate_types import annotate_types
 +
 +            value = annotate_types(value.copy(), dialect=self.dialect, overwrite_types=False)
-+        if (
-+            format_string
-+            and value.is_type(exp.DType.DATE)
-+            and (
-+                not return_type
-+                or return_type.is_type(exp.DType.DECIMAL, *exp.DataType.INTEGER_TYPES)
-+            )
-+        ):
++        if format_string and value.is_type(exp.DType.DATE) and not date_part:
 +            return self.sql(
 +                exp.cast(
 +                    exp.TimeToStr(this=value.copy(), format=exp.Literal.string(format_string)),
@@ -111,10 +104,10 @@ index d8e8076a..8bb791f3 100644
          if expression.args.get("ignore"):
              expression.set("ignore", False)
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index 608a57c3..0c791ad8 100644
+index 4c59adb2..42ae27ca 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
-@@ -649,6 +649,79 @@ class TestSQLite(Validator):
+@@ -774,6 +774,79 @@ class TestSQLite(Validator):
              },
          )
  

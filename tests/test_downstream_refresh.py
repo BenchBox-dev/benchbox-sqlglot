@@ -372,6 +372,59 @@ class TestDownstreamRefresh(unittest.TestCase):
             unchanged = probe(root, git(root, "rev-parse", "v1.0.0"), directory / "work")
             self.assertEqual((unchanged["status"], unchanged["staged"]), ("applies", []))
 
+    def mark_retired(self, root, tag):
+        marker = {
+            "commit": git(root, "rev-parse", tag + "^{commit}"),
+            "upstream": ["https://github.com/tobymao/sqlglot/pull/1"],
+            "tests": ["tests.test_runtime"],
+            "reason": "Upstream replaces the runtime patch",
+        }
+        (root / "downstream/staged").mkdir(exist_ok=True)
+        (root / "downstream/staged/runtime.retire.json").write_text(json.dumps(marker))
+        self.commit(root, ["downstream/staged/runtime.retire.json"], "Mark runtime retired")
+
+    def test_auto_retires_a_patch_whose_upstream_replacement_is_in_the_tag(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            upstream = "VALUE = 'rewritten upstream'\nMIDDLE = 1\nOTHER = 'upstream'\n"
+            root = self.automatic_fixture(directory, upstream)
+            self.mark_retired(root, "v1.1.0")
+            report = auto(root, "v1.1.0", directory / "work")
+            self.assertEqual(
+                (report["status"], report["entries"], report["retired"]),
+                ("refreshed", 0, ["runtime"]),
+            )
+            integration = Path(report["worktree"])
+            self.assertEqual((integration / "runtime.py").read_text(), upstream)
+            entry = json.loads((integration / "downstream/patches.json").read_text())["patches"][0]
+            self.assertEqual(
+                entry,
+                {
+                    "id": "runtime",
+                    "status": "upstreamed",
+                    "upstream": ["https://github.com/tobymao/sqlglot/pull/1"],
+                    "tests": ["tests.test_runtime"],
+                    "reason": "Upstream replaces the runtime patch",
+                },
+            )
+            self.assertFalse((integration / "downstream/runtime.patch").exists())
+            self.assertFalse((integration / "downstream/staged/runtime.retire.json").exists())
+            self.assertEqual(git(integration, "status", "--porcelain"), "")
+
+    def test_probe_retires_a_patch_only_once_upstream_contains_the_replacement(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            upstream = "VALUE = 'rewritten upstream'\nMIDDLE = 1\nOTHER = 'upstream'\n"
+            root = self.automatic_fixture(directory, upstream)
+            self.mark_retired(root, "v1.1.0")
+            report = probe(root, git(root, "rev-parse", "v1.1.0^{commit}"), directory / "work")
+            self.assertEqual(
+                (report["status"], report["failures"], report["retired"]),
+                ("applies", [], ["runtime"]),
+            )
+            older = probe(root, git(root, "rev-parse", "v1.0.0"), directory / "work")
+            self.assertEqual((older["status"], older["retired"]), ("applies", []))
+
     def test_auto_refuses_a_tag_that_is_not_newer(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
