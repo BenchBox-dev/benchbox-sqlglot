@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index 8bb791f3..fc508f67 100644
+index d25bcfbc..b56968ab 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
 @@ -18,6 +18,7 @@ from sqlglot.dialects.dialect import (
@@ -7,12 +7,35 @@ index 8bb791f3..fc508f67 100644
  from sqlglot.errors import OptimizeError
  from sqlglot.generator import unsupported_args
 +from sqlglot.helper import is_int
+ from sqlglot.optimizer.helpers import projection_has_aggregate
  from sqlglot.parsers.sqlite import SQLITE_NOW
  from sqlglot.tokens import TokenType
+@@ -465,22 +466,6 @@ class SQLiteGenerator(generator.Generator):
+         value = modifier.name if modifier.is_string else self.sql(modifier)
+         return self.func(func, base, exp.Literal.string(f"{value} {unit.name}" if unit else value))
  
-@@ -430,6 +431,35 @@ class SQLiteGenerator(generator.Generator):
+-    # SQLite has no INTERVAL type, so `x +/- INTERVAL n unit` uses date modifiers.
+-    # Intervals without a unit (e.g. Postgres INTERVAL '1 day 2 hours') are left as is.
+-    def add_sql(self, expression: exp.Add) -> str:
+-        this, other = expression.this, expression.expression
+-        if isinstance(this, exp.Interval) and not isinstance(other, exp.Interval):
+-            this, other = other, this
+-        if isinstance(other, exp.Interval) and other.unit:
+-            return self._date_delta_sql(expression, this, other)
+-        return super().add_sql(expression)
+-
+-    def sub_sql(self, expression: exp.Sub) -> str:
+-        interval = expression.expression
+-        if isinstance(interval, exp.Interval) and interval.unit:
+-            return self._date_delta_sql(expression, expression.this, interval)
+-        return super().sub_sql(expression)
+-
+     def datesub_sql(self, expression: exp.DateSub) -> str:
+         return self._date_delta_sql(expression, expression.this, expression.expression)
  
-         return self.dateadd_sql(exp.DateAdd(this=expression.this, expression=negated, unit=unit))
+@@ -497,6 +482,35 @@ class SQLiteGenerator(generator.Generator):
+             else exp.paren(amount, copy=False)
+         )
  
 +    def _date_interval_sql(self, expression: exp.Add | exp.Sub) -> str | None:
 +        date, interval = expression.this, expression.expression
@@ -47,7 +70,7 @@ index 8bb791f3..fc508f67 100644
          if expression.is_type("date"):
              return self.func("DATE", expression.this)
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index 0c791ad8..9c70b4fd 100644
+index 42ae27ca..4a5e90a2 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
 @@ -1,6 +1,7 @@
@@ -58,7 +81,45 @@ index 0c791ad8..9c70b4fd 100644
  
  from sqlglot import ErrorLevel, ParseError, UnsupportedError, exp, parse_one
  from sqlglot.generator import logger as generator_logger
-@@ -722,6 +723,61 @@ class TestSQLite(Validator):
+@@ -443,35 +444,10 @@ class TestSQLite(Validator):
+         connection = sqlite3.connect(":memory:")
+         try:
+             for read, sql, expected in (
+-                (
+-                    "postgres",
+-                    "SELECT CAST('2024-01-15' AS DATE) + INTERVAL '1 day'",
+-                    "2024-01-16 00:00:00",
+-                ),
++                ("postgres", "SELECT CAST('2024-01-15' AS DATE) + INTERVAL '1 day'", "2024-01-16"),
+                 ("mysql", "SELECT CAST('2024-01-15' AS DATE) + INTERVAL 1 DAY", "2024-01-16"),
+                 ("mysql", "SELECT CAST('2024-01-15' AS DATE) - INTERVAL 1 MONTH", "2023-12-15"),
+-                (
+-                    "duckdb",
+-                    "SELECT INTERVAL 1 DAY + CAST('2024-01-15' AS DATE)",
+-                    "2024-01-16 00:00:00",
+-                ),
+-                ("postgres", "SELECT TIME '14:30:00' - INTERVAL '1 hour'", "13:30:00"),
+-                (
+-                    "postgres",
+-                    "WITH t AS (SELECT TIMESTAMP '2024-01-15 14:30:00' AS ts) "
+-                    "SELECT t.ts + INTERVAL '1 day' FROM t",
+-                    "2024-01-16 14:30:00",
+-                ),
+-                (
+-                    "postgres",
+-                    "SELECT CAST('2024-01-15 10:00:00' AS TIMESTAMP) - INTERVAL '2 hours'",
+-                    "2024-01-15 08:00:00",
+-                ),
+-                (
+-                    "postgres",
+-                    "SELECT CAST('2024-01-15 10:00:00' AS TIMESTAMP) + INTERVAL '1 week'",
+-                    "2024-01-22 10:00:00",
+-                ),
++                ("duckdb", "SELECT INTERVAL 1 DAY + CAST('2024-01-15' AS DATE)", "2024-01-16"),
+             ):
+                 with self.subTest(sql=sql):
+                     generated = annotate_types(parse_one(sql, read=read), dialect=read).sql(
+@@ -847,6 +823,61 @@ class TestSQLite(Validator):
          finally:
              connection.close()
  
@@ -120,3 +181,35 @@ index 0c791ad8..9c70b4fd 100644
      def test_sqlite(self):
          # Range operators (IN/LIKE) are left-associative and can be chained.
          self.validate_identity("SELECT 1 IN (0) IN (1)")
+@@ -1044,31 +1075,6 @@ class TestSQLite(Validator):
+             "SELECT DATE(d, (-(SELECT 1)) || ' DAY') FROM t",
+             read={"mysql": "SELECT DATE_SUB(d, INTERVAL (SELECT 1) DAY) FROM t"},
+         )
+-        # SQLite has no INTERVAL, so date arithmetic operators become date modifiers
+-        self.validate_all(
+-            "SELECT DATE(d, '1 DAY') FROM t",
+-            read={
+-                "postgres": "SELECT d + INTERVAL '1 day' FROM t",
+-                "mysql": "SELECT d + INTERVAL 1 DAY FROM t",
+-                "duckdb": "SELECT INTERVAL 1 DAY + d FROM t",
+-            },
+-        )
+-        self.validate_all(
+-            "SELECT DATE(d, '-1 MONTH') FROM t",
+-            read={"mysql": "SELECT d - INTERVAL 1 MONTH FROM t"},
+-        )
+-        self.validate_all(
+-            "SELECT DATETIME(d, '-2 HOURS') FROM t",
+-            read={"postgres": "SELECT d - INTERVAL '2 hours' FROM t"},
+-        )
+-        self.validate_all(
+-            "SELECT DATETIME(DATETIME(d), '1 DAY') FROM t",
+-            read={"postgres": "SELECT CAST(d AS TIMESTAMP) + INTERVAL '1 day' FROM t"},
+-        )
+-        self.validate_all(
+-            "SELECT DATETIME(CURRENT_TIMESTAMP, '-7 DAYS')",
+-            read={"postgres": "SELECT CURRENT_TIMESTAMP - INTERVAL '7 days'"},
+-        )
+         self.validate_all(
+             "SELECT DATE_SUB(d, '1'') ; SELECT 1; --')",
+             write={"sqlite": "SELECT DATE(d, '-1'') ; SELECT 1; --')"},

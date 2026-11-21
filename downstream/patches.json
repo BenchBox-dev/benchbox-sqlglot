@@ -67,9 +67,10 @@
       "status": "carried",
       "upstream_state": "offered",
       "upstream": [
-        "https://github.com/tobymao/sqlglot/issues/9272"
+        "https://github.com/tobymao/sqlglot/issues/9272",
+        "https://github.com/tobymao/sqlglot/pull/9288"
       ],
-      "upstream_reason": "Offered on 2026-11-19 as tobymao/sqlglot#9272, linking the full patch as a suggested fix (upstream now accepts pull requests only from collaborators). The offered change is this patch unchanged apart from a shorter test, so the fork does not split it.",
+      "upstream_reason": "Upstream fixed tobymao/sqlglot#9272 in #9288 (ca0d9539) with a date_part arg instead of this patch's return_type. downstream/staged/postgres-extract-return-types.retire.json retires this patch at the first refresh onto a tag containing that commit; the SQLite entries that read the return type are staged to read date_part.",
       "depends": [],
       "paths": [
         "sqlglot/expressions/temporal.py",
@@ -547,11 +548,12 @@
       "id": "empty-group-by-generator",
       "source": "355725b7ee694ee067b92f0f8eaf058d9be0f558",
       "status": "carried",
-      "upstream_state": "offered",
+      "upstream_state": "declined",
       "upstream": [
-        "https://github.com/tobymao/sqlglot/issues/9270"
+        "https://github.com/tobymao/sqlglot/issues/9270",
+        "https://github.com/tobymao/sqlglot/pull/9286"
       ],
-      "upstream_reason": "Offered on 2026-11-19 with sqlite-empty-group-by as tobymao/sqlglot#9270, linking a fix that adds this flag and turns it off for SQLite only. The fork also turns it off for Snowflake and Spark 2, which the offer leaves out because it could not show those engines reject GROUP BY ().",
+      "upstream_reason": "Upstream fixed tobymao/sqlglot#9270 in #9286 with a SQLite-only group_sql and did not add this generator flag. The fork keeps the flag for DataFusion, Snowflake and Spark 2.",
       "depends": [],
       "paths": [
         "sqlglot/generator.py",
@@ -763,9 +765,10 @@
       "status": "carried",
       "upstream_state": "offered",
       "upstream": [
-        "https://github.com/tobymao/sqlglot/issues/9269"
+        "https://github.com/tobymao/sqlglot/issues/9269",
+        "https://github.com/tobymao/sqlglot/pull/9285"
       ],
-      "upstream_reason": "Offered on 2026-11-19 as tobymao/sqlglot#9269, linking a standalone one-line fix in Generator.setop_sql as a suggested fix (upstream now accepts pull requests only from collaborators).",
+      "upstream_reason": "Upstream fixed tobymao/sqlglot#9269 in #9285 (0fc1041b), which wraps every parenthesized query operand. downstream/staged/sqlite-set-operation-operands.retire.json retires this patch at the first refresh onto a tag containing that commit.",
       "depends": [
         "empty-group-by-generator",
         "sqlite-date-integer-semantics"
@@ -1092,17 +1095,19 @@
       "id": "sqlite-empty-group-by",
       "source": "329cb733961942c521bdd44adc3f7c58fec15837",
       "status": "carried",
-      "upstream_state": "offered",
+      "upstream_state": "declined",
       "upstream": [
-        "https://github.com/tobymao/sqlglot/issues/9270"
+        "https://github.com/tobymao/sqlglot/issues/9270",
+        "https://github.com/tobymao/sqlglot/pull/9286"
       ],
-      "upstream_reason": "Offered on 2026-11-19 with empty-group-by-generator as tobymao/sqlglot#9270. The offered fix drops GROUP BY () only; the fork's rewrite of a global HAVING into a subquery, needed before SQLite 3.39, stays carried.",
+      "upstream_reason": "Upstream #9286 now drops GROUP BY () for SQLite global aggregates and keeps HAVING without GROUP BY, which needs SQLite 3.39. The fork keeps its rewrite of a global HAVING into a subquery, which every SQLite version accepts; the staged resolution keeps upstream's group_sql and adjusts its HAVING tests to the rewrite.",
       "depends": [
         "empty-group-by-generator",
         "sqlite-date-literals"
       ],
       "paths": [
-        "sqlglot/generators/sqlite.py"
+        "sqlglot/generators/sqlite.py",
+        "tests/dialects/test_sqlite.py"
       ],
       "tests": [
         "tests.test_benchbox_generators",
