@@ -3,7 +3,7 @@
     "Each listed fork entry is retired, reduced, or kept with a recorded reason backed by SQLite-vs-DuckDB row evidence.",
     "The fork PR's fresh-clone drift probe applies and the full suite passes."
   ],
-  "context": "Decision gate (owner): chose on 2026-11-21 (choice dialog) to keep the fork's SQLite interval and HAVING behaviour for now and converge later; any change to SQLite output needs owner review because it changes BenchBox results (the core adoption PR's golden-corpus re-record shows the diff).\n\nVerification rubric: (1) for each fork entry, list the SQL cases where fork and upstream output differ on upstream main; (2) run both outputs on real SQLite and compare rows with DuckDB, including TPC-DS Q21/Q40/Q72 date shapes and pre-3.39 HAVING; (3) retire through downstream/staged/<id>.retire.json or restage only what upstream lacks; drift probe in a fresh clone applies; full suite and ruff pass.\n\nGuardrails: no SQLite output change without row evidence; keep the pre-3.39 HAVING rewrite unless the owner drops SQLite <3.39 support; one fork PR.",
+  "context": "Decision gate (owner): chose on 2026-11-21 (choice dialog) to keep the fork's SQLite interval and HAVING behaviour for now and converge later; any change to SQLite output needs owner review because it changes BenchBox results (the core adoption PR's golden-corpus re-record shows the diff).\n\nVerification rubric: (1) for each fork entry, list the SQL cases where fork and upstream output differ on upstream main; (2) run both outputs on real SQLite and compare rows with DuckDB, including TPC-DS Q21/Q40/Q72 date shapes and pre-3.39 HAVING; (3) retire through downstream/staged/<id>.retire.json or restage only what upstream lacks; drift probe in a fresh clone applies; full suite and ruff pass.\n\nGuardrails: no SQLite output change without row evidence; keep the pre-3.39 HAVING rewrite unless the owner drops SQLite <3.39 support; one fork PR.\n\nOwner decision 2026-11-21 (Joe Harris, choice dialog), on evidence from 390 interval cases run through fork and upstream main 089891f2 on SQLite and compared with DuckDB (fork works & upstream right 74; fork fails & upstream right 238; fork fails & upstream wrong 78; fork works & upstream wrong 0): (1) adopt upstream's SQLite interval arithmetic, retire sqlite-date-interval-arithmetic, sqlite-day-offset-date, sqlite-date-day-arithmetic and the month/year-offset part of sqlite-temporal-lowering, keep one small fork guard refusing upstream's three wrong classes (month-end/leap-day overflow of MONTH/YEAR offsets; untyped operands holding timestamp text truncated by DATE(); MySQL CAST AS TIMESTAMP written as TIMESTAMPTZ); (2) drop the pre-3.39 global HAVING rewrite and require SQLite 3.39+, so sqlite-empty-group-by retires in favour of upstream #9286; (3) file the three upstream bugs as issues on tobymao/sqlglot.",
   "description": "Upstream #9240 added SQLite interval arithmetic (x +/- INTERVAL as DATE()/DATETIME() modifiers, including untyped inputs) and #9286 drops GROUP BY () but keeps HAVING without GROUP BY. The fork's sqlite-date-interval-arithmetic, sqlite-temporal-lowering and sqlite-day-offset-date do the same job more cautiously, and sqlite-empty-group-by rewrites a global HAVING for SQLite before 3.39. BenchBox-dev/benchbox-sqlglot#134 keeps the fork's behaviour by removing upstream's shadowed add_sql/sub_sql and aligning upstream's tests, which adds divergence. These entries cause most of the near-daily drift; retiring what upstream now does correctly is the lasting fix. sqlite-date-day-arithmetic is also a candidate: upstream #9287 covers DATEDIFF DAY and the patch only adds a no-op branch.",
   "sessions": [
     {
@@ -21,6 +21,14 @@
       "generation": "9c4126136a024c13a350b1341b80e5e5",
       "op": "take",
       "op_id": "b08921c1264f4856b0e95f96fcdfdbb7",
+      "session_id": "870e5e6a1aeb442681dd4415260da6c8"
+    },
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:403bcf9486d8f969cb9cf3e9",
+      "at": "2026-11-21T15:31:32Z",
+      "client": "omp-coding-agent",
+      "op": "update",
+      "op_id": "54ecd3c8d41c46daa2e7118a2bf877eb",
       "session_id": "870e5e6a1aeb442681dd4415260da6c8"
     }
   ]
