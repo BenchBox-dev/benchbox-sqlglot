@@ -22,6 +22,13 @@
       "status": "done",
       "title": "Controller refresh and drift issues are opened with no assignee, label or notification route"
     },
+    "converge-sqlite-interval-arithmetic-with-upstream-20261121": {
+      "claim": null,
+      "needs": [],
+      "priority": "medium",
+      "status": "open",
+      "title": "Converge the fork SQLite interval and HAVING patches with upstream #9240 and #9286"
+    },
     "drift-probe-stops-at-first-failing-patch-20261117": {
       "claim": null,
       "needs": [],
