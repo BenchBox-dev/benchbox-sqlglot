@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index 4ba9c94b9..37e85961e 100644
+index 4c04f1a3e..e65ff01d3 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
 @@ -17,7 +17,6 @@ from sqlglot.dialects.dialect import (
@@ -8,9 +8,9 @@ index 4ba9c94b9..37e85961e 100644
  )
 -from sqlglot.errors import OptimizeError
  from sqlglot.generator import unsupported_args
- from sqlglot.helper import is_int
  from sqlglot.optimizer.helpers import projection_has_aggregate
-@@ -298,69 +297,81 @@ class SQLiteGenerator(generator.Generator):
+ from sqlglot.parsers.sqlite import SQLITE_NOW
+@@ -297,69 +296,81 @@ class SQLiteGenerator(generator.Generator):
          self.unsupported("SQLite AUTOINCREMENT requires an INTEGER PRIMARY KEY")
          return ""
  
@@ -153,10 +153,10 @@ index 4ba9c94b9..37e85961e 100644
  
      def _annotated(self, node: exp.Expr) -> exp.Expr:
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index 422df2540..a218afa54 100644
+index 09ef2e854..c52987d1c 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
-@@ -794,6 +794,10 @@ class TestSQLite(Validator):
+@@ -859,6 +859,10 @@ class TestSQLite(Validator):
  
                  for query, expected in (
                      ("SELECT 2020 / 3 > 673", (0 if dialect == "postgres" else 1,)),
@@ -167,7 +167,7 @@ index 422df2540..a218afa54 100644
                      ("SELECT -EXTRACT(YEAR FROM DATE '2020-06-01') / 3 < -673", (1,)),
                      ("SELECT EXTRACT(YEAR FROM CAST(NULL AS DATE)) / 3 IS NULL", (1,)),
                      (
-@@ -825,6 +829,95 @@ class TestSQLite(Validator):
+@@ -890,6 +894,95 @@ class TestSQLite(Validator):
          finally:
              connection.close()
  
@@ -260,6 +260,6 @@ index 422df2540..a218afa54 100644
 +                            literals = (93.6, 3.5) if source == "duckdb" else (93, 3)
 +                            self.assertEqual(sqlite_row[4:6], literals)
 +
-     def test_date_interval_arithmetic(self):
-         for operator, amount in (("+", "5"), ("-", "-5")):
-             for unit in ("DAY", "HOUR", "MINUTE", "SECOND"):
+     @requires_engine("sqlite")
+     def test_date_interval_month_year_execution(self):
+         # SQLite rolls an overflowing month end into the next month, so a month or

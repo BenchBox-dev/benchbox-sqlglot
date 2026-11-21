@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index 4eec16ba..a85fdfcd 100644
+index 6f5129a5e..a4b6617e3 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
 @@ -12,7 +12,6 @@ from sqlglot.dialects.dialect import (
@@ -16,9 +16,9 @@ index 4eec16ba..a85fdfcd 100644
  from sqlglot.benchbox.moments import SUPPORTED as MOMENT_AGGREGATES, expand_moments, is_expandable
 +from sqlglot.benchbox.pivot import expand_order_by_all, lower_pivots, reject_pivot_sql
  from sqlglot.generator import unsupported_args
- from sqlglot.helper import is_int
  from sqlglot.optimizer.helpers import projection_has_aggregate
-@@ -306,7 +306,7 @@ class SQLiteGenerator(generator.Generator):
+ from sqlglot.parsers.sqlite import SQLITE_NOW
+@@ -258,7 +258,7 @@ class SQLiteGenerator(generator.Generator):
          ),
          exp.LogicalOr: rename_func("MAX"),
          exp.LogicalAnd: rename_func("MIN"),
@@ -27,7 +27,7 @@ index 4eec16ba..a85fdfcd 100644
          exp.RegexpLike: lambda self, e: self.binary(e, "REGEXP"),
          **{kind: _moments_sql for kind in MOMENT_AGGREGATES},
          exp.Select: transforms.preprocess(
-@@ -959,7 +959,9 @@ class SQLiteGenerator(generator.Generator):
+@@ -890,7 +890,9 @@ class SQLiteGenerator(generator.Generator):
          return self.func(name, *coalesces)
  
      def preprocess(self, expression: exp.Expr) -> exp.Expr:

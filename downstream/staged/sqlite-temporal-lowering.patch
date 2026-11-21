@@ -1,15 +1,8 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index 2d41d174..79e860ab 100644
+index c70f1163b..4c04f1a3e 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
-@@ -1,5 +1,6 @@
- from __future__ import annotations
- 
-+import re
- import typing as t
- 
- from sqlglot import exp, generator, transforms
-@@ -23,6 +24,24 @@ from sqlglot.optimizer.helpers import projection_has_aggregate
+@@ -23,6 +23,24 @@ from sqlglot.optimizer.helpers import projection_has_aggregate
  from sqlglot.parsers.sqlite import SQLITE_NOW
  from sqlglot.tokens import TokenType
  
@@ -34,7 +27,7 @@ index 2d41d174..79e860ab 100644
  
  def _transform_create(expression: exp.Expr) -> exp.Expr:
      """Move primary key to a column and place auto_increment after it."""
-@@ -344,24 +363,43 @@ class SQLiteGenerator(generator.Generator):
+@@ -344,24 +362,43 @@ class SQLiteGenerator(generator.Generator):
                      self.unsupported("SQLite extraction division requires known operand types")
          return super().div_sql(expression)
  
@@ -89,49 +82,7 @@ index 2d41d174..79e860ab 100644
          )
          return super().extract_sql(expression)
  
-@@ -502,19 +540,33 @@ class SQLiteGenerator(generator.Generator):
-         date, interval = expression.this, expression.expression
-         if isinstance(expression, exp.Add) and isinstance(date, exp.Interval):
-             date, interval = interval, date
--        if (
--            date.is_type(exp.DType.DATE)
--            and isinstance(interval, exp.Interval)
-+        if not (
-+            isinstance(interval, exp.Interval)
-             and interval.unit
--            and interval.unit.name.upper() in ("DAY", "HOUR", "MINUTE", "SECOND")
-             and isinstance(interval.this, exp.Literal)
-             and is_int(interval.this.name)
-+            and self._annotated(date).is_type(exp.DType.DATE)
-         ):
--            amount = int(interval.this.name)
--            if isinstance(expression, exp.Sub):
--                amount = -amount
--            modifier = exp.Literal.string(f"{amount} {interval.unit.name}")
-+            return None
-+        amount = int(interval.this.name)
-+        if isinstance(expression, exp.Sub):
-+            amount = -amount
-+        unit = interval.unit.name.upper()
-+        if unit in ("DAY", "HOUR", "MINUTE", "SECOND"):
-+            modifier = exp.Literal.string(f"{amount} {unit}")
-             return self.func("DATETIME", date, modifier)
-+        if unit in ("MONTH", "YEAR") and isinstance(date, (exp.Cast, exp.Date)):
-+            # SQLite carries an overflowing month end into the next month, while the
-+            # source engines clamp it, so only inputs that cannot overflow are lowered:
-+            # a NULL, or a literal whose day of month is at most 28.
-+            literal = date.this
-+            if isinstance(literal, exp.Null) or (
-+                isinstance(literal, exp.Literal)
-+                and literal.is_string
-+                and re.fullmatch(r"\d{4}-\d{2}-(0[1-9]|1\d|2[0-8])", literal.name)
-+            ):
-+                modifier = exp.Literal.string(f"{amount:+d} {unit.lower()}")
-+                return self.func("DATE", literal, modifier)
-         return None
- 
-     def add_sql(self, expression: exp.Add) -> str:
-@@ -527,6 +579,27 @@ class SQLiteGenerator(generator.Generator):
+@@ -525,6 +562,27 @@ class SQLiteGenerator(generator.Generator):
          self.unsupported("SQLite does not support this INTERVAL expression")
          return super().interval_sql(expression)
  
@@ -160,11 +111,11 @@ index 2d41d174..79e860ab 100644
          if expression.is_type("date"):
              return self.func("DATE", expression.this)
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index 7127ccf2..8721544b 100644
+index 3102e3ad6..09ef2e854 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
-@@ -4,6 +4,8 @@ from contextlib import closing
- from datetime import datetime, timedelta
+@@ -3,6 +3,8 @@ import unittest
+ from contextlib import closing
  
  from sqlglot import ErrorLevel, ParseError, UnsupportedError, exp, parse_one
 +from tests import engines
@@ -172,7 +123,7 @@ index 7127ccf2..8721544b 100644
  from sqlglot.generator import logger as generator_logger
  from sqlglot.helper import logger as helper_logger
  from sqlglot.optimizer.annotate_types import annotate_types
-@@ -795,7 +797,7 @@ class TestSQLite(Validator):
+@@ -835,7 +837,7 @@ class TestSQLite(Validator):
              "EXTRACT(YEAR FROM TIMESTAMP '2020-06-01 12:00:00')",
              "EXTRACT(HOUR FROM DATE '2020-06-01')",
              "EXTRACT(YEAR FROM INTERVAL '1' YEAR)",
@@ -181,56 +132,10 @@ index 7127ccf2..8721544b 100644
              "DATE_PART('year', DATE '2020-06-01')",
          ):
              with self.subTest(source=source), self.assertRaises(UnsupportedError):
-@@ -879,6 +881,223 @@ class TestSQLite(Validator):
-                     "sqlite", unsupported_level=ErrorLevel.RAISE
-                 )
-         self.validate_identity("SELECT a + 1, b - 2 FROM t")
-+        for source in (
-+            "CAST(d AS DATE) + INTERVAL '1' MONTH",
-+            "DATE '2023-01-29' + INTERVAL '1' MONTH",
-+            "DATE '2024-03-31' - INTERVAL '1' MONTH",
-+            "DATE '2024-01-01' + INTERVAL '1' QUARTER",
-+            "DATE '2024-01-01' + INTERVAL '1' WEEK",
-+        ):
-+            with self.subTest(source=source), self.assertRaises(UnsupportedError):
-+                self.parse_one(source, dialect="postgres").sql(
-+                    "sqlite", unsupported_level=ErrorLevel.RAISE
-+                )
-+
-+    def test_date_interval_month_year(self):
-+        self.validate_all(
-+            "SELECT DATE('1994-01-01', '+1 year')",
-+            read={
-+                "postgres": "SELECT DATE '1994-01-01' + INTERVAL '1' YEAR",
-+                "duckdb": "SELECT DATE '1994-01-01' + INTERVAL '1' YEAR",
-+            },
-+        )
-+        self.validate_all(
-+            "SELECT DATE('1994-01-01', '-3 month')",
-+            read={"postgres": "SELECT DATE '1994-01-01' - INTERVAL '3' MONTH"},
-+        )
-+        self.validate_all(
-+            "SELECT DATE('1994-03-10', '+2 month')",
-+            read={"postgres": "SELECT DATE '1994-03-10' - INTERVAL '-2' MONTH"},
-+        )
-+        self.validate_all(
-+            "SELECT DATE('1994-01-01', '+2 month')",
-+            read={"postgres": "SELECT INTERVAL '2' MONTH + CAST('1994-01-01' AS DATE)"},
-+        )
-+        self.validate_all(
-+            "SELECT DATE('1998-09-01', '+10 month')",
-+            read={"duckdb": "SELECT DATE('1998-09-01') + INTERVAL '10' MONTH"},
-+        )
-+        self.validate_all(
-+            "SELECT DATE(NULL, '+1 month')",
-+            read={"postgres": "SELECT CAST(NULL AS DATE) + INTERVAL '1' MONTH"},
-+        )
-+        # The function form of a DATE is typed like a DATE literal.
-+        self.validate_all(
-+            "SELECT DATETIME(DATE('1998-09-01'), '10 DAY') FROM t",
-+            read={"duckdb": "SELECT DATE('1998-09-01') + INTERVAL '10' DAY FROM t"},
-+        )
-+
+@@ -888,6 +890,178 @@ class TestSQLite(Validator):
+         finally:
+             connection.close()
+ 
 +    @requires_engine("sqlite")
 +    def test_date_interval_month_year_execution(self):
 +        # SQLite rolls an overflowing month end into the next month, so a month or
@@ -402,6 +307,7 @@ index 7127ccf2..8721544b 100644
 +                        self.assertEqual(
 +                            [type(row[0]) for row in rows], [type(value) for value in values]
 +                        )
- 
-     def test_date_interval_execution(self):
-         with sqlite3.connect(":memory:") as connection:
++
+     def test_sqlite(self):
+         # Range operators (IN/LIKE) are left-associative and can be chained.
+         self.validate_identity("SELECT 1 IN (0) IN (1)")

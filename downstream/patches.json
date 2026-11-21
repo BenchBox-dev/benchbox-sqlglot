@@ -115,11 +115,13 @@
       "id": "sqlite-date-interval-arithmetic",
       "source": "b60935672d3fc52c4982077131d4cb5140a69b72",
       "status": "carried",
-      "upstream_state": "not_offered",
+      "upstream_state": "offered",
       "upstream": [
-        "https://github.com/tobymao/sqlglot/issues/8347"
+        "https://github.com/tobymao/sqlglot/issues/9302",
+        "https://github.com/tobymao/sqlglot/issues/9303",
+        "https://github.com/tobymao/sqlglot/issues/9304"
       ],
-      "upstream_reason": "SQLite dialect interval lowering with no BenchBox-specific behavior. Upstream closed tobymao/sqlglot#8347 (binary DATE + INTERVAL on SQLite) as not planned on 2026-09-13; upstream's CONTRIBUTING.md says not planned means the core team will not do it themselves and welcomes contributions, so it is a candidate rather than a refusal. Not offered yet.",
+      "upstream_reason": "Upstream #9240 lowers SQLite interval arithmetic itself; this entry is now only a guard around it for the three cases where upstream's output is wrong, reported as tobymao/sqlglot#9302 (month and year overflow at month end), #9303 (unknown-type operands lose the time) and #9304 (MySQL TIMESTAMP casts become numbers). It retires once upstream fixes them.",
       "depends": [],
       "paths": [
         "sqlglot/generators/sqlite.py",
@@ -128,7 +130,7 @@
       "tests": [
         "tests.dialects.test_sqlite"
       ],
-      "reason": "Lower typed DATE plus/minus whole DAY/HOUR/MINUTE/SECOND intervals; reject fractional, timestamp and unknown-input cases whose semantics are unproved. Month/year offsets are lowered by sqlite-temporal-lowering.",
+      "reason": "x +/- INTERVAL uses upstream's SQLite date modifiers, except where they give a wrong result, which stays Unsupported: a MONTH, QUARTER or YEAR offset unless the base is a NULL or a literal whose day of month is at most 28; a DAY, WEEK, MONTH or YEAR offset of an operand of unknown type, which may hold timestamp text; and any offset of a TIMESTAMPTZ operand. A DATE plus a day-or-larger interval stays a DATE even when the tree is type-annotated, so it compares correctly with date text (TPC-DS Q21 and Q40 boundaries). On upstream main 089891f2, 390 interval cases run on SQLite against DuckDB: every case that worked before gives the same result, 156 more now work, and none is wrong.",
       "patch": "downstream/patches/sqlite-date-interval-arithmetic.patch"
     },
     {
@@ -206,10 +208,7 @@
       "source": "5b2282616d5490b0a548771074385b0df3a849c9",
       "status": "carried",
       "upstream_state": "not_offered",
-      "upstream": [
-        "https://github.com/tobymao/sqlglot/issues/8347"
-      ],
-      "upstream_reason": "SQLite dialect temporal lowering with no BenchBox-specific behavior; it covers the month and year offsets of binary DATE + INTERVAL. Upstream closed tobymao/sqlglot#8347 as not planned on 2026-09-13, which upstream's CONTRIBUTING.md defines as open to contributions rather than refused. Not offered yet: it depends on sqlite-date-extraction and sqlite-date-interval-arithmetic.",
+      "upstream_reason": "SQLite EXTRACT of YEAR..SECOND from inputs of unknown type and DATE_TRUNC to STRFTIME, with no BenchBox-specific behavior. Not offered yet: it depends on sqlite-date-extraction. Month and year interval offsets moved to upstream #9240 and the guard in sqlite-date-interval-arithmetic.",
       "depends": [
         "postgres-extract-return-types",
         "sqlite-date-extraction",
@@ -223,7 +222,7 @@
       "tests": [
         "tests.dialects.test_sqlite"
       ],
-      "reason": "Lower whole month/year offsets on a DATE that cannot overflow a month end, EXTRACT of YEAR..SECOND from inputs of unknown type, and DATE_TRUNC to STRFTIME; keep month-end rollover, CAST to TIMESTAMP, time zones and other units Unsupported.",
+      "reason": "Lower EXTRACT of YEAR..SECOND from inputs of unknown type and DATE_TRUNC to STRFTIME; keep CAST to TIMESTAMP, time zones and other units Unsupported.",
       "patch": "downstream/patches/sqlite-temporal-lowering.patch"
     },
     {
@@ -378,9 +377,10 @@
       "status": "carried",
       "upstream_state": "not_offered",
       "upstream": [
-        "https://github.com/tobymao/sqlglot/issues/9271"
+        "https://github.com/tobymao/sqlglot/issues/9271",
+        "https://github.com/tobymao/sqlglot/pull/9287"
       ],
-      "upstream_reason": "Nothing left to offer: upstream main already writes DATEDIFF ... DAY for SQLite without an unsupported warning, and this patch now only adds an equivalent branch, so a refresh can retire it with equivalence evidence. tobymao/sqlglot#9271 reports a separate upstream bug in the same output: it truncates elapsed time instead of counting day boundaries.",
+      "upstream_reason": "Replaced upstream by #9287 and earlier DATE_SUB lowering; downstream/staged/sqlite-date-day-arithmetic.retire.json retires it at the first refresh onto a tag containing 679c8c99.",
       "depends": [
         "sqlite-temporal-lowering"
       ],
@@ -400,9 +400,9 @@
       "status": "carried",
       "upstream_state": "not_offered",
       "upstream": [
-        "https://github.com/tobymao/sqlglot/issues/8347"
+        "https://github.com/tobymao/sqlglot/pull/9240"
       ],
-      "upstream_reason": "SQLite DATE offset generator fix with no BenchBox-specific behavior; it changes how binary DATE + INTERVAL n DAY is written. Upstream closed tobymao/sqlglot#8347 as not planned on 2026-09-13, which upstream's CONTRIBUTING.md defines as open to contributions rather than refused. Not offered yet: it builds on sqlite-temporal-lowering.",
+      "upstream_reason": "Replaced upstream by #9240, with the fork's DATE-result policy now in sqlite-date-interval-arithmetic; downstream/staged/sqlite-day-offset-date.retire.json retires it at the first refresh onto a tag containing 2d2f1b92.",
       "depends": [
         "sqlite-date-day-arithmetic"
       ],
