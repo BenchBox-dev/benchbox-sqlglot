@@ -127,9 +127,9 @@
     },
     "offer-upstream-sqlite-set-operation-operands-20261119": {
       "claim": {
-        "expires_at": "2026-11-23T02:26:47Z",
-        "generation": "a779ecc3e23045e988a096d3fd32435f",
-        "renewals": 0,
+        "expires_at": "2026-11-23T02:26:53Z",
+        "generation": "4cc216c9616d4435bb10994b72db0dbb",
+        "renewals": 1,
         "worker": "mcp:omp-coding-agent:joe@joe-mac-mini.local:08c975d4ad609437d779f35a"
       },
       "needs": [],
