@@ -68,7 +68,7 @@
       "claim": null,
       "needs": [],
       "priority": "low",
-      "status": "open",
+      "status": "blocked",
       "title": "Offer the databricks-primary-key-ordering carried patch upstream"
     },
     "offer-upstream-duckdb-order-by-all-keyword-20261114": {
