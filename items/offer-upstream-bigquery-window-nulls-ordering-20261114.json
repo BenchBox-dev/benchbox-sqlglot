@@ -4,7 +4,7 @@
     "An upstream pull request for the reduced bigquery-window-nulls-ordering change is opened and linked; patches.json moves bigquery-window-nulls-ordering to upstream_state offered with that tobymao/sqlglot URL and a reason saying where it stands.",
     "The upstream PR's tests pass on the real engine locally or in upstream CI, with the evidence recorded in context."
   ],
-  "context": "Decision gate (owner): approve this offer before any upstream contact.\n\nVerification rubric: (1) the reduced change applies to current upstream main; (2) its dialect tests pass on the real engine; (3) the fork's downstream contract tests pass after the patches.json edit.\n\nGuardrails: no pull request, issue or comment on tobymao/sqlglot until the owner approves this specific offer in this item's context; the offered change must be the fork patch reduced to upstream-only behaviour; the patch stays carried in patches.json until upstream merges and a refresh retires it with equivalence evidence.\n\nUpstream rules (tobymao/sqlglot AGENTS.md): Conventional Commits title ending with the agent model ([CLAUDE], [CODEX]); minimal scope; tests in tests/dialects that run on the real engine; no fork-only behaviour or benchbox package references.",
+  "context": "Decision gate (owner): approve this offer before any upstream contact.\n\nVerification rubric: (1) the reduced change applies to current upstream main; (2) its dialect tests pass on the real engine; (3) the fork's downstream contract tests pass after the patches.json edit.\n\nGuardrails: no pull request, issue or comment on tobymao/sqlglot until the owner approves this specific offer in this item's context; the offered change must be the fork patch reduced to upstream-only behaviour; the patch stays carried in patches.json until upstream merges and a refresh retires it with equivalence evidence.\n\nUpstream rules (tobymao/sqlglot AGENTS.md): Conventional Commits title ending with the agent model ([CLAUDE], [CODEX]); minimal scope; tests in tests/dialects that run on the real engine; no fork-only behaviour or benchbox package references.\n\nOwner approval 2026-11-21 (Joe Harris, choice dialog): approved for upstream offer to tobymao/sqlglot.\n\n2026-11-21: offered as https://github.com/tobymao/sqlglot/issues/9309 with fork commit 4ba0d235 (branch upstream/bigquery-window-nulls-ordering, built on upstream main 089891f2). Reduced change = fork patch unchanged; applies cleanly to upstream main. Verified on real BigQuery (project benchbox-testing): upstream main's output is rejected in 9 of 11 queries ('NULLS LAST not supported with ascending sort order in RANGE clauses of analytic functions.'), the patched output in 0 of 11; patched rows match DuckDB for 10 of 10 queries over data with NULL keys. tests.dialects.test_bigquery passes (74 tests); the full upstream suite (1770 tests) has only the two environment errors that base also has (test_lazy_load, test_sqlglotc); no new ruff findings. Filed as an issue because upstream accepts pull requests only from collaborators. Fork patches.json moves the entry to offered in branch chore/record-bigquery-duckdb-offers. Next: when upstream fixes the issue, a refresh retires the patch with equivalence evidence; until then it stays carried.",
   "description": "Self-contained BigQuery generator fix with no carried dependency. Approved as an offer candidate in the triage of not-offered-patches-lack-upstream-follow-up-20261112 (owner decision 2026-11-14). Each carried patch upstream merges is one less that can stop a refresh.",
   "sessions": [
     {
@@ -14,6 +14,14 @@
       "op": "create",
       "op_id": "97c92ac554164119a7157a3c295765a5",
       "session_id": "156c8e4b961b435fb161e0b220a81970"
+    },
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:08c975d4ad609437d779f35a",
+      "at": "2026-11-22T03:34:56Z",
+      "client": "omp-coding-agent",
+      "op": "update",
+      "op_id": "efb788cd14f444aca0ee87a8075bcd65",
+      "session_id": "8d0e342d1cb046e5ab1a4e36308ac8da"
     }
   ]
 }
