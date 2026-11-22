@@ -4,6 +4,7 @@
     "An upstream pull request for the reduced empty-group-by-generator change is opened and linked; patches.json moves empty-group-by-generator to upstream_state offered with that tobymao/sqlglot URL and a reason saying where it stands.",
     "The upstream PR's tests pass on the real engine locally or in upstream CI, with the evidence recorded in context."
   ],
+  "closing_note": "Offer complete. Filed with owner approval (2026-11-19) together with sqlite-empty-group-by as issue tobymao/sqlglot#9270, linking fork commit 2eb247ef, because upstream accepts pull requests only from collaborators. Upstream fixed the SQLite case in tobymao/sqlglot#9286 (merged 2026-11-20) with a SQLite-only group_sql and did not take the SUPPORTS_EMPTY_GROUP_BY generator flag. patches.json records upstream_state declined for empty-group-by-generator; the fork keeps the flag for DataFusion, Snowflake and Spark 2 and its pre-3.39 HAVING rewrite (BenchBox-dev/benchbox-sqlglot#134). No further upstream offer is planned for the flag.",
   "context": "Decision gate (owner): approve this offer before any upstream contact.\n\nVerification rubric: (1) the reduced change applies to current upstream main; (2) its dialect tests pass on the real engine; (3) the fork's downstream contract tests pass after the patches.json edit.\n\nGuardrails: no pull request, issue or comment on tobymao/sqlglot until the owner approves this specific offer in this item's context; the offered change must be the fork patch reduced to upstream-only behaviour; the patch stays carried in patches.json until upstream merges and a refresh retires it with equivalence evidence.\n\nUpstream rules (tobymao/sqlglot AGENTS.md): Conventional Commits title ending with the agent model ([CLAUDE], [CODEX]); minimal scope; tests in tests/dialects that run on the real engine; no fork-only behaviour or benchbox package references.\n\nOwner approval 2026-11-19 (Joe Harris, choice dialog): approved for upstream offer to tobymao/sqlglot. Scope chosen: the postgres-extract-return-types / sqlite-date-extraction pair plus the generic SQLite fixes (sqlite-set-operation-operands, empty-group-by-generator with sqlite-empty-group-by, sqlite-date-day-arithmetic). Pacing: open independent PRs together; open dependent ones after their prerequisite merges. PRs are opened as joeharris76 from BenchBox-dev/benchbox-sqlglot branches, titles end with [CLAUDE]. Offered together with sqlite-empty-group-by as one upstream PR: the base flag plus SQLite opting out, since upstream would not take an unused flag.\n\n2026-11-19: offered with sqlite-empty-group-by as https://github.com/tobymao/sqlglot/issues/9270, fork commit 2eb247ef (branch upstream/sqlite-empty-group-by). SQLite only; the fork's Snowflake/Spark 2 settings and the pre-3.39 HAVING rewrite stay carried. Verified on SQLite 3.54 vs DuckDB (empty and non-empty tables); test_sqlite, test_optimizer, test_executor, test_transpile pass. tobymao/sqlglot now accepts pull requests only from collaborators (repo setting pull_request_creation_policy=collaborators_only, observed 2026-11-19; createPullRequest refused for joeharris76), so with the owner's approval (choice dialog, 2026-11-19) the offer was filed as an issue linking the ready fork commit. Fork patches.json records it in BenchBox-dev/benchbox-sqlglot#120. Next: when upstream fixes the issue (their own commit or ours), a refresh retires the fork patch with equivalence evidence; until then the patch stays carried.\n\n2026-11-21: upstream fixed #9270 in tobymao/sqlglot#9286 with a SQLite-only group_sql, not the generator flag. Fork keeps the flag for DataFusion/Snowflake/Spark 2 (declined) and its pre-3.39 HAVING rewrite; restaged in BenchBox-dev/benchbox-sqlglot#134.",
   "description": "Generator flag for engines that reject GROUP BY (); no carried dependency. Prerequisite for spark-databricks-regexp-trunc and for the later SQLite empty GROUP BY entries. Approved as an offer candidate in the triage of not-offered-patches-lack-upstream-follow-up-20261112 (owner decision 2026-11-14). Each carried patch upstream merges is one less that can stop a refresh.",
   "sessions": [
@@ -46,6 +47,15 @@
       "generation": "915b279f64884f6a92ef3019584071bb",
       "op": "take",
       "op_id": "0bccde4884204fb3a986eee3f5aadc8e",
+      "session_id": "8d0e342d1cb046e5ab1a4e36308ac8da"
+    },
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:08c975d4ad609437d779f35a",
+      "at": "2026-11-22T02:27:13Z",
+      "client": "omp-coding-agent",
+      "generation": "915b279f64884f6a92ef3019584071bb",
+      "op": "finish",
+      "op_id": "3aa5729484c54628b69739f2e90b3fd4",
       "session_id": "8d0e342d1cb046e5ab1a4e36308ac8da"
     }
   ]
