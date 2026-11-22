@@ -5,6 +5,7 @@
     "An upstream pull request for the reduced postgres-extract-return-types change is opened and linked; patches.json moves postgres-extract-return-types to upstream_state offered with that tobymao/sqlglot URL and a reason saying where it stands.",
     "The upstream PR's tests pass on the real engine locally or in upstream CI, with the evidence recorded in context."
   ],
+  "closing_note": "Offer complete. Filed with owner approval (2026-11-19) as issue tobymao/sqlglot#9272 linking fork commit c81e4be2, because upstream accepts pull requests only from collaborators. Verified then on PostgreSQL 16.2. Upstream fixed it in tobymao/sqlglot#9288 (ca0d9539, merged 2026-11-20) with a date_part arg instead of this patch's return_type. The staged marker downstream/staged/postgres-extract-return-types.retire.json retires the carried patch at the first refresh onto a tag containing ca0d9539 (BenchBox-dev/benchbox-sqlglot#134).",
   "context": "Decision gate (owner): approve this offer before any upstream contact.\n\nVerification rubric: (1) the reduced change applies to current upstream main; (2) its dialect tests pass on the real engine; (3) the fork's downstream contract tests pass after the patches.json edit.\n\nGuardrails: no pull request, issue or comment on tobymao/sqlglot until the owner approves this specific offer in this item's context; the offered change must be the fork patch reduced to upstream-only behaviour; the patch stays carried in patches.json until upstream merges and a refresh retires it with equivalence evidence.\n\nUpstream rules (tobymao/sqlglot AGENTS.md): Conventional Commits title ending with the agent model ([CLAUDE], [CODEX]); minimal scope; tests in tests/dialects that run on the real engine; no fork-only behaviour or benchbox package references.\n\nOwner approval 2026-11-19 (Joe Harris, choice dialog): approved for upstream offer to tobymao/sqlglot. Scope chosen: the postgres-extract-return-types / sqlite-date-extraction pair plus the generic SQLite fixes (sqlite-set-operation-operands, empty-group-by-generator with sqlite-empty-group-by, sqlite-date-day-arithmetic). Pacing: open independent PRs together; open dependent ones after their prerequisite merges. PRs are opened as joeharris76 from BenchBox-dev/benchbox-sqlglot branches, titles end with [CLAUDE].\n\n2026-11-19: offered as https://github.com/tobymao/sqlglot/issues/9272 with fork commit c81e4be2 (branch upstream/postgres-extract-return-types). Reduced change = fork patch with a shorter test; no split needed. Verified: PostgreSQL 16.2 server (pgserver) gives numeric for EXTRACT, double precision for DATE_PART, and rejects upstream's EXTRACT(CAST(...) FROM ...) output; upstream full suite has no new failures vs clean main. tobymao/sqlglot now accepts pull requests only from collaborators (repo setting pull_request_creation_policy=collaborators_only, observed 2026-11-19; createPullRequest refused for joeharris76), so with the owner's approval (choice dialog, 2026-11-19) the offer was filed as an issue linking the ready fork commit. Fork patches.json records it in BenchBox-dev/benchbox-sqlglot#120. Next: when upstream fixes the issue (their own commit or ours), a refresh retires the fork patch with equivalence evidence; until then the patch stays carried.\n\n2026-11-21: upstream fixed #9272 in tobymao/sqlglot#9288 (ca0d9539) with a date_part arg. Retired through a staged marker in BenchBox-dev/benchbox-sqlglot#134; SQLite entries restaged to read date_part.",
   "description": "PostgreSQL dialect typing fix with no BenchBox behaviour; must first be reduced to the PostgreSQL EXTRACT and DATE_PART cases. Approved as an offer candidate in the triage of not-offered-patches-lack-upstream-follow-up-20261112 (owner decision 2026-11-14). Each carried patch upstream merges is one less that can stop a refresh.",
   "sessions": [
@@ -47,6 +48,15 @@
       "generation": "096c60c0a4994ea89a9bbd90099127ce",
       "op": "take",
       "op_id": "efbbc5d5c0bf43b7bd8f7a2fb9eaa9b8",
+      "session_id": "8d0e342d1cb046e5ab1a4e36308ac8da"
+    },
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:08c975d4ad609437d779f35a",
+      "at": "2026-11-22T02:27:09Z",
+      "client": "omp-coding-agent",
+      "generation": "096c60c0a4994ea89a9bbd90099127ce",
+      "op": "finish",
+      "op_id": "2c594b337bc44acfa44554fbd2b29db3",
       "session_id": "8d0e342d1cb046e5ab1a4e36308ac8da"
     }
   ]
