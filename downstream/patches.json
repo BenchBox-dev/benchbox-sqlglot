@@ -229,8 +229,11 @@
       "id": "duckdb-order-by-all-keyword",
       "source": "0e0e27da679d7c807a2ffafbdf87a95b01820e65",
       "status": "carried",
-      "upstream_state": "not_offered",
-      "upstream_reason": "Self-contained DuckDB generator fix; an upstream-submission candidate.",
+      "upstream_state": "offered",
+      "upstream": [
+        "https://github.com/tobymao/sqlglot/issues/9310"
+      ],
+      "upstream_reason": "Offered on 2026-11-21 as tobymao/sqlglot#9310, linking this patch unchanged as a suggested fix (upstream accepts pull requests only from collaborators).",
       "depends": [],
       "paths": [
         "sqlglot/generators/duckdb.py",
@@ -728,8 +731,11 @@
       "id": "bigquery-window-nulls-ordering",
       "source": "0d895d597de14053cf10ef386767b7ad04309605",
       "status": "carried",
-      "upstream_state": "not_offered",
-      "upstream_reason": "Self-contained BigQuery generator fix; an upstream-submission candidate.",
+      "upstream_state": "offered",
+      "upstream": [
+        "https://github.com/tobymao/sqlglot/issues/9309"
+      ],
+      "upstream_reason": "Offered on 2026-11-21 as tobymao/sqlglot#9309, linking this patch unchanged as a suggested fix (upstream accepts pull requests only from collaborators).",
       "depends": [],
       "paths": [
         "sqlglot/generators/bigquery.py",
