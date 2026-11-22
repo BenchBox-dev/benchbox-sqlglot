@@ -96,7 +96,7 @@
       "claim": null,
       "needs": [],
       "priority": "low",
-      "status": "open",
+      "status": "blocked",
       "title": "Offer the snowflake-regexp-replace-groups carried patch upstream"
     },
     "offer-upstream-spark-databricks-regexp-trunc-20261114": {
