@@ -86,10 +86,15 @@
       "title": "Offer the empty-group-by-generator carried patch upstream"
     },
     "offer-upstream-postgres-extract-return-types-20261114": {
-      "claim": null,
+      "claim": {
+        "expires_at": "2026-11-23T02:27:06Z",
+        "generation": "096c60c0a4994ea89a9bbd90099127ce",
+        "renewals": 0,
+        "worker": "mcp:omp-coding-agent:joe@joe-mac-mini.local:08c975d4ad609437d779f35a"
+      },
       "needs": [],
       "priority": "low",
-      "status": "open",
+      "status": "active",
       "title": "Offer the postgres-extract-return-types carried patch upstream"
     },
     "offer-upstream-snowflake-regexp-replace-groups-20261114": {
