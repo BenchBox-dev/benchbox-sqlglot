@@ -233,7 +233,7 @@
       "upstream": [
         "https://github.com/tobymao/sqlglot/issues/9310"
       ],
-      "upstream_reason": "Offered on 2026-11-21 as tobymao/sqlglot#9310, linking this patch unchanged as a suggested fix (upstream accepts pull requests only from collaborators).",
+      "upstream_reason": "Offered on 2026-11-21 as tobymao/sqlglot#9310 (upstream accepts pull requests only from collaborators). Upstream closed it on 2026-11-23 pending a clearer motivation; the reply of the same day narrows the offer to setting SUPPORTS_ORDER_BY_ALL for ClickHouse and Snowflake, which both have the keyword. That fix would not cover PostgreSQL input, which this patch also handles, so the patch would stay carried for that case.",
       "depends": [],
       "paths": [
         "sqlglot/generators/duckdb.py",
