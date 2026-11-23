@@ -231,9 +231,10 @@
       "status": "carried",
       "upstream_state": "offered",
       "upstream": [
-        "https://github.com/tobymao/sqlglot/issues/9310"
+        "https://github.com/tobymao/sqlglot/issues/9310",
+        "https://github.com/tobymao/sqlglot/issues/9331"
       ],
-      "upstream_reason": "Offered on 2026-11-21 as tobymao/sqlglot#9310 (upstream accepts pull requests only from collaborators). Upstream closed it on 2026-11-23 pending a clearer motivation; the reply of the same day narrows the offer to setting SUPPORTS_ORDER_BY_ALL for ClickHouse and Snowflake, which both have the keyword. That fix would not cover PostgreSQL input, which this patch also handles, so the patch would stay carried for that case.",
+      "upstream_reason": "Upstream closed the first offer, tobymao/sqlglot#9310, on 2026-11-23 because its PostgreSQL example hid the motivation (PostgreSQL has no ORDER BY ALL), and asked for a new issue. tobymao/sqlglot#9331 offers the narrower fix: set SUPPORTS_ORDER_BY_ALL for ClickHouse and Snowflake, which both have the keyword. That fix does not cover PostgreSQL input, which this patch also handles, so the patch stays carried for that case even if upstream takes it.",
       "depends": [],
       "paths": [
         "sqlglot/generators/duckdb.py",
