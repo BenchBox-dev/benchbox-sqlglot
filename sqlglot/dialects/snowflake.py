@@ -30,6 +30,7 @@ class Snowflake(Dialect):
         exp.Qualify: AliasPrecedence.SOURCE,
     }
     SUPPORTS_POSITIONAL_COLUMN_REFS = True
+    SUPPORTS_ORDER_BY_ALL = True
     TABLESAMPLE_SIZE_IS_PERCENT = True
     COPY_PARAMS_ARE_CSV = False
     ARRAY_AGG_INCLUDES_NULLS = None

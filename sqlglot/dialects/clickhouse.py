@@ -24,6 +24,7 @@ class ClickHouse(Dialect):
     NUMBERS_CAN_BE_UNDERSCORE_SEPARATED = True
     IDENTIFIERS_CAN_START_WITH_DIGIT = True
     HEX_STRING_IS_INTEGER_TYPE = True
+    SUPPORTS_ORDER_BY_ALL = True
 
     # https://clickhouse.com/docs/sql-reference/functions/date-time-functions#formatDateTime
     TIME_MAPPING = {
