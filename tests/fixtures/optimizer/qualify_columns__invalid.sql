@@ -9,6 +9,9 @@ SELECT q.a FROM (SELECT x.b FROM x) AS z JOIN (SELECT a FROM z) AS q ON z.b = q.
 SELECT b FROM x AS a CROSS JOIN y AS b CROSS JOIN y AS c;
 SELECT x.a FROM x JOIN y USING (a);
 SELECT a, SUM(b) FROM x GROUP BY 3;
+SELECT t.*, SUM(b) FROM t GROUP BY 1;
+SELECT * FROM t GROUP BY 1;
+SELECT t.*, b FROM t ORDER BY 1;
 SELECT p FROM (SELECT x from xx) y CROSS JOIN yy CROSS JOIN zz
 SELECT a FROM (SELECT * FROM x CROSS JOIN y);
 SELECT x FROM tbl AS tbl(a);
@@ -54,3 +57,6 @@ SELECT p.range FROM range(10) AS p WHERE EXISTS (SELECT 1 FROM range(1) AS q WHE
 SELECT p.range FROM range(10) AS p WHERE EXISTS (SELECT 1 WHERE range > 5);
 # dialect: duckdb
 SELECT p.range FROM (VALUES (0), (6)) AS p(range) WHERE EXISTS (SELECT 1 FROM range(1) AS q WHERE range > 5);
+
+# dialect: clickhouse
+SELECT b + 1 AS a, a + 1 AS b;

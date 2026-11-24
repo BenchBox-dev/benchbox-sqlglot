@@ -1,8 +1,8 @@
 diff --git a/sqlglot/generators/duckdb.py b/sqlglot/generators/duckdb.py
-index 76c998ba..2e5e0605 100644
+index c2d604f06..8058321d2 100644
 --- a/sqlglot/generators/duckdb.py
 +++ b/sqlglot/generators/duckdb.py
-@@ -4690,6 +4690,24 @@ class DuckDBGenerator(generator.Generator):
+@@ -4718,6 +4718,24 @@ class DuckDBGenerator(generator.Generator):
          # UNHEX('FF') correctly produces blob \xFF in DuckDB
          return super().hexstring_sql(expression, binary_function_repr="UNHEX")
  
@@ -28,10 +28,10 @@ index 76c998ba..2e5e0605 100644
          unit = expression.args.get("unit")
          date = expression.this
 diff --git a/tests/dialects/test_duckdb.py b/tests/dialects/test_duckdb.py
-index 99b5077b..f94ad743 100644
+index 4e6204de9..c9c2adfa8 100644
 --- a/tests/dialects/test_duckdb.py
 +++ b/tests/dialects/test_duckdb.py
-@@ -561,6 +561,57 @@ class TestDuckDB(Validator):
+@@ -585,6 +585,57 @@ class TestDuckDB(Validator):
              with self.subTest(keyword=keyword):
                  self.assertEqual(exp.column(keyword).sql("duckdb"), f'"{keyword}"')
  

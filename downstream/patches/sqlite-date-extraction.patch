@@ -1,16 +1,16 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index 42afc675..f1bac3fb 100644
+index 8ffba3799..474f3e361 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
-@@ -17,6 +17,7 @@ from sqlglot.dialects.dialect import (
+@@ -16,6 +16,7 @@ from sqlglot.dialects.dialect import (
+     rename_func,
      strposition_sql,
  )
- from sqlglot.generator import unsupported_args
 +from sqlglot.errors import OptimizeError
- from sqlglot.tokens import TokenType
- 
- 
-@@ -235,6 +236,99 @@ class SQLiteGenerator(generator.Generator):
+ from sqlglot.generator import unsupported_args
+ from sqlglot.optimizer.helpers import projection_has_aggregate
+ from sqlglot.parsers.sqlite import SQLITE_NOW
+@@ -285,6 +286,92 @@ class SQLiteGenerator(generator.Generator):
          self.unsupported("SQLite AUTOINCREMENT requires an INTEGER PRIMARY KEY")
          return ""
  
@@ -83,19 +83,12 @@ index 42afc675..f1bac3fb 100644
 +        formats = {"YEAR": "%Y", "MONTH": "%m", "DAY": "%d"}
 +        format_string = formats.get(expression.name.upper())
 +        value = expression.expression
-+        return_type = expression.args.get("return_type")
++        date_part = expression.args.get("date_part")
 +        if format_string and not value.type:
 +            from sqlglot.optimizer.annotate_types import annotate_types
 +
 +            value = annotate_types(value.copy(), dialect=self.dialect, overwrite_types=False)
-+        if (
-+            format_string
-+            and value.is_type(exp.DType.DATE)
-+            and (
-+                not return_type
-+                or return_type.is_type(exp.DType.DECIMAL, *exp.DataType.INTEGER_TYPES)
-+            )
-+        ):
++        if format_string and value.is_type(exp.DType.DATE) and not date_part:
 +            return self.sql(
 +                exp.cast(
 +                    exp.TimeToStr(this=value.copy(), format=exp.Literal.string(format_string)),
@@ -111,10 +104,10 @@ index 42afc675..f1bac3fb 100644
          if expression.args.get("ignore"):
              expression.set("ignore", False)
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index ec546ac3..1df119d2 100644
+index 253cea251..24846d6b3 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
-@@ -472,6 +472,79 @@ class TestSQLite(Validator):
+@@ -858,6 +858,79 @@ class TestSQLite(Validator):
              },
          )
  

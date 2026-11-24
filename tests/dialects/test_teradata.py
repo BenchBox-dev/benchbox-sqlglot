@@ -6,6 +6,98 @@ from tests.dialects.test_dialect import Validator
 class TestTeradata(Validator):
     dialect = "teradata"
 
+    def test_integer_postfix_cast(self):
+        for data_type in ("BYTEINT", "SMALLINT", "INTEGER", "INT", "BIGINT"):
+            for value in (
+                "amount",
+                "t.amount",
+                '"amount"',
+                '"SUM"',
+                "1",
+                "(amount + 1)",
+                "COALESCE(amount, 0)",
+                "SUM(amount)",
+            ):
+                with self.subTest(data_type=data_type, value=value):
+                    expression = self.parse_one(f"{value} ({data_type})").assert_is(exp.Cast)
+                    self.assertEqual(expression.this, self.parse_one(value))
+                    self.assertEqual(
+                        expression.args["to"], self.parse_one(f"CAST(1 AS {data_type})").args["to"]
+                    )
+                    self.assertEqual(expression, self.parse_one(expression.sql(self.dialect)))
+        self.validate_all(
+            "SELECT amount (BIGINT) AS converted FROM events",
+            write={
+                "teradata": "SELECT CAST(amount AS BIGINT) AS converted FROM events",
+                "databricks": "SELECT CAST(amount AS BIGINT) AS converted FROM events",
+            },
+        )
+        for sql in (
+            'ABS("INTEGER")',
+            "ABS(INTEGER)",
+            "CEIL(SMALLINT)",
+            'my_udf("INTEGER")',
+            'sch.my_udf("BIGINT")',
+            "my_udf(INT32)",
+            "my_udf(BYTE)",
+            "my_udf(INTEGER, 1)",
+            "sch.my_udf(INTEGER + 1)",
+        ):
+            self.assertIsNone(self.parse_one(sql).find(exp.Cast))
+        table = self.parse_one("SELECT * FROM my_udf(INTEGER)").find(exp.Table)
+        self.assertIsInstance(table.this, exp.Anonymous)
+        self.validate_identity("amount (INTEGER)::BIGINT", "CAST(CAST(amount AS INT) AS BIGINT)")
+        for value in ("DATE '2024-01-01'", "CURRENT_DATE"):
+            self.assertEqual(
+                self.parse_one(f"{value} (INTEGER)"), self.parse_one(f"CAST({value} AS INTEGER)")
+            )
+        self.assertIsInstance(parse_one("amount(BIGINT)"), exp.Anonymous)
+
+    def test_postfix_conversion(self):
+        self.validate_all(
+            "SUM(amount) (DECIMAL(12, 2)) (BIGINT)",
+            write={
+                "teradata": "CAST(CAST(SUM(amount) AS DECIMAL(12, 2)) AS BIGINT)",
+                "databricks": "CAST(CAST(SUM(amount) AS DECIMAL(12, 2)) AS BIGINT)",
+            },
+        )
+        for value, expected in (
+            ("INTERVAL '1' DAY", "INTERVAL '1' DAY"),
+            ("CURDATE", "CURRENT_DATE"),
+            ("DATE", "DATE"),
+        ):
+            self.assertEqual(
+                self.parse_one(f"{value} (INTEGER)"), self.parse_one(f"CAST({expected} AS INTEGER)")
+            )
+
+        for sql, expected in (
+            ("x (CHAR(3))", "x (CHAR(3))"),
+            ("t.d (FORMAT 'YYYY-MM-DD') (CHAR(10))", "t.d (FORMAT 'YYYY-MM-DD') (CHAR(10))"),
+            ("ts (TIME(6) WITH TIME ZONE)", "ts (TIME(6) WITH TIME ZONE)"),
+            ("date_text (FORMAT 'YYYYMMDD', DATE)", "date_text (DATE, FORMAT 'YYYYMMDD')"),
+        ):
+            conversion = self.validate_identity(sql, expected).assert_is(exp.TeradataConversion)
+            self.assertEqual(self.parse_one(expected), conversion)
+            self.assertEqual(
+                annotate_types(conversion, dialect="teradata").type, conversion.args["to"]
+            )
+
+        self.validate_identity(
+            "SELECT amount (NAMED r, DECIMAL(12, 2), TITLE 'Revenue') FROM t",
+            "SELECT CAST(amount AS DECIMAL(12, 2)) (TITLE 'Revenue') AS r FROM t",
+        )
+        with self.assertRaises(UnsupportedError):
+            self.parse_one("1234 (CHAR(2))").sql("databricks", unsupported_level=ErrorLevel.RAISE)
+
+    def test_postfix_conversion_function_arguments(self):
+        for sql in ("f(DATE '2024-01-01')", "f(DECIMAL(n))", "f(CHAR(1 + n))", "f(DATE, x)"):
+            self.parse_one(sql).assert_is(exp.Anonymous)
+
+        table = self.validate_identity("SELECT * FROM TABLE(db.my_udf(DATE)) AS t")
+        self.assertIsInstance(table.find(exp.TableFromRows).this.expression, exp.Anonymous)
+        self.assertIsNone(table.find(exp.TeradataConversion))
+        self.validate_identity("SELECT * FROM TABLE(db.CURDATE()) AS t")
+
     def test_characters(self):
         self.validate_identity("characters(x)", "LENGTH(x)").assert_is(exp.Length)
         for value in ("x", "'abc'", "''", "'a  '", "'\u00e9\u4e2d'", "NULL"):
@@ -254,6 +346,80 @@ class TestTeradata(Validator):
                 with self.assertRaises(ParseError):
                     self.parse_one(sql, error_level=ErrorLevel.RAISE)
 
+    def test_delete_all(self):
+        for prefix in ("DELETE", "DELETE FROM", "DEL FROM"):
+            for table, alias in (("t", ""), ("db.t", ""), ("t AS d", "d"), ('t AS "ALL"', "ALL")):
+                sql = f"{prefix} {table} ALL"
+                expected = f"{prefix.replace('DEL FROM', 'DELETE FROM')} {table}"
+                with self.subTest(sql=sql):
+                    expression = self.validate_identity(sql, expected).assert_is(exp.Delete)
+                    self.assertEqual(expression, self.parse_one(expected))
+                    target = expression.find(exp.Table)
+                    self.assertEqual(target.name, "t")
+                    self.assertEqual(target.alias, alias)
+                    self.assertIsNone(expression.args.get("where"))
+
+        self.validate_identity("DELETE FROM t WHERE id = 1")
+        self.validate_identity("DELETE FROM t AS d WHERE d.id = 1")
+        self.validate_identity('DELETE FROM t AS "ALL"')
+        self.validate_identity("SELECT * FROM t ALL", "SELECT * FROM t AS ALL")
+        self.assertEqual(parse_one("DELETE FROM t ALL").this.alias, "ALL")
+        with self.assertRaises(ParseError):
+            self.parse_one("DELETE FROM t WHERE id = 1 ALL")
+
+    def test_period_bounds(self):
+        for name in ("BEGIN", "END"):
+            for argument in ("p", "t.p"):
+                expected_column = exp.column("p", table="t" if argument == "t.p" else None)
+                for alias in ("", " AS bound_value"):
+                    sql = f"SELECT {name}({argument}){alias} FROM t"
+                    with self.subTest(sql=sql):
+                        expression = self.validate_identity(sql)
+                        function = expression.find(exp.Anonymous)
+                        self.assertIsInstance(function, exp.Anonymous)
+                        self.assertEqual(function.name, name)
+                        self.assertEqual(function.expressions, [expected_column])
+                        self.assertEqual(
+                            {column.name for column in expression.find_all(exp.Column)}, {"p"}
+                        )
+                        self.assertEqual(expression, self.parse_one(expression.sql(self.dialect)))
+
+        self.validate_identity("SELECT COALESCE(BEGIN(p), END(p)) FROM t")
+        self.validate_identity(
+            "SELECT CASE WHEN x = 1 THEN BEGIN(p) ELSE END(p) END AS bound_value FROM t"
+        )
+        self.validate_identity("SELECT CASE WHEN x = 1 THEN y ELSE z END AS result FROM t")
+        self.validate_identity('SELECT "BEGIN", "END" FROM t')
+        self.parse_one("BEGIN TRANSACTION").assert_is(exp.Transaction)
+        self.assertNotIsInstance(parse_one("SELECT BEGIN(p) FROM t").expressions[0], exp.Anonymous)
+
+    def test_implicit_insert_values(self):
+        for prefix in ("INSERT INTO", "INSERT"):
+            for table in ("t", "db.t"):
+                for row in (
+                    "(1, CURRENT_TIMESTAMP(0), 'value')",
+                    "(2, NULL, 'null')",
+                    "(COALESCE(NULL, 3), CAST(NULL AS TIMESTAMP(0)), CAST('cast-row' AS VARCHAR(20)))",
+                ):
+                    sql = f"{prefix} {table} {row}"
+                    expected = f"INSERT INTO {table} VALUES {row}"
+                    with self.subTest(sql=sql):
+                        expression = self.validate_identity(sql, expected).assert_is(exp.Insert)
+                        expression.this.assert_is(exp.Table)
+                        values = expression.expression.assert_is(exp.Values)
+                        self.assertEqual(len(values.expressions), 1)
+                        values.expressions[0].assert_is(exp.Tuple)
+                        self.assertIsNone(expression.find(exp.ColumnDef))
+                        self.assertEqual(expression, self.parse_one(expected))
+
+        self.validate_identity("INSERT INTO t (a, b) VALUES (1, 'value')")
+        self.validate_identity("INSERT INTO t (a, b) SELECT a, b FROM s")
+        self.validate_identity("INSERT INTO t VALUES (1, 'value')")
+        self.validate_identity("INSERT INTO t SELECT a, b FROM s")
+        self.parse_one("INSERT INTO t (a, b)").this.assert_is(exp.Schema)
+        self.parse_one("INSERT INTO t (a INT, b VARCHAR(10))").this.assert_is(exp.Schema)
+        parse_one("INSERT INTO t (1, 'value')").this.assert_is(exp.Schema)
+
     def test_teradata(self):
         self.validate_all(
             "RANDOM(l, u)",
@@ -375,10 +541,6 @@ class TestTeradata(Validator):
             "REPLACE VIEW view_b (COL1, COL2) AS LOCKING ROW FOR ACCESS SELECT COL1, COL2 FROM table_b",
             "CREATE OR REPLACE VIEW view_b (COL1, COL2) AS LOCKING ROW FOR ACCESS SELECT COL1, COL2 FROM table_b",
         )
-        self.validate_identity(
-            "REPLACE VIEW view_b (COL1, COL2) AS LOCKING ROW FOR ACCESS SELECT COL1, COL2 FROM table_b",
-            "CREATE OR REPLACE VIEW view_b (COL1, COL2) AS LOCKING ROW FOR ACCESS SELECT COL1, COL2 FROM table_b",
-        )
         self.validate_identity("CREATE TABLE x (y INT) PRIMARY INDEX (y) PARTITION BY y INDEX (y)")
         self.validate_identity("CREATE TABLE x (y INT) PARTITION BY y INDEX (y)")
         self.validate_identity(
@@ -395,9 +557,6 @@ class TestTeradata(Validator):
         )
         self.validate_identity(
             "CREATE TABLE a (b INT) PARTITION BY RANGE_N(b BETWEEN *, 1 AND * EACH b) INDEX (a)"
-        )
-        self.validate_identity(
-            "CREATE TABLE a, NO FALLBACK PROTECTION, NO LOG, NO JOURNAL, CHECKSUM=ON, NO MERGEBLOCKRATIO, BLOCKCOMPRESSION=ALWAYS (a INT)"
         )
         self.validate_identity(
             "CREATE TABLE a, NO FALLBACK PROTECTION, NO LOG, NO JOURNAL, CHECKSUM=ON, NO MERGEBLOCKRATIO, BLOCKCOMPRESSION=ALWAYS (a INT)"

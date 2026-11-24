@@ -376,7 +376,7 @@ class SnowflakeParser(parser.Parser):
         TokenType.VOLUME,
     }
 
-    FUNC_TOKENS = parser.Parser.FUNC_TOKENS | {TokenType.ROLLBACK}
+    FUNC_TOKENS = parser.Parser.FUNC_TOKENS | {TokenType.ROLLBACK, TokenType.TOP}
 
     ALIAS_TOKENS = parser.Parser.ALIAS_TOKENS | {
         TokenType.INTEGRATION,
@@ -800,10 +800,16 @@ class SnowflakeParser(parser.Parser):
         TokenType.UNDROP: lambda self: self._parse_undrop(),
     }
 
+    PRIMARY_PARSERS = {
+        **parser.Parser.PRIMARY_PARSERS,
+        TokenType.STAGE_PATH: lambda self, token: self.expression(exp.var(token.text), token),
+    }
+
     PROPERTY_PARSERS = {
         **parser.Parser.PROPERTY_PARSERS,
         "CREDENTIALS": lambda self: self._parse_credentials_property(),
         "FILE_FORMAT": lambda self: self._parse_file_format_property(),
+        "HYBRID": lambda self: self.expression(exp.HybridProperty()),
         "IGNORE": lambda self: self._parse_ignore_property(),
         "INTERACTIVE": lambda self: self.expression(exp.InteractiveProperty()),
         "LOCATION": lambda self: self._parse_location_property(),
@@ -1173,7 +1179,7 @@ class SnowflakeParser(parser.Parser):
         # https://docs.snowflake.com/en/user-guide/querying-stage
         if self._match(TokenType.STRING, advance=False):
             table = self._parse_string()
-        elif self._match_text_seq("@", advance=False):
+        elif self._match(TokenType.STAGE_PATH, advance=False):
             table = self._parse_location_path()
         else:
             table = None
@@ -1229,6 +1235,22 @@ class SnowflakeParser(parser.Parser):
             this.set("expressions", self._parse_wrapped_csv(self._parse_lambda))
 
         return this
+
+    def _parse_limit(
+        self,
+        this: exp.Expr | None = None,
+        top: bool = False,
+        skip_limit_token: bool = False,
+    ) -> exp.Expr | None:
+        # Only a bare number starts a TOP limit. TOP(x) is a function call.
+        if (
+            top
+            and self._curr.token_type == TokenType.TOP
+            and self._next.token_type != TokenType.NUMBER
+        ):
+            return this
+
+        return super()._parse_limit(this, top=top, skip_limit_token=skip_limit_token)
 
     def _parse_id_var(
         self,
@@ -1355,6 +1377,9 @@ class SnowflakeParser(parser.Parser):
         )
 
     def _parse_location_path(self) -> exp.Var:
+        if self._match_set((TokenType.STAGE_PATH, TokenType.URI_START)):
+            return self.expression(exp.var(self._prev.text), self._prev)
+
         start = self._curr
         self._advance_any(ignore_reserved=True)
 

@@ -66,6 +66,7 @@ class TeradataGenerator(generator.Generator):
         exp.DType.DOUBLE: "DOUBLE PRECISION",
         exp.DType.TINYINT: "BYTEINT",
         exp.DType.TIMESTAMPTZ: "TIMESTAMP",
+        exp.DType.TIMETZ: "TIME",
     }
 
     PROPERTIES_LOCATION = {
@@ -124,6 +125,12 @@ class TeradataGenerator(generator.Generator):
         prefix, suffix = ("(", ")") if expression.this else ("", "")
         return self.func("CURRENT_TIMESTAMP", expression.this, prefix=prefix, suffix=suffix)
 
+    def teradataconversion_sql(self, expression: exp.TeradataConversion) -> str:
+        to = self.sql(expression, "to")
+        fmt = self.sql(expression, "format")
+        fmt = f", FORMAT {fmt}" if fmt else ""
+        return f"{self.sql(expression, 'this')} ({to}{fmt})"
+
     def teradatatitle_sql(self, expression: exp.TeradataTitle) -> str:
         return f"{self.sql(expression, 'this')} (TITLE {self.sql(expression, 'title')})"
 
@@ -180,6 +187,7 @@ class TeradataGenerator(generator.Generator):
     # FROM before SET in Teradata UPDATE syntax
     # https://docs.teradata.com/r/Enterprise_IntelliFlex_VMware/Teradata-VantageTM-SQL-Data-Manipulation-Language-17.20/Statement-Syntax/UPDATE/UPDATE-Syntax-Basic-Form-FROM-Clause
     def update_sql(self, expression: exp.Update) -> str:
+        self._warn_unsupported_arg(expression, "alternative")
         this = self.sql(expression, "this")
         from_sql = self.sql(expression, "from_")
         set_sql = self.expressions(expression, flat=True)

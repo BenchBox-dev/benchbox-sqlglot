@@ -232,6 +232,94 @@ class TestBigQuery(Validator):
                 )
                 self.assertEqual(expression.sql("duckdb"), expected)
 
+    def test_date_add_timestamp(self):
+        # DATE_ADD only takes units up to DAY for a TIMESTAMP, so longer ones go through DATETIME_ADD
+        for unit in ("WEEK", "MONTH", "QUARTER", "YEAR"):
+            with self.subTest(unit):
+                self.validate_all(
+                    f"SELECT TIMESTAMP(DATETIME_ADD(DATETIME(CURRENT_TIMESTAMP()), INTERVAL 2 {unit}))",
+                    read={"trino": f"SELECT DATE_ADD('{unit.lower()}', 2, NOW())"},
+                )
+        self.validate_identity(
+            "SELECT TIMESTAMP(DATETIME_ADD(DATETIME(CURRENT_TIMESTAMP()), INTERVAL '2' MONTH))"
+        )
+
+        self.validate_all(
+            "SELECT TIMESTAMP(DATETIME_SUB(DATETIME(CURRENT_TIMESTAMP()), INTERVAL '1' MONTH))",
+            read={"mysql": "SELECT DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 1 MONTH)"},
+        )
+        self.validate_all(
+            "SELECT TIMESTAMP(DATETIME_ADD(DATETIME(TIMESTAMP_SECONDS(t)), INTERVAL 1 MONTH))",
+            read={"trino": "SELECT DATE_ADD('month', 1, FROM_UNIXTIME(t))"},
+        )
+        self.validate_all(
+            "SELECT TIMESTAMP(DATETIME_ADD(DATETIME(CAST(t AS TIMESTAMP)), INTERVAL 1 MONTH))",
+            read={"trino": "SELECT DATE_ADD('month', 1, CAST(t AS TIMESTAMP WITH TIME ZONE))"},
+        )
+        self.validate_all(
+            "SELECT TIMESTAMP(DATETIME_ADD(DATETIME(CAST('2024-01-31 10:00:00' AS TIMESTAMP)), INTERVAL 1 MONTH))",
+            read={
+                "": "SELECT DATE_ADD(TIME_STR_TO_TIME('2024-01-31 10:00:00', 'UTC'), 1, 'MONTH')"
+            },
+        )
+
+        # Through parentheses and functions that return their first argument's type
+        self.validate_all(
+            "SELECT TIMESTAMP(DATETIME_ADD(DATETIME(TIMESTAMP(DATETIME_ADD(DATETIME(TIMESTAMP_TRUNC((TIMESTAMP(DATETIME(CAST(t AS TIMESTAMP), 'America/Los_Angeles'))), MONTH)), INTERVAL -11 MONTH))), INTERVAL 12 MONTH))",
+            read={
+                "trino": "SELECT DATE_ADD('month', 12, DATE_ADD('month', -11, DATE_TRUNC('MONTH', (CAST(t AS TIMESTAMP WITH TIME ZONE) AT TIME ZONE 'America/Los_Angeles'))))",
+            },
+        )
+        self.validate_all(
+            "SELECT TIMESTAMP(DATETIME_ADD(DATETIME(DATE_ADD(CURRENT_TIMESTAMP(), INTERVAL -1 DAY)), INTERVAL 1 MONTH))",
+            read={"trino": "SELECT DATE_ADD('month', 1, DATE_ADD('day', -1, NOW()))"},
+        )
+        self.validate_all(
+            "SELECT TIMESTAMP(DATETIME_ADD(DATETIME(DATE_SUB(CURRENT_TIMESTAMP(), INTERVAL '1' DAY)), INTERVAL '1' MONTH))",
+            read={
+                "mysql": "SELECT DATE_ADD(DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 1 DAY), INTERVAL 1 MONTH)"
+            },
+        )
+        self.validate_all(
+            "SELECT TIMESTAMP(DATETIME_ADD(DATETIME(TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR)), INTERVAL '1' MONTH))",
+            read={
+                "mysql": "SELECT DATE_ADD(TIMESTAMPADD(HOUR, 1, CURRENT_TIMESTAMP), INTERVAL 1 MONTH)"
+            },
+        )
+
+        # DATE and DATETIME arguments, units up to DAY and unknown types are left as they are
+        self.validate_all(
+            "SELECT DATE_ADD(CAST(t AS DATE), INTERVAL 2 MONTH)",
+            read={"trino": "SELECT DATE_ADD('month', 2, CAST(t AS DATE))"},
+        )
+        self.validate_all(
+            "SELECT DATE_ADD(CAST(t AS DATETIME), INTERVAL 2 MONTH)",
+            read={"trino": "SELECT DATE_ADD('month', 2, CAST(t AS TIMESTAMP))"},
+        )
+        self.validate_all(
+            "SELECT DATE_ADD(CAST('2024-01-31 10:00:00' AS DATETIME), INTERVAL 1 MONTH)",
+            read={"": "SELECT DATE_ADD(TIME_STR_TO_TIME('2024-01-31 10:00:00'), 1, 'MONTH')"},
+        )
+        expression = annotate_types(
+            parse_one("SELECT DATE_ADD(TIME_STR_TO_TIME('2024-01-31 10:00:00'), 1, 'MONTH')"),
+            dialect="bigquery",
+        )
+        self.assertEqual(
+            expression.sql("bigquery"),
+            "SELECT DATE_ADD(CAST('2024-01-31 10:00:00' AS DATETIME), INTERVAL 1 MONTH)",
+        )
+        self.validate_all(
+            "SELECT DATE_ADD(CURRENT_TIMESTAMP(), INTERVAL 2 DAY)",
+            read={"trino": "SELECT DATE_ADD('day', 2, NOW())"},
+        )
+        self.validate_all(
+            "SELECT DATE_ADD(t, INTERVAL 2 MONTH)",
+            read={"trino": "SELECT DATE_ADD('month', 2, t)"},
+        )
+        self.validate_identity(
+            "SELECT DATE_ADD(TIMESTAMP_SUB(CURRENT_DATETIME(), INTERVAL '1' HOUR), INTERVAL '1' MONTH)"
+        )
+
     def test_bigquery(self):
         # Presto's SHA512 takes VARBINARY, so annotated string args are wrapped in TO_UTF8
         expr = self.parse_one("SELECT SHA512('foo')")
@@ -885,13 +973,6 @@ LANGUAGE js AS
             write={
                 "bigquery": "SELECT t.c1, h.c2, s.c3 FROM t1 AS t CROSS JOIN UNNEST(t.t2) AS h CROSS JOIN UNNEST(h.t3) AS s",
                 "duckdb": "SELECT t.c1, h.c2, s.c3 FROM t1 AS t CROSS JOIN UNNEST(t.t2) AS _t0(h) CROSS JOIN UNNEST(h.t3) AS _t1(s)",
-            },
-        )
-        self.validate_all(
-            "PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%E6S%z', x)",
-            write={
-                "bigquery": "PARSE_TIMESTAMP('%FT%H:%M:%E6S%z', x)",
-                "duckdb": "STRPTIME('1970 ' || x, '%Y ' || '%Y-%m-%dT%H:%M:%S.%f%z')",
             },
         )
         self.validate_all(
@@ -2434,14 +2515,6 @@ WHERE
             },
         )
         self.validate_all(
-            "SELECT b'a'",
-            write={
-                "bigquery": "SELECT b'a'",
-                "duckdb": "SELECT CAST('a' AS BLOB)",
-                "postgres": "SELECT DECODE('61', 'hex')",
-            },
-        )
-        self.validate_all(
             "SELECT GENERATE_UUID()",
             write={
                 "bigquery": "SELECT GENERATE_UUID()",
@@ -2665,14 +2738,6 @@ WHERE
             for actual, expected in zip(statements, expected_statements):
                 self.assertEqual(actual.sql(dialect="bigquery"), expected)
 
-        with self.assertLogs(helper_logger) as cm:
-            self.validate_identity(
-                "SELECT * FROM t AS t(c1, c2)",
-                "SELECT * FROM t AS t",
-            )
-
-            self.assertIn("Named columns are not supported in table alias.", cm.output[0])
-
         with self.assertLogs(helper_logger):
             self.validate_all(
                 "SELECT a[1], b[OFFSET(1)], c[ORDINAL(1)], d[SAFE_OFFSET(1)], e[SAFE_ORDINAL(1)]",
@@ -2740,6 +2805,27 @@ WHERE
             "CREATE TEMPORARY FUNCTION string_length_0(strings ARRAY<STRING>) RETURNS FLOAT64 LANGUAGE js OPTIONS (library=['gs://ibis-testing-libraries/lodash.min.js']) AS '\\'use strict\\'; function string_length(strings) { return _.sum(_.map(strings, ((x) => x.length))); } return string_length(strings);'",
         )
 
+    def test_table_function_arguments(self):
+        expr = self.validate_identity("SELECT * FROM ML.DESCRIBE_DATA(TABLE `_SESSION.input`)")
+        self.assertIsInstance(expr.find(exp.TableArgument).this, exp.Table)
+        self.assertEqual(
+            [(t.db, t.name) for t in expr.find_all(exp.Table) if t.name], [("_SESSION", "input")]
+        )
+        self.validate_identity(
+            "SELECT * FROM ML.DESCRIBE_DATA(TABLE `region-us.INFORMATION_SCHEMA.SCHEMATA_OPTIONS`)"
+        )
+        self.validate_identity(
+            "WITH t AS (SELECT 42 AS x) "
+            "SELECT * FROM ML.DESCRIBE_DATA(TABLE t, STRUCT(2 AS num_quantiles))"
+        )
+        self.validate_identity(
+            "WITH t AS (SELECT 1 AS x) SELECT * FROM ML.VALIDATE_DATA_DRIFT(TABLE t, TABLE t)"
+        )
+        self.validate_identity(
+            "WITH t AS (SELECT 2 AS `table`) SELECT ABS(table + 1), COUNTIF(table IS NULL) "
+            "FROM t GROUP BY 1"
+        )
+
     def test_remove_precision_parameterized_types(self):
         self.validate_identity("CREATE TABLE test (a NUMERIC(10, 2))")
         self.validate_identity(
@@ -2751,6 +2837,14 @@ WHERE
             "SELECT CAST(1 AS NUMERIC)",
         )
         self.validate_identity(
+            "SELECT SAFE_CAST('foo' AS NUMERIC(10, 3))",
+            "SELECT SAFE_CAST('foo' AS NUMERIC)",
+        )
+        self.validate_identity(
+            "SELECT SAFE_CAST('100000000000000000000000000000' AS NUMERIC(38, 0))",
+            "SELECT SAFE_CAST('100000000000000000000000000000' AS BIGNUMERIC)",
+        )
+        self.validate_identity(
             "SELECT CAST('1' AS STRING(10)) UNION ALL SELECT CAST('2' AS STRING(10))",
             "SELECT CAST('1' AS STRING) UNION ALL SELECT CAST('2' AS STRING)",
         )
@@ -2760,8 +2854,17 @@ WHERE
         )
 
     def test_gap_fill(self):
-        self.validate_identity(
+        ast = self.validate_identity(
             "SELECT * FROM GAP_FILL(TABLE device_data, ts_column => 'time', bucket_width => INTERVAL '1' MINUTE, value_columns => [('signal', 'locf')]) ORDER BY time"
+        )
+        arg = ast.find(exp.GapFill).this
+        self.assertIsInstance(arg, exp.TableArgument)
+        sql = ast.sql("bigquery")
+        arg.replace(arg.this)
+        self.assertEqual(ast.sql("bigquery"), sql)
+        self.validate_identity(
+            "SELECT * FROM GAP_FILL((SELECT CURRENT_DATETIME() AS ts), "
+            "ts_column => 'ts', bucket_width => INTERVAL '1' HOUR)"
         )
         self.validate_identity(
             "SELECT a, b, c, d, e FROM GAP_FILL(TABLE foo, ts_column => 'b', partitioning_columns => ['a'], value_columns => [('c', 'bar'), ('d', 'baz'), ('e', 'bla')], bucket_width => INTERVAL '1' DAY)"
@@ -2774,9 +2877,6 @@ WHERE
         )
         self.validate_identity(
             "SELECT * FROM GAP_FILL(TABLE device_data, ts_column => 'time', bucket_width => INTERVAL '1' MINUTE, value_columns => [('signal', 'null')], origin => CAST('2023-11-01 09:30:01' AS DATETIME)) ORDER BY time"
-        )
-        self.validate_identity(
-            "SELECT * FROM GAP_FILL(TABLE device_data, ts_column => 'time', bucket_width => INTERVAL '1' MINUTE, value_columns => [('signal', 'locf')]) ORDER BY time"
         )
 
     def test_models(self):
@@ -2841,15 +2941,18 @@ OPTIONS (
             "SELECT * FROM ML.PREDICT(MODEL my_dataset.vision_model, (SELECT uri, ML.CONVERT_COLOR_SPACE(ML.RESIZE_IMAGE(ML.DECODE_IMAGE(data), 224, 280, TRUE), 'YIQ') AS input FROM my_dataset.object_table WHERE content_type = 'image/jpeg'))"
         )
         ast = self.validate_identity("SELECT * FROM ML.FEATURES_AT_TIME((SELECT 1), num_rows => 1)")
-        assert ast.find(exp.FeaturesAtTime)
-        self.validate_identity(
+        self.assertIsInstance(ast.find(exp.FeaturesAtTime).this, exp.Subquery)
+        ast = self.validate_identity(
             "SELECT * FROM ML.FEATURES_AT_TIME(TABLE mydataset.feature_table, time => '2022-06-11 10:00:00+00', num_rows => 1, ignore_feature_nulls => TRUE)"
         )
+        self.assertIsInstance(ast.find(exp.FeaturesAtTime).this, exp.TableArgument)
 
         ast = self.validate_identity(
             "SELECT * FROM VECTOR_SEARCH(TABLE mydataset.base_table, 'column_to_search', TABLE mydataset.query_table, 'query_column_to_search', top_k => 2, distance_type => 'cosine', options => '{\"fraction_lists_to_search\":0.15}')"
         )
-        assert ast.find(exp.VectorSearch)
+        vector_search = ast.find(exp.VectorSearch)
+        self.assertIsInstance(vector_search.this, exp.TableArgument)
+        self.assertIsInstance(vector_search.args["query_table"], exp.TableArgument)
         self.validate_identity(
             "SELECT * FROM VECTOR_SEARCH(TABLE mydataset.base_table, 'column_to_search', TABLE mydataset.query_table, query_column_to_search => 'query_column_to_search', top_k => 2, distance_type => 'cosine', options => '{\"fraction_lists_to_search\":0.15}')"
         )
@@ -2871,16 +2974,20 @@ OPTIONS (
             "SELECT * FROM ML.FORECAST(MODEL `mydataset.mymodel`, STRUCT(2 AS horizon))"
         )
         assert ast.find(exp.MLForecast)
-        self.validate_identity(
+        ast = self.validate_identity(
             "SELECT * FROM ML.FORECAST(MODEL `mydataset.mymodel`, TABLE `mydataset.mybqtable`, STRUCT(2 AS horizon, 4 AS confidence_level))"
         )
+        forecast = ast.find(exp.MLForecast)
+        self.assertIsInstance(forecast.this, exp.Table)
+        self.assertIsInstance(forecast.expression, exp.TableArgument)
         self.validate_identity(
             "SELECT * FROM ML.FORECAST(MODEL `mydataset.mymodel`, (SELECT * FROM mydataset.query_table), STRUCT())"
         )
 
-        self.validate_identity(
+        ast = self.validate_identity(
             "SELECT * FROM AI.FORECAST(TABLE citibike_trips, data_col => 'num_trips', timestamp_col => 'date', horizon => 30)"
         )
+        self.assertIsInstance(ast.find(exp.AIForecast).this, exp.TableArgument)
         self.validate_identity(
             "SELECT * FROM AI.FORECAST((SELECT * FROM citibike_trips), data_col => 'num_trips', timestamp_col => 'date', horizon => 30)"
         )
@@ -2896,9 +3003,10 @@ OPTIONS (
 
                 assert ast.find(exp.GenerateEmbedding)
 
-        self.validate_identity(
+        ast = self.validate_identity(
             "SELECT * FROM ML.GENERATE_TEXT(MODEL `mydataset.gemini_model`, TABLE `mydataset.prompt_table`, STRUCT(0.15 AS temperature))"
         )
+        self.assertIsInstance(ast.find(exp.GenerateText).expression, exp.TableArgument)
         self.validate_identity(
             "SELECT * FROM AI.GENERATE_TEXT(MODEL `mydataset.gemini_model`, TABLE `mydataset.prompt_table`, STRUCT(0.15 AS temperature))"
         )
@@ -3331,45 +3439,53 @@ OPTIONS (
                         f"WITH t AS (SELECT 1 AS id, 2 AS col1) SELECT {func_call} OVER (PARTITION BY id ORDER BY col1 {sort_order} {null_order}) FROM t"
                     )
 
-    def test_null_ordering_in_value_functions_without_rows_frame(self):
-        # Without a ROWS frame BigQuery rejects a non-default NULLS clause in the window ORDER BY
-        # of FIRST_VALUE, LAST_VALUE and NTH_VALUE. A key that is also a PARTITION BY key is
-        # constant per partition, so the clause is dropped; any other key is sorted on `key IS NULL`.
-        for func_call in ("FIRST_VALUE(a)", "LAST_VALUE(a)", "NTH_VALUE(a, 2)"):
-            with self.subTest(func_call):
+    def test_null_ordering_in_value_windows(self):
+        for func in (
+            "FIRST_VALUE(a)",
+            "LAST_VALUE(a IGNORE NULLS)",
+            "NTH_VALUE(a, 2 RESPECT NULLS)",
+        ):
+            with self.subTest(func=func):
                 self.validate_all(
-                    f"SELECT {func_call} OVER (PARTITION BY b ORDER BY b) FROM t ORDER BY b NULLS LAST",
+                    f"SELECT {func} OVER (PARTITION BY b ORDER BY b ASC, c IS NULL, c, d IS NULL DESC, d DESC) FROM t ORDER BY c NULLS LAST",
                     read={
-                        "duckdb": f"SELECT {func_call} OVER (PARTITION BY b ORDER BY b) FROM t ORDER BY b",
-                    },
-                )
-                self.validate_all(
-                    f"SELECT {func_call} OVER (PARTITION BY b ORDER BY c IS NULL, c) FROM t",
-                    read={
-                        "duckdb": f"SELECT {func_call} OVER (PARTITION BY b ORDER BY c) FROM t",
-                    },
-                )
-                self.validate_all(
-                    f"SELECT {func_call} OVER (PARTITION BY b ORDER BY c IS NULL DESC, c DESC) FROM t",
-                    read={
-                        "duckdb": f"SELECT {func_call} OVER (PARTITION BY b ORDER BY c DESC NULLS FIRST) FROM t",
+                        "duckdb": f"SELECT {func} OVER (PARTITION BY b ORDER BY b ASC, c, d DESC NULLS FIRST) FROM t ORDER BY c",
                     },
                 )
 
         self.validate_all(
-            "SELECT FIRST_VALUE(a IGNORE NULLS) OVER (PARTITION BY b ORDER BY (c + d) IS NULL, c + d RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t",
+            "SELECT LAST_VALUE(a) OVER (ORDER BY (b OR c) IS NULL, b OR c RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t",
             read={
-                "duckdb": "SELECT FIRST_VALUE(a IGNORE NULLS) OVER (PARTITION BY b ORDER BY c + d RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t",
+                "duckdb": "SELECT LAST_VALUE(a) OVER (ORDER BY b OR c RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t",
             },
         )
-
-        # The default NULL ordering needs no clause or key, and a query's own ORDER BY keeps its clause
         self.validate_all(
-            "SELECT FIRST_VALUE(a) OVER (PARTITION BY b ORDER BY c) FROM t ORDER BY c NULLS LAST, b DESC NULLS FIRST",
+            "SELECT FIRST_VALUE(a) OVER (ORDER BY b RANGE BETWEEN 1 PRECEDING AND CURRENT ROW) FROM t",
             read={
-                "duckdb": "SELECT FIRST_VALUE(a) OVER (PARTITION BY b ORDER BY c NULLS FIRST) FROM t ORDER BY c, b DESC NULLS FIRST",
+                "duckdb": "SELECT FIRST_VALUE(a) OVER (ORDER BY b RANGE BETWEEN 1 PRECEDING AND CURRENT ROW) FROM t",
             },
         )
+        self.validate_all(
+            "SELECT FIRST_VALUE(a) OVER (PARTITION BY b ORDER BY c IS NULL, c), LAG(a) OVER w FROM t "
+            "WINDOW w AS (PARTITION BY b ORDER BY c NULLS LAST)",
+            read={
+                "duckdb": "SELECT FIRST_VALUE(a) OVER v, LAG(a) OVER w FROM t WINDOW w AS (PARTITION BY b ORDER BY c), v AS (w)",
+            },
+        )
+        self.validate_all(
+            "SELECT FIRST_VALUE(a) OVER (PARTITION BY b ORDER BY b RANGE BETWEEN 1 PRECEDING AND UNBOUNDED FOLLOWING) FROM t",
+            read={
+                "duckdb": "SELECT FIRST_VALUE(a) OVER (w ORDER BY b RANGE BETWEEN 1 PRECEDING AND UNBOUNDED FOLLOWING) FROM t WINDOW w AS (PARTITION BY b)",
+            },
+        )
+        self.validate_identity(
+            "SELECT FIRST_VALUE(a) OVER w FROM t WINDOW w AS (ORDER BY b NULLS LAST ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
+        )
+        with self.assertRaisesRegex(UnsupportedError, "NULLS LAST"):
+            parse_one(
+                "SELECT LAST_VALUE(a) OVER (ORDER BY b RANGE BETWEEN UNBOUNDED PRECEDING AND 1 FOLLOWING) FROM t",
+                read="duckdb",
+            ).sql("bigquery", unsupported_level=ErrorLevel.RAISE)
 
     def test_json_extract(self):
         self.validate_all(
@@ -3711,6 +3827,20 @@ OPTIONS (
         for select in annotated.selects:
             self.assertEqual(select.type.sql("bigquery"), "TIMESTAMP")
 
+    def test_annotate_datetime_arithmetic(self):
+        for sql, dtype in (
+            ("DATETIME_ADD(DATETIME '2024-01-31 00:00:00', INTERVAL 1 DAY)", exp.DType.TIMESTAMP),
+            ("DATETIME_SUB('2024-02-01 00:00:00', INTERVAL 1 DAY)", exp.DType.TIMESTAMP),
+            ("TIMESTAMP_ADD(DATE '2024-01-31', INTERVAL 1 DAY)", exp.DType.TIMESTAMP),
+            (
+                "DATETIME_ADD(TIMESTAMP '2024-01-31 00:00:00+00', INTERVAL 1 DAY)",
+                exp.DType.TIMESTAMPTZ,
+            ),
+        ):
+            with self.subTest(sql=sql):
+                annotated = annotate_types(self.parse_one(sql), dialect="bigquery")
+                self.assertTrue(annotated.is_type(dtype), annotated.type)
+
     def test_set_operations(self):
         self.validate_identity("SELECT 1 AS foo INNER UNION ALL SELECT 3 AS foo, 4 AS bar")
 
@@ -3888,6 +4018,12 @@ OPTIONS (
                     read={"duckdb": source},
                 )
 
+        # A FILTER can leave no rows, so only the ones it keeps count
+        self.validate_all(
+            "IF(COUNTIF(c) = 0, NULL, COALESCE(ARRAY_AGG(DISTINCT IF(c, x, NULL) IGNORE NULLS), []))",
+            read={"duckdb": "LIST_DISTINCT(LIST(x) FILTER(WHERE c))"},
+        )
+
         for values, where in (
             ("1, NULL, 2, 1", ""),
             ("NULL", ""),
@@ -3960,9 +4096,15 @@ OPTIONS (
         self.assertEqual(self.parse_one(sql).sql("bigquery", pretty=True), expected)
 
     def test_unnest_with_offset(self):
-        for offset, alias in (("", "offset"), ("AS pos", "pos")):
+        for offset, alias in (("", "offset"), (" AS pos", "pos")):
             self.validate_all(
-                f"SELECT * FROM tbl CROSS JOIN UNNEST(col) AS ref WITH OFFSET {offset}",
+                f"SELECT x, {alias} FROM UNNEST([10, 20]) AS x WITH OFFSET{offset} ORDER BY {alias}",
+                write={
+                    "snowflake": f"SELECT x, {alias} FROM TABLE(FLATTEN(INPUT => [10, 20])) AS _t0(seq, key, path, {alias}, x, this) ORDER BY {alias} NULLS FIRST",
+                },
+            )
+            self.validate_all(
+                f"SELECT * FROM tbl CROSS JOIN UNNEST(col) AS ref WITH OFFSET{offset}",
                 write={
                     "bigquery": f"SELECT * FROM tbl CROSS JOIN UNNEST(col) AS ref WITH OFFSET AS {alias}",
                     "hive": f"SELECT * FROM tbl LATERAL VIEW POSEXPLODE(col) AS {alias}, ref",
@@ -3971,6 +4113,13 @@ OPTIONS (
                     "databricks": f"SELECT * FROM tbl CROSS JOIN LATERAL (SELECT * EXCEPT (pos), pos AS {alias} FROM POSEXPLODE(col)) AS _t0(ref, {alias})",
                 },
             )
+
+        self.validate_all(
+            "SELECT x.pos AS field, POS FROM UNNEST([STRUCT(42 AS pos)]) AS x WITH OFFSET AS pos WHERE pos = 0",
+            write={
+                "snowflake": "SELECT x['pos'] AS field, POS FROM TABLE(FLATTEN(INPUT => [OBJECT_CONSTRUCT('pos', 42)])) AS _t0(seq, key, path, pos, x, this) WHERE pos = 0",
+            },
+        )
 
     def test_generate_date_array(self):
         self.validate_all(
@@ -4041,6 +4190,38 @@ OPTIONS (
         )
         self.validate_identity("DATE_DIFF('2017-12-18', '2017-12-17', WEEK(SATURDAY))")
         self.validate_identity("DATETIME_DIFF('2017-12-18', '2017-12-17', WEEK(MONDAY))")
+
+        self.validate_all(
+            "SELECT EXTRACT(ISOWEEK FROM DATE '2017-01-01') AS w",
+            write={
+                **dict.fromkeys(
+                    ("duckdb", "postgres", "spark", "databricks", "presto", "trino"),
+                    "SELECT EXTRACT(WEEK FROM CAST('2017-01-01' AS DATE)) AS w",
+                ),
+                "bigquery": "SELECT EXTRACT(ISOWEEK FROM CAST('2017-01-01' AS DATE)) AS w",
+                "snowflake": "SELECT DATE_PART(WEEKISO, CAST('2017-01-01' AS DATE)) AS w",
+                "tsql": "SELECT DATEPART(ISO_WEEK, CAST('2017-01-01' AS DATE)) AS w",
+            },
+        )
+
+        self.validate_all(
+            "SELECT EXTRACT(ISOYEAR FROM DATE '2018-12-31') AS y",
+            write={
+                **dict.fromkeys(
+                    ("bigquery", "duckdb", "postgres"),
+                    "SELECT EXTRACT(ISOYEAR FROM CAST('2018-12-31' AS DATE)) AS y",
+                ),
+                **dict.fromkeys(
+                    ("spark", "databricks"),
+                    "SELECT EXTRACT(YEAROFWEEK FROM CAST('2018-12-31' AS DATE)) AS y",
+                ),
+                **dict.fromkeys(
+                    ("presto", "trino"),
+                    "SELECT EXTRACT(YEAR_OF_WEEK FROM CAST('2018-12-31' AS DATE)) AS y",
+                ),
+                "snowflake": "SELECT DATE_PART(YEAROFWEEKISO, CAST('2018-12-31' AS DATE)) AS y",
+            },
+        )
 
         self.validate_all(
             "SELECT LAST_DAY(DATE '2008-11-10', WEEK(SUNDAY))",

@@ -29,6 +29,7 @@ class DuckDB(Dialect):
         exp.Order: AliasPrecedence.MERGED_SOURCE,
         exp.Qualify: AliasPrecedence.SOURCE,
     }
+    GROUP_BY_ALL_HAVING_MIN_VERSION = (2, 0, 1)
     SUPPORTS_FIXED_SIZE_ARRAYS = True
     TABLES_REFERENCEABLE_AS_COLUMNS = True
     QUERY_RESULTS_ARE_STRUCTS = True
@@ -51,6 +52,7 @@ class DuckDB(Dialect):
     EXPRESSION_METADATA = EXPRESSION_METADATA.copy()
 
     DATE_PART_MAPPING.pop("WEEKDAY")
+    EXTRACT_DATE_PART_MAPPING = {"ISOWEEK": "WEEK"}
 
     INVERSE_TIME_MAPPING = {
         "%e": "%-d",  # BigQuery's space-padded day (%e) -> DuckDB's no-padding day (%-d)

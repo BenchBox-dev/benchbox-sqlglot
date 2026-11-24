@@ -63,6 +63,20 @@ SELECT SUM(x.a) AS a FROM x AS x HAVING SUM(x.a) > 3;
 SELECT SUM(a) AS c FROM x HAVING SUM(b) > 3;
 SELECT SUM(x.a) AS c FROM x AS x HAVING SUM(x.b) > 3;
 
+# dialect: duckdb, version=2.0.1
+# execute: false
+SELECT a AS k, SUM(b) AS a FROM x GROUP BY ALL HAVING a = 2;
+SELECT x.a AS k, SUM(x.b) AS a FROM x AS x GROUP BY ALL HAVING x.a = 2;
+
+# dialect: duckdb, version=2.0.0
+# execute: false
+SELECT a AS k, SUM(b) AS a FROM x GROUP BY ALL HAVING a = 2;
+SELECT x.a AS k, SUM(x.b) AS a FROM x AS x GROUP BY ALL HAVING SUM(x.b) = 2;
+
+# dialect: duckdb
+SELECT a + 1 AS k, SUM(b) AS a FROM x GROUP BY ALL HAVING a = 2;
+SELECT x.a + 1 AS k, SUM(x.b) AS a FROM x AS x GROUP BY ALL HAVING SUM(x.b) = 2;
+
 SELECT a AS j, b FROM x ORDER BY j;
 SELECT x.a AS j, x.b AS b FROM x AS x ORDER BY j;
 
@@ -135,6 +149,21 @@ SELECT DATE(x.a) AS _col_0, DATE(x.b) AS c FROM x AS x GROUP BY DATE(x.a), DATE(
 # execute: false
 SELECT (SELECT MIN(a) FROM UNNEST([1, 2]) AS t(a)) AS f FROM x GROUP BY 1;
 SELECT (SELECT MIN(t.a) AS _col_0 FROM UNNEST(ARRAY(1, 2)) AS t(a)) AS f FROM x AS x GROUP BY 1;
+
+# title: Unaliased subquery projection referenced by position in ORDER BY
+# execute: false
+SELECT (SELECT 2), a FROM x ORDER BY 1;
+SELECT (SELECT 2 AS "2") AS _col_0, x.a AS a FROM x AS x ORDER BY _col_0;
+
+# title: Unaliased subquery projection referenced by position in GROUP BY
+# execute: false
+SELECT (SELECT 2), a FROM x GROUP BY 1, 2;
+SELECT (SELECT 2 AS "2") AS _col_0, x.a AS a FROM x AS x GROUP BY (SELECT 2 AS "2"), x.a;
+
+# title: Unaliased correlated subquery projection referenced by position
+# execute: false
+SELECT a, (SELECT MAX(y.c) FROM y WHERE y.b = x.b) FROM x ORDER BY 2, 1;
+SELECT x.a AS a, (SELECT MAX(y.c) AS _col_0 FROM y AS y WHERE y.b = x.b) AS _col_1 FROM x AS x ORDER BY _col_1, a;
 
 # dialect: bigquery
 WITH x AS (select 'a' as a, 1 as b) SELECT x.a AS c, y.a as d, SUM(x.b) AS y, FROM x join x as y on x.a = y.a group by 1, 2;
@@ -1385,11 +1414,78 @@ SELECT
 FROM x;
 SELECT x.a + 1 AS i, x.a + 1 + 1 AS j, x.a + 1 + 1 + 1 AS k FROM x AS x;
 
+# title: ClickHouse resolves dotted alias references before source columns
+# dialect: clickhouse
+# execute: false
+# schema: {"src": {"ambig": "UNKNOWN"}}
+SELECT '{"x":1}'::JSON AS ambig, getSubcolumn(ambig, 'x') AS via_func, ambig.x AS via_dot, src.ambig.x AS via_source FROM src;
+SELECT CAST('{"x":1}' AS JSON) AS ambig, getSubcolumn(CAST('{"x":1}' AS JSON), 'x') AS via_func, CAST('{"x":1}' AS JSON).x AS via_dot, src.ambig.x AS via_source FROM src AS src;
+
+# title: ClickHouse reads a field of a tuple alias even when the source has a dotted field name
+# dialect: clickhouse
+# execute: false
+# schema: {"t": {"s": "Tuple(n Tuple(x Int64), `n.x` Int64)"}}
+SELECT t.s.n AS v, v.x AS result FROM t;
+SELECT t.s.n AS v, (t.s.n).x AS result FROM t AS t;
+
+# title: ClickHouse reads a nested JSON subcolumn from a computed alias as one path
+# dialect: clickhouse
+# execute: false
+SELECT '{"a":{"b":{"c":{"X":1}}}}'::JSON AS obj, obj.a.b.c."X";
+SELECT CAST('{"a":{"b":{"c":{"X":1}}}}' AS JSON) AS obj, getSubcolumn(CAST('{"a":{"b":{"c":{"X":1}}}}' AS JSON), 'a.b.c.X') AS "X";
+
+# title: ClickHouse expands nested fields of a projection alias in a filter
+# dialect: clickhouse
+# execute: false
+# schema: {"src": {"payload": "JSON"}}
+SELECT src.payload AS obj FROM src WHERE obj.nested."Field Name" = 1;
+SELECT src.payload AS obj FROM src AS src WHERE src.payload.nested."Field Name" = 1;
+
+# title: ClickHouse preserves a correlated table qualifier that matches a projection alias
+# dialect: clickhouse
+# execute: false
+# schema: {"src": {"x": "INT"}}
+SELECT (SELECT 1 AS src WHERE src.x = 2) AS correlated FROM src;
+SELECT (SELECT 1 AS src WHERE src.x = 2) AS correlated FROM src AS src;
+
+# title: ClickHouse resolves the same dotted name independently in a scalar subquery
+# dialect: clickhouse
+# execute: false
+# schema: {"src": {"obj": "JSON"}}
+SELECT '{"x":1}'::JSON AS obj, obj.x AS outer_x, (SELECT obj.x FROM src) AS inner_x;
+SELECT CAST('{"x":1}' AS JSON) AS obj, CAST('{"x":1}' AS JSON).x AS outer_x, (SELECT src.obj.x AS x FROM src AS src) AS inner_x;
+
 # title: noop - reference comes before alias
 # execute: false
 # validate_qualify_columns: false
 SELECT i + 1 AS j, x.a + 1 AS i FROM x;
 SELECT i + 1 AS j, x.a + 1 AS i FROM x AS x;
+
+# title: ClickHouse expands a later projection alias with a qualified source
+# dialect: clickhouse
+# execute: false
+SELECT src * 2 AS derived, abs(t.col) AS src FROM t;
+SELECT abs(t.col) * 2 AS derived, abs(t.col) AS src FROM t AS t;
+
+# title: ClickHouse follows alias chains while preserving qualified and self references
+# dialect: clickhouse
+# execute: false
+# schema: {"t": {"x": "INT"}}
+SELECT b * 2 AS c, x + 3 AS b, x + 1 AS x, t.x AS original FROM t;
+SELECT (t.x + 1 + 3) * 2 AS c, t.x + 1 + 3 AS b, t.x + 1 AS x, t.x AS original FROM t AS t;
+
+# title: ClickHouse keeps output names and GROUP BY ordinals when expanding forward references
+# dialect: clickhouse
+# execute: false
+SELECT b, b AS a, 7 AS b GROUP BY a;
+SELECT 7 AS b, 7 AS a, 7 AS b GROUP BY 2;
+
+# title: ClickHouse preserves the output name of a parenthesized forward alias reference
+# dialect: clickhouse
+# execute: false
+# schema: {"t": {"col": "INT"}}
+SELECT (src), ((src)), t.col AS src FROM t;
+SELECT t.col AS src, t.col AS src, t.col AS src FROM t AS t;
 
 # title: subquery
 SELECT

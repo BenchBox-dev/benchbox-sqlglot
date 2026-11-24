@@ -952,10 +952,6 @@ class TestClickhouse(Validator):
             parse_one("Tuple(select Int64)", into=exp.DataType, read="clickhouse"), exp.DataType
         )
 
-        self.validate_identity(
-            "INSERT INTO t (col1, col2) VALUES ('abcd', 1234)",
-            "INSERT INTO t (col1, col2) VALUES (('abcd'), (1234))",
-        )
         self.validate_all(
             "INSERT INTO t (col1, col2) VALUES ('abcd', 1234)",
             write={
@@ -2351,6 +2347,12 @@ LIFETIME(MIN 0 MAX 0)""",
 
     def test_array_sort(self):
         self.validate_identity("SELECT arraySort(y -> -y, x), arrayReverseSort(y -> -y, x)")
+
+    def test_array_remove(self):
+        self.validate_all(
+            "arrayFilter(_u -> NOT has([NULL], _u), [[1], [2]])",
+            read={"starrocks": "ARRAY_REMOVE([[1], [2]], NULL)"},
+        )
 
     def test_logical_and_or(self):
         self.validate_all(

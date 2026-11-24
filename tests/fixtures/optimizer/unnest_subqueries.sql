@@ -237,6 +237,10 @@ SELECT COALESCE((SELECT MAX(b.val) FROM t AS b WHERE b.val < a.val AND b.id = a.
 SELECT * FROM x WHERE x.a IN (SELECT y.a AS a FROM y UNION ALL SELECT z.a AS a FROM z);
 SELECT * FROM x LEFT JOIN (SELECT _u_0.a AS a FROM (SELECT y.a AS a FROM y UNION ALL SELECT z.a AS a FROM z) AS _u_0 GROUP BY _u_0.a) AS _u_1 ON x.a = _u_1.a WHERE NOT _u_1.a IS NULL;
 
+# title: unnest IN in a searched CASE condition under WHERE
+SELECT a.id FROM a WHERE CASE WHEN a.id IN (SELECT b.id AS id FROM b GROUP BY b.id HAVING SUM(b.x) > 300) THEN 1 ELSE 0 END = 1;
+SELECT a.id FROM a LEFT JOIN (SELECT b.id AS id FROM b GROUP BY b.id HAVING SUM(b.x) > 300) AS _u_0 ON a.id = _u_0.id WHERE CASE WHEN NOT _u_0.id IS NULL THEN 1 ELSE 0 END = 1;
+
 # title: NOT IN is not unnested because LEFT-JOIN-anti loses three-valued NULL semantics
 SELECT * FROM x WHERE x.a NOT IN (SELECT y.a AS a FROM y);
 SELECT * FROM x WHERE NOT x.a IN (SELECT y.a AS a FROM y);
@@ -537,3 +541,11 @@ SELECT 1 + _u_0.n AS n FROM x CROSS JOIN (SELECT COUNT(*) AS n FROM y) AS _u_0 W
 # execute: true
 SELECT * FROM x WHERE EXISTS (SELECT y.b AS b FROM y WHERE y.b = x.a AND x.b IS NULL);
 SELECT * FROM x WHERE EXISTS(SELECT y.b AS b FROM y WHERE y.b = x.a AND x.b IS NULL);
+
+# title: Correlated scalar subquery projecting an unaliased nested subquery stays correlated
+SELECT x.a, (SELECT (SELECT y.b > 1) AS _col_0 FROM y WHERE y.a = x.a) AS r FROM x;
+SELECT x.a, (SELECT (SELECT y.b > 1) AS _col_0 FROM y WHERE y.a = x.a) AS r FROM x;
+
+# title: Correlated scalar subquery projecting an aliased nested subquery stays correlated
+SELECT x.a, (SELECT (SELECT y.b > 1) AS c FROM y WHERE y.a = x.a) AS r FROM x;
+SELECT x.a, (SELECT (SELECT y.b > 1) AS c FROM y WHERE y.a = x.a) AS r FROM x;

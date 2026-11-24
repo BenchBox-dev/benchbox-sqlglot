@@ -12,7 +12,7 @@ from sqlglot import (
     exp,
     parse_one,
 )
-from sqlglot.dialects import BigQuery, Hive, Snowflake, Spark2
+from sqlglot.dialects import BigQuery, DuckDB, Hive, Snowflake, Spark2
 from sqlglot.dialects.duckdb import WS_CONTROL_CHARS_TO_DUCK
 from sqlglot.generator import logger as generator_logger
 from sqlglot.parser import logger as parser_logger
@@ -391,6 +391,22 @@ class TestDialect(Validator):
                     [precision, scale],
                 )
 
+    def test_try_cast_fallback(self):
+        sql = "TRY_CAST('abc' AS INT)"
+        self.validate_all(
+            sql,
+            write=dict.fromkeys(
+                ("dremio", "drill", "mysql", "postgres", "sqlite"), UnsupportedError
+            ),
+        )
+        expression = self.parse_one(sql)
+        self.assertEqual(
+            expression.sql("hive", unsupported_level=ErrorLevel.RAISE), "CAST('abc' AS INT)"
+        )
+        with self.assertLogs(generator_logger, level="WARNING") as logs:
+            self.assertEqual(expression.sql("sqlite"), "CAST('abc' AS INTEGER)")
+        self.assertIn("TRY_CAST", logs.output[0])
+
     def test_cast(self):
         self.validate_all(
             "CAST(a AS TEXT)",
@@ -505,6 +521,7 @@ class TestDialect(Validator):
         )
         self.validate_all(
             "CAST(a AS VARCHAR)",
+            read={"drill": "CAST(a AS VARCHAR)"},
             write={
                 "bigquery": "CAST(a AS STRING)",
                 "drill": "CAST(a AS VARCHAR)",
@@ -1779,6 +1796,7 @@ class TestDialect(Validator):
 
         # BigQuery can't sort an aggregate's result, so the sort folds into the ARRAY_AGG
         distinct_nulls = "ARRAY_AGG(DISTINCT) only puts NULLs first when ascending"
+        kept_nulls = "ARRAY_CONCAT_AGG(IF(c, IF(x IS NULL, [x], []), NULL))"
         unfoldable = (
             "is only supported on an ARRAY_AGG without ORDER BY or LIMIT and with a literal order"
         )
@@ -1811,6 +1829,36 @@ class TestDialect(Validator):
                 "duckdb",
                 "LIST_SORT(LIST(DISTINCT x), 'DESC', 'NULLS FIRST')",
                 ("ARRAY_AGG(DISTINCT x ORDER BY x DESC)", distinct_nulls),
+            ),
+            # Retained NULLs are placed in the source sort order, at most once for DISTINCT.
+            (
+                "trino",
+                "ARRAY_SORT(ARRAY_DISTINCT(ARRAY_AGG(x) FILTER(WHERE c)))",
+                "ARRAY_CONCAT(COALESCE(ARRAY_AGG(DISTINCT IF(c, x, NULL) IGNORE NULLS "
+                f"ORDER BY IF(c, x, NULL)), []), ARRAY_SLICE({kept_nulls}, 0, 0))",
+            ),
+            (
+                "trino",
+                "ARRAY_SORT(ARRAY_AGG(x) FILTER(WHERE c))",
+                "ARRAY_CONCAT(COALESCE(ARRAY_AGG(IF(c, x, NULL) IGNORE NULLS "
+                f"ORDER BY IF(c, x, NULL)), []), {kept_nulls})",
+            ),
+            (
+                "duckdb",
+                "LIST_SORT(LIST(x) FILTER(WHERE c), 'DESC', 'NULLS FIRST')",
+                f"ARRAY_CONCAT({kept_nulls}, COALESCE(ARRAY_AGG(IF(c, x, NULL) IGNORE NULLS "
+                "ORDER BY IF(c, x, NULL) DESC), []))",
+            ),
+            (
+                "duckdb",
+                "LIST_SORT(LIST(DISTINCT x) FILTER(WHERE c), 'ASC', 'NULLS FIRST')",
+                f"ARRAY_CONCAT(ARRAY_SLICE({kept_nulls}, 0, 0), COALESCE(ARRAY_AGG("
+                "DISTINCT IF(c, x, NULL) IGNORE NULLS ORDER BY IF(c, x, NULL)), []))",
+            ),
+            (
+                "spark",
+                "SORT_ARRAY(COLLECT_LIST(x) FILTER(WHERE c))",
+                "COALESCE(ARRAY_AGG(IF(c, x, NULL) IGNORE NULLS ORDER BY IF(c, x, NULL)), [])",
             ),
             (
                 "spark",
@@ -2168,7 +2216,7 @@ class TestDialect(Validator):
         order_by_all_sql = "SELECT * FROM t ORDER BY ALL"
         self.validate_identity(order_by_all_sql).find(exp.Ordered).this.assert_is(exp.Column)
 
-        for dialect in ("duckdb", "spark", "databricks"):
+        for dialect in ("clickhouse", "databricks", "duckdb", "snowflake", "spark"):
             with self.subTest(f"Testing ORDER BY ALL in {dialect}"):
                 parse_one(order_by_all_sql, read=dialect).find(exp.Ordered).this.assert_is(exp.Var)
 
@@ -3111,8 +3159,8 @@ PIVOT(SUM(x) FOR x IN (1))""",
             "ARRAY_REMOVE(the_array, target)",
             write={
                 "": "ARRAY_REMOVE(the_array, target)",
-                "clickhouse": "arrayFilter(_u -> _u <> target, the_array)",
-                "duckdb": "LIST_FILTER(the_array, LAMBDA _u : _u <> target)",
+                "clickhouse": "arrayFilter(_u -> NOT has([target], _u), the_array)",
+                "duckdb": "LIST_FILTER(the_array, LAMBDA _u : _u IS DISTINCT FROM target)",
                 "bigquery": "ARRAY(SELECT _u FROM UNNEST(the_array) AS _u WHERE _u <> target)",
                 "hive": "ARRAY_REMOVE(the_array, target)",
                 "postgres": "ARRAY_REMOVE(the_array, target)",
@@ -4115,7 +4163,7 @@ FROM subquery2""",
                 "postgres": "RANDOM()",
                 "presto": "RAND()",
                 "spark": "RAND()",
-                "sqlite": "RANDOM()",
+                "sqlite": "(CAST(RANDOM() & 9007199254740991 AS REAL) / 9007199254740992)",
                 "tsql": "RAND()",
             },
             read={
@@ -6135,6 +6183,21 @@ FROM subquery2""",
         result = parse_one("SELECT DOUBLE_IT(5)", dialect=MyDialect)
         self.assertIsInstance(result.expressions[0], exp.Mul)
         self.assertEqual(result.sql(), "SELECT 2 * 5")
+
+    def test_custom_extract_date_parts(self):
+        class CustomDuckDB(DuckDB):
+            DATE_PART_MAPPING = {**DuckDB.DATE_PART_MAPPING, "ISO_WK": "WEEK"}
+
+        class CustomSnowflake(Snowflake):
+            DATE_PART_MAPPING = {**Snowflake.DATE_PART_MAPPING, "ISO_WK": "WEEKISO"}
+
+        self.validate_all(
+            "EXTRACT(ISO_WK FROM d)",
+            write={
+                CustomDuckDB: "EXTRACT(WEEK FROM d)",
+                CustomSnowflake: "DATE_PART(WEEKISO, d)",
+            },
+        )
 
     def test_agg(self):
         expression = self.validate_identity("SELECT AGG(m), AGG(m) AS x, AGG(t.m) FROM t")

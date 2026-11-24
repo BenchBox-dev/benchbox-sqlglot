@@ -238,32 +238,32 @@ EXTRACT(day from x);
 INT;
 
 # dialect: postgres
-EXTRACT(YEAR FROM DATE '2020-06-01');
+EXTRACT(SECOND FROM TIMESTAMP '2020-06-01 12:34:56.5');
 DECIMAL;
 
-# dialect: postgres
-DATE_PART('year', DATE '2020-06-01');
+# dialect: postgres, version=13
+EXTRACT(SECOND FROM TIMESTAMP '2020-06-01 12:34:56.5');
 DOUBLE;
 
 # dialect: postgres
-EXTRACT(YEAR FROM DATE '2020-06-01') / 3;
-DECIMAL;
-
-# dialect: postgres
-DATE_PART('year', DATE '2020-06-01') / 3;
+DATE_PART('year', x);
 DOUBLE;
 
 # dialect: redshift
-EXTRACT(YEAR FROM TIMESTAMP '2020-06-01 00:00:00');
+DATE_PART(second, TIMESTAMP '2020-06-01 12:34:56.5');
+DOUBLE;
+
+# dialect: redshift
+EXTRACT(SECOND FROM TIMESTAMP '2020-06-01 12:34:56.5');
 INT;
 
 # dialect: redshift
-DATE_PART('year', TIMESTAMP '2020-06-01 00:00:00');
+EXTRACT(SECOND FROM TIMESTAMPTZ '2020-06-01 12:34:56.5+00');
 DOUBLE;
 
-# dialect: duckdb
-EXTRACT(YEAR FROM DATE '2020-06-01');
-BIGINT;
+# dialect: redshift
+EXTRACT(SECOND FROM x);
+UNKNOWN;
 
 CASE WHEN x THEN CAST(y AS DECIMAL(18, 2)) ELSE NULL END;
 DECIMAL(18,2);

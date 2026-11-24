@@ -302,6 +302,7 @@ def _qualify_unnested_columns(expression: exp.Expr) -> exp.Expr:
         unnest_to_identifier: dict[exp.Unnest, exp.Identifier] = {}
 
         unnest_identifier: exp.Identifier | None = None
+        offset_name = ""
         orig_expression = expression.copy()
 
         for unnest in unnests:
@@ -352,6 +353,9 @@ def _qualify_unnested_columns(expression: exp.Expr) -> exp.Expr:
             if not isinstance(unnest_identifier, exp.Identifier):
                 return orig_expression
 
+            # An offset alias takes precedence over an implicit struct field of the same name.
+            offset_name = unnest.text("offset").lower()
+            unnest_columns.discard(offset_name)
             unnest_to_identifier[unnest] = unnest_identifier
             column_source.update({c.lower(): unnest_identifier for c in unnest_columns})
 
@@ -359,12 +363,13 @@ def _qualify_unnested_columns(expression: exp.Expr) -> exp.Expr:
             if column.table:
                 continue
 
-            table = column_source.get(column.name.lower())
+            column_name = column.name.lower()
+            table = column_source.get(column_name)
             if (
                 unnest_identifier
                 and not table
                 and len(scope.sources) == 1
-                and column.name.lower() != unnest_identifier.name.lower()
+                and column_name not in (unnest_identifier.name.lower(), offset_name)
             ):
                 unnest_ancestor = column.find_ancestor(exp.Unnest, exp.Select)
                 if isinstance(unnest_ancestor, exp.Unnest):
@@ -444,6 +449,7 @@ class SnowflakeGenerator(generator.Generator):
     EXCEPT_INTERSECT_SUPPORT_ALL_CLAUSE = False
     SUPPORTS_MEDIAN = True
     ARRAY_SIZE_NAME = "ARRAY_SIZE"
+    NORMALIZE_EXTRACT_DATE_PARTS = True
     SUPPORTS_DECODE_CASE = True
     ALTER_TABLE_INCLUDE_COLUMN_KEYWORD = False
     ALTER_TABLE_ADD_COLUMNS_WRAPPED = False
@@ -528,7 +534,7 @@ class SnowflakeGenerator(generator.Generator):
         exp.DotProduct: rename_func("VECTOR_INNER_PRODUCT"),
         exp.Explode: rename_func("FLATTEN"),
         exp.Extract: lambda self, e: self.func(
-            "DATE_PART", map_date_part(e.this, self.dialect), e.expression
+            "DATE_PART", self.extract_date_part(e.this), e.expression
         ),
         exp.Filter: no_filter_sql,
         exp.CosineDistance: rename_func("VECTOR_COSINE_SIMILARITY"),

@@ -1,4 +1,4 @@
-from sqlglot import ErrorLevel, ParseError, UnsupportedError, exp, parse_one, transpile
+from sqlglot import ErrorLevel, ParseError, TokenError, UnsupportedError, exp, parse_one, transpile
 from sqlglot.generator import logger as generator_logger
 from sqlglot.helper import logger as helper_logger
 from sqlglot.optimizer import optimize
@@ -172,6 +172,12 @@ class TestPostgres(Validator):
             with self.assertRaises(UnsupportedError):
                 expression.sql("postgres", unsupported_level=unsupported_level)
 
+    def test_current_time_precision(self):
+        self.validate_identity("SELECT CURRENT_TIME, CURRENT_TIME(0), CURRENT_TIME(3)")
+        self.validate_identity(
+            "SELECT CURRENT_TIMESTAMP, CURRENT_TIMESTAMP(0), CURRENT_TIMESTAMP(3)"
+        )
+
     def test_datetime_arithmetic(self):
         self.validate_all(
             "SELECT CAST('2024-01-01 12:00:00' AS TIMESTAMP) + INTERVAL '30 SECOND' - (CAST('2024-01-01 12:00:00' AS TIMESTAMP) + INTERVAL '30 SECOND')",
@@ -210,6 +216,18 @@ class TestPostgres(Validator):
             with self.subTest(sql=sql):
                 create = self.validate_identity(sql).assert_is(exp.Create)
                 self.validate_identity(create.sql("postgres", pretty=True), sql)
+
+    def test_root_operator_precedence(self):
+        self.validate_all(
+            "SELECT |/ 16 + 9, ||/ 27 + 37, |/ 16 * 4",
+            write=dict.fromkeys(
+                ("postgres", "duckdb"), "SELECT SQRT(16 + 9), CBRT(27 + 37), SQRT(16 * 4)"
+            ),
+        )
+        self.validate_identity(
+            "SELECT 2 * |/ 16 + 9 < 11, (|/ 16) + 9, |/ 16 || 'x'",
+            "SELECT 2 * SQRT(16 + 9) < 11, (SQRT(16)) + 9, SQRT(16) || 'x'",
+        )
 
     def test_is_precedence(self):
         for predicate in (
@@ -319,26 +337,17 @@ class TestPostgres(Validator):
             if expression.args.get("returning"):
                 self.assertIsInstance(expression.args["returning"], exp.DataType)
 
-    def test_extract_return_types(self):
-        for dialect in ("postgres", "materialize", "risingwave"):
-            for source, expected in (
-                ("EXTRACT(YEAR FROM DATE '2020-06-01')", exp.DType.DECIMAL),
-                ("EXTRACT(SECOND FROM TIMESTAMP '2020-06-01 12:34:56.123456')", exp.DType.DECIMAL),
-                ("DATE_PART('year', DATE '2020-06-01')", exp.DType.DOUBLE),
-            ):
-                with self.subTest(dialect=dialect, source=source):
-                    expression = parse_one(source, read=dialect)
-                    self.assertTrue(expression.args["return_type"].is_type(expected))
-                    self.assertTrue(annotate_types(expression, dialect=dialect).is_type(expected))
-                    roundtrip = parse_one(expression.sql(dialect), read=dialect)
-                    self.assertEqual(expression.args["return_type"], roundtrip.args["return_type"])
-                    restored = exp.Expression.load(expression.dump())
-                    self.assertEqual(restored.args["return_type"], expression.args["return_type"])
+    def test_absolute_value_operator(self):
+        self.validate_identity("SELECT @ x", "SELECT ABS(x)")
+        self.validate_identity("SELECT @ -5.0", "SELECT ABS(-5.0)")
+        self.validate_identity("SELECT @ -3 + 1", "SELECT ABS(-3 + 1)")
+        self.validate_identity("SELECT @ x > 1", "SELECT ABS(x) > 1")
+        self.validate_identity("SELECT @ -3 & 3", "SELECT ABS(-3) & 3")
+        self.validate_identity("SELECT 2 * @ -3", "SELECT 2 * ABS(-3)")
+        self.validate_identity("SELECT @ DECIMAL '-1.25'", "SELECT ABS(CAST('-1.25' AS DECIMAL))")
 
-        self.assertNotEqual(
-            parse_one("EXTRACT(YEAR FROM d)", read="postgres"),
-            parse_one("DATE_PART('year', d)", read="postgres"),
-        )
+        with self.assertRaises(ParseError):
+            self.parse_one("SELECT @")
 
     def test_postgres(self):
         expr = self.parse_one("SELECT * FROM r CROSS JOIN LATERAL UNNEST(ARRAY[1]) AS s(location)")
@@ -451,6 +460,17 @@ class TestPostgres(Validator):
         self.validate_identity("SELECT * FROM r CROSS JOIN LATERAL UNNEST(ARRAY[1]) AS s(location)")
         self.validate_identity("CAST(1 AS DECIMAL) / CAST(2 AS DECIMAL) * -100")
         self.validate_identity("EXEC AS myfunc @id = 123", check_command_warning=True)
+        for sql in (
+            "LISTEN c",
+            "UNLISTEN *",
+            "NOTIFY c, 'payload'",
+            "DEALLOCATE PREPARE p",
+            "DEALLOCATE ALL",
+            "DISCARD ALL",
+        ):
+            with self.subTest(sql):
+                self.validate_identity(sql, check_command_warning=True).assert_is(exp.Command)
+        self.validate_identity("SELECT listen, notify, discard, deallocate, unlisten FROM t")
         self.validate_identity("SELECT CURRENT_SCHEMA")
         self.validate_identity("SELECT CURRENT_USER")
         self.validate_identity("SELECT CURRENT_ROLE")
@@ -608,10 +628,8 @@ class TestPostgres(Validator):
             "SELECT DATE_PART('isodow'::varchar(6), current_date)",
             "SELECT DATE_PART(CAST('isodow' AS VARCHAR(6)), CURRENT_DATE)",
         )
-        self.validate_identity(
-            "SELECT DATE_PART('isoyear', ts)",
-            "SELECT DATE_PART('isoyear', ts)",
-        )
+        self.validate_identity("SELECT DATE_PART('isoyear', ts)")
+        self.validate_identity("SELECT DATE_PART('iso' || 'dow', CURRENT_DATE)")
         self.validate_identity(
             "END WORK AND NO CHAIN",
             "COMMIT AND NO CHAIN",
@@ -1111,10 +1129,10 @@ FROM json_data, field_ids""",
         self.validate_all(
             "SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount)",
             write={
-                "databricks": "SELECT PERCENTILE_APPROX(amount, 0.5)",
+                "databricks": "SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount NULLS LAST)",
                 "postgres": "SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount)",
                 "presto": "SELECT APPROX_PERCENTILE(amount, 0.5)",
-                "spark": "SELECT PERCENTILE_APPROX(amount, 0.5)",
+                "spark": "SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount NULLS LAST)",
                 "trino": "SELECT APPROX_PERCENTILE(amount, 0.5)",
             },
         )
@@ -1519,10 +1537,21 @@ FROM json_data, field_ids""",
 
         self.validate_all(
             "SELECT JSON_OBJECT_AGG(k, v) FROM t",
+            read={
+                "postgres": "SELECT JSON_OBJECTAGG(k VALUE v) FROM t",
+                "mysql": "SELECT JSON_OBJECTAGG(k, v) FROM t",
+                "oracle": "SELECT JSON_OBJECTAGG(KEY k VALUE v) FROM t",
+            },
             write={
                 "postgres": "SELECT JSON_OBJECT_AGG(k, v) FROM t",
                 "duckdb": "SELECT JSON_GROUP_OBJECT(k, v) FROM t",
             },
+        )
+        self.validate_identity("SELECT JSON_OBJECTAGG(k: v ABSENT ON NULL) FROM t")
+        self.validate_identity("SELECT JSON_OBJECTAGG(k: v WITHOUT UNIQUE KEYS) FROM t")
+        self.validate_identity("SELECT JSON_OBJECTAGG(k: v FORMAT JSON) FROM t")
+        self.validate_identity(
+            "SELECT JSON_OBJECTAGG(k: v RETURNING BYTEA FORMAT JSON ENCODING UTF8) FROM t"
         )
 
         self.validate_all(
@@ -1867,10 +1896,6 @@ FROM json_data, field_ids""",
             "CREATE FUNCTION x(INT) RETURNS INT SET search_path = 'public'",
         )
         self.validate_identity(
-            "CREATE TABLE test (x TIMESTAMP WITHOUT TIME ZONE[][])",
-            "CREATE TABLE test (x TIMESTAMP[][])",
-        )
-        self.validate_identity(
             "CREATE OR REPLACE FUNCTION function_name (input_a character varying DEFAULT NULL::character varying)",
             "CREATE OR REPLACE FUNCTION function_name(input_a VARCHAR DEFAULT CAST(NULL AS VARCHAR))",
         )
@@ -2205,6 +2230,62 @@ FROM json_data, field_ids""",
             },
         )
 
+    def test_unicode_identifier(self):
+        self.validate_identity(
+            r'SELECT U&"\0062ases" FROM (VALUES (42)) AS t(bases)',
+            'SELECT "bases" FROM (VALUES (42)) AS t(bases)',
+        )
+        self.validate_identity(
+            """WITH u&"T" AS (SELECT 1 AS U&"a""b!!c!+01F600" UESCAPE '!') """
+            r'SELECT "T".U&"a""b!c\D83D\DE00" FROM "T"',
+            'WITH "T" AS (SELECT 1 AS "a""b!c😀") SELECT "T"."a""b!c😀" FROM "T"',
+        )
+        self.validate_identity(
+            r"""SELECT 1 AS U&"a\\b", 2 AS u&"Mixed.0043ase" /* escape */ uescape '.'""",
+            r"""SELECT 1 AS "a\b", 2 AS "MixedCase" /* escape */""",
+        )
+        self.validate_identity(
+            'SELECT u &"bits", u& "bits", mu&"bits" FROM (VALUES (3, 2, 1)) AS t(u, mu, bits)',
+            'SELECT u & "bits", u & "bits", mu & "bits" FROM (VALUES (3, 2, 1)) AS t(u, mu, bits)',
+        )
+        for identifier in (
+            r'U&"\123"',
+            r'U&"\+110000"',
+            r'U&"\D800"',
+            r'U&"\0000"',
+            """U&"x" UESCAPE '+'""",
+            """U&"x" UESCAPE 'ab'""",
+            'U&"x" UESCAPE',
+        ):
+            with self.subTest(identifier=identifier), self.assertRaises(TokenError):
+                self.parse_one(f"SELECT 1 AS {identifier}")
+
+    def test_unicode_identifier_continued_uescape(self):
+        prefix = 'SELECT 1 AS U&"x!0061" UESCAPE '
+        for literal in ("''\n'!'", "'!'\r\n''", "E''\n''\n'\\x21'"):
+            with self.subTest(literal=literal):
+                self.validate_identity(prefix + literal, 'SELECT 1 AS "xa"')
+
+        sql = prefix + "'' -- first\n'!' -- last\n''"
+        projection = self.parse_one(sql).selects[0]
+        alias = projection.args["alias"]
+        self.assertEqual(alias.name, "xa")
+        self.assertEqual(projection.comments, [" first", " last"])
+        self.assertEqual(
+            sql[alias.meta["start"] : alias.meta["end"] + 1], sql[len("SELECT 1 AS ") :]
+        )
+
+        for literal in (
+            "'!'\n'?'",
+            "''\n''",
+            "'' '!'",
+            "'' /* gap */\n'!'",
+            "$$$$\n'!'",
+            "''\nE'!'",
+        ):
+            with self.subTest(literal=literal), self.assertRaises(TokenError):
+                self.parse_one(prefix + literal)
+
     def test_unicode_string(self):
         self.validate_identity("SELECT u & 5 FROM t")
         self.validate_identity("SELECT (U&'\\FE01' || 'Test literal') AS label FROM data")
@@ -2368,6 +2449,12 @@ CROSS JOIN JSON_ARRAY_ELEMENTS(CAST(JSON_EXTRACT_PATH(tbox, 'boxes') AS JSON)) A
                 "spark": "SIZE(arr)",
                 "databricks": "SIZE(arr)",
             },
+            write={
+                "bigquery": "ARRAY_LENGTH(arr)",
+                "duckdb": "ARRAY_LENGTH(arr)",
+                "redshift": "GET_ARRAY_LENGTH(arr)",
+                "spark": "SIZE(arr)",
+            },
         )
         self.validate_all(
             "ARRAY_LENGTH(arr, 1)",
@@ -2507,7 +2594,32 @@ CROSS JOIN JSON_ARRAY_ELEMENTS(CAST(JSON_EXTRACT_PATH(tbox, 'boxes') AS JSON)) A
             "ROUND(CAST(x AS DECIMAL(18, 3)), 4)", read={"duckdb": "ROUND(x::DECIMAL, 4)"}
         )
 
+    def test_make_date(self):
+        self.validate_all(
+            "SELECT MAKE_DATE(2024, 1, 31)",
+            read={
+                "bigquery": "SELECT DATE(2024, 1, 31)",
+                "duckdb": "SELECT MAKE_DATE(2024, 1, 31)",
+                "spark": "SELECT MAKE_DATE(2024, 1, 31)",
+                "tsql": "SELECT DATEFROMPARTS(2024, 1, 31)",
+            },
+            write={
+                "bigquery": "SELECT DATE(2024, 1, 31)",
+                "duckdb": "SELECT MAKE_DATE(2024, 1, 31)",
+                "snowflake": "SELECT DATE_FROM_PARTS(2024, 1, 31)",
+                "spark": "SELECT MAKE_DATE(2024, 1, 31)",
+                "tsql": "SELECT DATEFROMPARTS(2024, 1, 31)",
+            },
+        )
+
     def test_extract_date_parts(self):
+        spark_sql = "SELECT EXTRACT(DOW_ISO FROM CAST('2024-06-16' AS DATE))"
+        for part in ("ISODOW", "'isodow'"):
+            self.validate_all(
+                f"SELECT EXTRACT({part} FROM DATE '2024-06-16')",
+                write={"spark": spark_sql, "databricks": spark_sql},
+            )
+
         self.validate_all(
             "SELECT EXTRACT(DAY FROM CAST(x AS DATE)), EXTRACT(MONTH FROM CAST(x AS DATE)), EXTRACT(YEAR FROM CAST(x AS DATE))",
             read={

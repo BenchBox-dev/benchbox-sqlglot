@@ -459,6 +459,12 @@ class TestParser(unittest.TestCase):
         self.assertIsInstance(expression.this.this.this.this, exp.Paren)
         self.assertIsInstance(expression.this.this.this.this.this, exp.EQ)
 
+    def test_top_with_comma(self):
+        for dialect in ("redshift", "teradata", "tsql"):
+            for sql in ("SELECT top, x FROM t", "SELECT TOP 1, x FROM t"):
+                with self.subTest(dialect=dialect, sql=sql), self.assertRaises(ParseError):
+                    parse_one(sql, read=dialect)
+
     def test_limit_percent_parses_without_modulo(self):
         expression = parse_one("SELECT * FROM range(1000) LIMIT 1 / 10% OFFSET 5")
         limit = expression.args["limit"]
@@ -561,6 +567,11 @@ class TestParser(unittest.TestCase):
         self.assertNotIsInstance(expression, exp.Transaction)
         self.assertIsNone(expression.expression)
         self.assertEqual(expression.sql(), "BEGIN")
+
+    def test_set_transaction(self):
+        for level in ("READ UNCOMMITTED", "READ COMMITTED", "REPEATABLE READ", "SERIALIZABLE"):
+            sql = f"SET TRANSACTION ISOLATION LEVEL {level}"
+            self.assertEqual(parse_one(sql).sql(), sql)
 
     def test_identify(self):
         expression = parse_one(
@@ -711,6 +722,36 @@ class TestParser(unittest.TestCase):
         self.assertEqual(expression.expressions[0].comments, ["# Comment 1"])
         self.assertEqual(expression.expressions[1].comments, ["# Comment 2"])
         self.assertEqual(expression.expressions[2].comments, ["# Comment 3"])
+
+    def test_comments_table_parts(self):
+        for prefix, suffix in (("SELECT * FROM", ""), ("CREATE TABLE", " (x INT)")):
+            for target, comments in (
+                ("db. /* comment */ t", ["comment"]),
+                ("db. -- comment\nt", ["comment"]),
+                (
+                    "cat /* first */ . /* second */ db. /* third */ t /* fourth */",
+                    ["first", "second", "third", "fourth"],
+                ),
+            ):
+                sql = f"{prefix} {target}{suffix}"
+                with self.subTest(sql=sql):
+                    expression = parse_one(sql)
+                    table = expression.find(exp.Table)
+                    self.assertEqual([comment.strip() for comment in table.comments], comments)
+                    self.assertTrue(all(not part.comments for part in table.parts))
+                    self.assertEqual(
+                        [
+                            comment.strip()
+                            for comment in parse_one(expression.sql()).find(exp.Table).comments
+                        ],
+                        comments,
+                    )
+
+            expression = parse_one(
+                f"{prefix} CaT. /* sqlglot.meta case_sensitive=true */ "
+                f"Db /* sqlglot.meta case_sensitive=false */{suffix}"
+            )
+            self.assertFalse(expression.find(exp.Table).meta["case_sensitive"])
 
     def test_comments_select_cte(self):
         expression = parse_one(

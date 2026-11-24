@@ -30,6 +30,7 @@ class Postgres(Dialect):
     TABLESAMPLE_SIZE_IS_PERCENT = True
     TABLES_REFERENCEABLE_AS_COLUMNS = True
     OUTER_COLUMNS_SHADOW_TABLE_ALIASES = True
+    EXTRACT_DATE_PART_MAPPING = {"ISOWEEK": "WEEK"}
 
     DEFAULT_FUNCTIONS_COLUMN_NAMES = {
         exp.ExplodingGenerateSeries: "generate_series",
@@ -95,6 +96,7 @@ class Postgres(Dialect):
         HEX_STRINGS = [("x'", "'"), ("X'", "'")]
         BYTE_STRINGS = [("e'", "'"), ("E'", "'")]
         UNICODE_STRINGS = [("U&'", "'"), ("u&'", "'")]
+        UNICODE_IDENTIFIERS = [('U&"', '"'), ('u&"', '"')]
         BYTE_STRING_ESCAPES = ["'", "\\"]
         HEREDOC_STRINGS = ["$"]
 
@@ -119,13 +121,17 @@ class Postgres(Dialect):
             "BEGIN": TokenType.BEGIN,
             "BIGSERIAL": TokenType.BIGSERIAL,
             "CSTRING": TokenType.PSEUDO_TYPE,
+            "DEALLOCATE": TokenType.COMMAND,
             "DECLARE": TokenType.COMMAND,
+            "DISCARD": TokenType.COMMAND,
             "DO": TokenType.COMMAND,
             "EXEC": TokenType.COMMAND,
             "HSTORE": TokenType.HSTORE,
             "INT8": TokenType.BIGINT,
+            "LISTEN": TokenType.COMMAND,
             "MONEY": TokenType.MONEY,
             "NAME": TokenType.NAME,
+            "NOTIFY": TokenType.COMMAND,
             "OID": TokenType.OBJECT_IDENTIFIER,
             "ONLY": TokenType.ONLY,
             "POINT": TokenType.POINT,
@@ -136,6 +142,7 @@ class Postgres(Dialect):
             "SMALLSERIAL": TokenType.SMALLSERIAL,
             "TEMP": TokenType.TEMPORARY,
             "TYPE": TokenType.TYPE,
+            "UNLISTEN": TokenType.COMMAND,
             "REGCLASS": TokenType.OBJECT_IDENTIFIER,
             "REGCOLLATION": TokenType.OBJECT_IDENTIFIER,
             "REGCONFIG": TokenType.OBJECT_IDENTIFIER,
@@ -158,6 +165,7 @@ class Postgres(Dialect):
         SINGLE_TOKENS = {
             **tokens.Tokenizer.SINGLE_TOKENS,
             "$": TokenType.HEREDOC_STRING,
+            "@": TokenType.AT_SIGN,
         }
 
         VAR_SINGLE_TOKENS = {"$"}
