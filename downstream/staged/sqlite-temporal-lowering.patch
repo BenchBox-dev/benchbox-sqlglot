@@ -1,10 +1,10 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index c70f1163b..4c04f1a3e 100644
+index a11608d9..3978745e 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
-@@ -23,6 +23,24 @@ from sqlglot.optimizer.helpers import projection_has_aggregate
- from sqlglot.parsers.sqlite import SQLITE_NOW
- from sqlglot.tokens import TokenType
+@@ -30,6 +30,24 @@ DATETIME_TYPES = (
+     exp.DType.TIMESTAMPLTZ,
+ )
  
 +EXTRACT_FORMATS = {
 +    "YEAR": "%Y",
@@ -27,7 +27,7 @@ index c70f1163b..4c04f1a3e 100644
  
  def _transform_create(expression: exp.Expr) -> exp.Expr:
      """Move primary key to a column and place auto_increment after it."""
-@@ -344,24 +362,43 @@ class SQLiteGenerator(generator.Generator):
+@@ -351,24 +369,43 @@ class SQLiteGenerator(generator.Generator):
                      self.unsupported("SQLite extraction division requires known operand types")
          return super().div_sql(expression)
  
@@ -82,7 +82,7 @@ index c70f1163b..4c04f1a3e 100644
          )
          return super().extract_sql(expression)
  
-@@ -525,6 +562,27 @@ class SQLiteGenerator(generator.Generator):
+@@ -536,6 +573,27 @@ class SQLiteGenerator(generator.Generator):
          self.unsupported("SQLite does not support this INTERVAL expression")
          return super().interval_sql(expression)
  
@@ -111,7 +111,7 @@ index c70f1163b..4c04f1a3e 100644
          if expression.is_type("date"):
              return self.func("DATE", expression.this)
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index 3102e3ad6..09ef2e854 100644
+index 6d5bf7fd..6fbaf59b 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
 @@ -3,6 +3,8 @@ import unittest
@@ -123,7 +123,7 @@ index 3102e3ad6..09ef2e854 100644
  from sqlglot.generator import logger as generator_logger
  from sqlglot.helper import logger as helper_logger
  from sqlglot.optimizer.annotate_types import annotate_types
-@@ -835,7 +837,7 @@ class TestSQLite(Validator):
+@@ -930,7 +932,7 @@ class TestSQLite(Validator):
              "EXTRACT(YEAR FROM TIMESTAMP '2020-06-01 12:00:00')",
              "EXTRACT(HOUR FROM DATE '2020-06-01')",
              "EXTRACT(YEAR FROM INTERVAL '1' YEAR)",
@@ -132,7 +132,7 @@ index 3102e3ad6..09ef2e854 100644
              "DATE_PART('year', DATE '2020-06-01')",
          ):
              with self.subTest(source=source), self.assertRaises(UnsupportedError):
-@@ -888,6 +890,178 @@ class TestSQLite(Validator):
+@@ -983,6 +985,178 @@ class TestSQLite(Validator):
          finally:
              connection.close()
  

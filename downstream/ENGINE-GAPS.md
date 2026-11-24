@@ -332,9 +332,14 @@ ClickHouse.
   including SQLite to SQLite, so `a / b` over integers is a real quotient, not SQLite's truncation. The owner
   accepted this for benchmark correctness over an opt-in rewrite like `safe_division`; integer-literal-only
   quotients keep their truncating meaning.
-- **SQLite interval arithmetic refuses what it cannot get right.** `x +/- INTERVAL` uses upstream's date
-  modifiers but stays Unsupported for a MONTH, QUARTER or YEAR offset of anything other than a NULL or a
-  literal date whose day is at most 28 (SQLite carries month-end overflow into the next month), for a DAY or
-  larger offset of an operand of unknown type (it may hold timestamp text that `DATE()` would truncate), and
-  for a `TIMESTAMPTZ` operand (tobymao/sqlglot#9302, #9303, #9304). Type date columns with
+- **SQLite month, quarter and year offsets need SQLite 3.46.** From the refresh onto upstream v30.34.0,
+  `x +/- INTERVAL` follows upstream's SQLite date modifiers (tobymao/sqlglot#9316 to #9318), and a MONTH,
+  QUARTER or YEAR offset clamps at month end with SQLite's `'floor'` modifier. SQLite before 3.46 returns
+  NULL for that modifier, without an error. sqlglot refuses the offset only when the dialect carries an older
+  version (`sqlite, version=3.45`); BenchBox passes no version, so on Ubuntu 24.04's SQLite 3.45 or CI's
+  3.37 such a query returns NULL. The owner accepted this on 2026-11-24 for the 1,064 interval cases it makes
+  correct on current SQLite; tests that execute these offsets skip below 3.46. Until that refresh, the
+  carried guard keeps these offsets Unsupported unless the base is a NULL or a literal date whose day is at
+  most 28. A DAY or larger offset of an operand of unknown type stays Unsupported in both, because it may
+  hold timestamp text that `DATE()` would truncate; type date columns with
   `sqlglot.benchbox.rewrites.mark_date_columns` to lower their offsets.

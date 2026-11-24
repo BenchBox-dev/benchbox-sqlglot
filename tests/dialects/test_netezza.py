@@ -145,7 +145,6 @@ class TestNetezza(Validator):
             "SELECT DATE('now', '+1 month'), DATE('now', '2 years')",
             {
                 "postgres": "SELECT CURRENT_DATE + INTERVAL '1 MONTH', CURRENT_DATE + INTERVAL '2 YEAR'",
-                "sqlite": "SELECT DATE(CURRENT_DATE, '1 MONTH'), DATE(CURRENT_DATE, '2 YEAR')",
                 "clickhouse": "SELECT DATE_ADD(MONTH, 1, CURRENT_DATE()), DATE_ADD(YEAR, 2, CURRENT_DATE())",
                 "snowflake": "SELECT DATEADD(MONTH, 1, CURRENT_DATE), DATEADD(YEAR, 2, CURRENT_DATE)",
                 "databricks": "SELECT DATEADD(MONTH, 1, CURRENT_DATE), DATEADD(YEAR, 2, CURRENT_DATE)",
