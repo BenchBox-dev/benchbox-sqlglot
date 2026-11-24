@@ -44,6 +44,8 @@ from sqlglot.generator import unsupported_args
 from sqlglot.helper import ensure_list, seq_get, to_int
 
 
+_REGEXP_FULL_MATCH_METACHARS = frozenset(r"\|*+?{}()[].^$%_")
+
 DATE_DIFF_FACTOR = {
     "MICROSECOND": " * 1000000",
     "MILLISECOND": " * 1000",
@@ -272,9 +274,21 @@ def _round_sql(self: PostgresGenerator, expression: exp.Round) -> str:
     return self.func("ROUND", this, decimals)
 
 
+def _left_right_sql(self: PostgresGenerator, expression: exp.Left | exp.Right) -> str:
+    length = expression.expression
+
+    # Postgres drops characters from the other end for a negative length,
+    # so clamp it to 0 to return an empty string instead
+    if expression.args.get("negative_length_returns_empty"):
+        length = exp.If(this=length < 0, true=exp.Literal.number(0), false=length)
+
+    return self.func(expression.sql_name(), expression.this, length)
+
+
 class PostgresGenerator(generator.Generator):
     SELECT_KINDS = ()
     VARIANCE_NAME = "VAR_SAMP"
+    DATE_PART_WITH_EXPRESSION = "DATE_PART"
     TRY_SUPPORTED = False
     SUPPORTS_DECODE_CASE = False
     SUPPORTS_MULTI_ARG_CHR = False
@@ -351,7 +365,7 @@ class PostgresGenerator(generator.Generator):
         **{
             k: v
             for k, v in generator.Generator.TRANSFORMS.items()
-            if k != exp.CommentColumnConstraint
+            if k not in (exp.CommentColumnConstraint, exp.JSONObjectAgg)
         },
         exp.AnyValue: _versioned_anyvalue_sql,
         exp.ArrayConcat: array_concat_sql("ARRAY_CAT"),
@@ -367,11 +381,11 @@ class PostgresGenerator(generator.Generator):
             "CONVERT", e.this, e.args.get("source"), e.args["dest"]
         ),
         exp.CurrentDate: no_paren_current_date_sql,
-        exp.CurrentTimestamp: lambda *_: "CURRENT_TIMESTAMP",
         exp.CurrentUser: lambda *_: "CURRENT_USER",
         exp.CurrentVersion: rename_func("VERSION"),
         exp.DateAdd: _date_add_sql("+"),
         exp.DateDiff: _date_diff_sql,
+        exp.DateFromParts: rename_func("MAKE_DATE"),
         exp.DateStrToDate: datestrtodate_sql,
         exp.DateSub: _date_add_sql("-"),
         exp.DatetimeAdd: _date_add_sql("+"),
@@ -399,6 +413,7 @@ class PostgresGenerator(generator.Generator):
         exp.JSONPathRoot: lambda *_: "",
         exp.JSONPathSubscript: lambda self, e: self.json_path_part(e.this),
         exp.LastDay: no_last_day_sql,
+        exp.Left: _left_right_sql,
         exp.LogicalOr: rename_func("BOOL_OR"),
         exp.LogicalAnd: rename_func("BOOL_AND"),
         exp.Max: max_or_greatest,
@@ -421,6 +436,7 @@ class PostgresGenerator(generator.Generator):
             e.args.get("occurrence"),
             regexp_replace_global_modifier(e),
         ),
+        exp.Right: _left_right_sql,
         exp.Round: _round_sql,
         exp.Select: transforms.preprocess(
             [
@@ -460,7 +476,6 @@ class PostgresGenerator(generator.Generator):
         exp.Unicode: rename_func("ASCII"),
         exp.UnixToTime: _unix_to_time_sql,
         exp.Levenshtein: _levenshtein_sql,
-        exp.JSONObjectAgg: rename_func("JSON_OBJECT_AGG"),
         exp.JSONBObjectAgg: rename_func("JSONB_OBJECT_AGG"),
         exp.CountIf: count_if_to_sum,
         exp.FileFormatProperty: lambda self, e: f"USING {self.sql(e, 'this')}",
@@ -491,6 +506,17 @@ class PostgresGenerator(generator.Generator):
         post_sql = self.expressions(sqls=post_with, sep=" ", indent=False)
         return sql + self.seg(post_sql, sep=" " if sql else "") if post_sql else sql
 
+    def extract_sql(self, expression: exp.Extract) -> str:
+        if not expression.args.get("date_part"):
+            return super().extract_sql(expression)
+
+        part = expression.this
+        name = self.DATE_PART_WITH_EXPRESSION
+        if isinstance(part, exp.Var):
+            name = "DATE_PART"
+            part = exp.Literal.string(part.name.lower())
+        return self.func(name, part, expression.expression)
+
     def bytestring_sql(self, expression: exp.ByteString) -> str:
         if not expression.args.get("is_bytes"):
             return super().bytestring_sql(expression)
@@ -501,14 +527,22 @@ class PostgresGenerator(generator.Generator):
             exp.Literal.string("hex"),
         )
 
-    def extract_sql(self, expression: exp.Extract) -> str:
-        return_type = expression.args.get("return_type")
-        if return_type and return_type.is_type(exp.DType.DOUBLE):
-            part = expression.this
-            if isinstance(part, exp.Var):
-                part = exp.Literal.string(part.name.lower())
-            return self.func("DATE_PART", part, expression.expression)
-        return super().extract_sql(expression)
+    def jsonobjectagg_sql(self, expression: exp.JSONObjectAgg) -> str:
+        args = expression.expressions
+        pair = args[0] if len(args) == 1 else None
+        # Only the SQL/JSON spelling, JSON_OBJECTAGG, accepts these clauses.
+        if (
+            isinstance(pair, exp.FormatJson)
+            or expression.args.get("null_handling")
+            or expression.args.get("unique_keys") is not None
+            or expression.args.get("return_type")
+            or expression.args.get("encoding")
+        ):
+            return self._jsonobject_sql(expression)
+
+        if isinstance(pair, exp.JSONKeyValue):
+            args = [pair.this, pair.expression]
+        return self.func("JSON_OBJECT_AGG", *args)
 
     def schemacommentproperty_sql(self, expression: exp.SchemaCommentProperty) -> str:
         self.unsupported("Table comments are not supported in the CREATE statement")
@@ -640,6 +674,17 @@ class PostgresGenerator(generator.Generator):
         self.unsupported("PostgreSQL does not support RESPECT NULLS.")
         return self.sql(expression.this)
 
+    @unsupported_args("options")
+    def regexpfullmatch_sql(self, expression: exp.RegexpFullMatch) -> str:
+        pattern = expression.expression.unnest()
+        if not pattern.is_string or not _REGEXP_FULL_MATCH_METACHARS.isdisjoint(pattern.name):
+            self.unsupported(
+                "Only plain literal REGEXP_FULL_MATCH patterns translate to SIMILAR TO"
+            )
+
+        predicate = exp.SimilarTo(this=expression.this, expression=expression.expression)
+        return self.sql(exp.paren(predicate, copy=False))
+
     def regexplike_sql(self, expression: exp.RegexpLike) -> str:
         flag = expression.args.get("flag")
         if not flag:
@@ -656,6 +701,17 @@ class PostgresGenerator(generator.Generator):
     @unsupported_args("this")
     def currentschema_sql(self, expression: exp.CurrentSchema) -> str:
         return "CURRENT_SCHEMA"
+
+    def currenttime_sql(self, expression: exp.CurrentTime) -> str:
+        precision = expression.this
+        return self.func("CURRENT_TIME", precision) if precision else "CURRENT_TIME"
+
+    def currenttimestamp_sql(self, expression: exp.CurrentTimestamp) -> str:
+        # Other dialects can use this argument for a time zone instead of a precision.
+        precision = expression.this
+        if precision and precision.is_int:
+            return self.func("CURRENT_TIMESTAMP", precision)
+        return "CURRENT_TIMESTAMP"
 
     def interval_sql(self, expression: exp.Interval) -> str:
         unit = expression.text("unit").lower()

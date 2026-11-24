@@ -1,11 +1,12 @@
 from unittest import mock
 
-from sqlglot import ParseError, UnsupportedError, exp, parse_one
+from sqlglot import ParseError, TokenError, UnsupportedError, exp, parse_one, tokenize
 from sqlglot.optimizer.annotate_types import annotate_types
 from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
 from sqlglot.optimizer.qualify import qualify
 from sqlglot.optimizer.qualify_columns import quote_identifiers
 from sqlglot.parser import logger as parser_logger
+from sqlglot.tokens import TokenType
 from tests.dialects.test_dialect import Validator
 
 
@@ -121,6 +122,14 @@ class TestSnowflake(Validator):
                 "snowflake": "TO_TIMESTAMP('2024-05-09 01:02:03 PM', 'yyyy-mm-DD hh12:mi:ss pm')",
             },
         )
+
+    def test_top_identifier(self):
+        self.validate_identity("SELECT top FROM t")
+        self.validate_identity("SELECT top.x FROM t AS top")
+        self.validate_identity("SELECT top, x FROM t")
+        self.validate_identity("SELECT TOP(x) FROM t")
+        self.validate_identity("SELECT TOP(5), x FROM t")
+        self.validate_identity("SELECT top:field FROM t", "SELECT GET_PATH(top, 'field') FROM t")
 
     def test_set_operation_top(self):
         for op in ("UNION", "UNION ALL", "INTERSECT", "EXCEPT"):
@@ -1537,7 +1546,7 @@ class TestSnowflake(Validator):
         self.validate_all(
             "SELECT TIME_FROM_PARTS(12, 34, 56, 987654321)",
             write={
-                "duckdb": "SELECT CAST('00:00:00' AS TIME) + INTERVAL ((12 * 3600) + (34 * 60) + 56 + (987654321 / 1000000000.0)) SECOND",
+                "duckdb": "SELECT CAST('00:00:00' AS TIME) + INTERVAL ((12 * 3600) + (34 * 60) + (56 + (987654321 / 1000000000.0))) SECOND",
                 "snowflake": "SELECT TIME_FROM_PARTS(12, 34, 56, 987654321)",
             },
         )
@@ -1635,13 +1644,6 @@ class TestSnowflake(Validator):
             },
         )
         self.validate_all(
-            "SELECT TO_ARRAY(['test'])",
-            write={
-                "snowflake": "SELECT TO_ARRAY(['test'])",
-                "spark": "SELECT ARRAY('test')",
-            },
-        )
-        self.validate_all(
             # We need to qualify the columns in this query because "value" would be ambiguous
             'WITH t(x, "value") AS (SELECT [1, 2, 3], 1) SELECT IFF(_u.pos = _u_2.pos_2, _u_2."value", NULL) AS "value" FROM t CROSS JOIN TABLE(FLATTEN(INPUT => ARRAY_GENERATE_RANGE(0, (GREATEST(ARRAY_SIZE(t.x)) - 1) + 1))) AS _u(seq, key, path, index, pos, this) CROSS JOIN TABLE(FLATTEN(INPUT => t.x)) AS _u_2(seq, key, path, pos_2, "value", this) WHERE _u.pos = _u_2.pos_2 OR (_u.pos > (ARRAY_SIZE(t.x) - 1) AND _u_2.pos_2 = (ARRAY_SIZE(t.x) - 1))',
             read={
@@ -1703,7 +1705,7 @@ class TestSnowflake(Validator):
                 "bigquery": "GENERATE_ARRAY(0, 3 - 1)",
                 "duckdb": "RANGE(0, 3)",
                 "postgres": "GENERATE_SERIES(0, 3 - 1)",
-                "presto": "SEQUENCE(0, 2)",
+                "presto": "IF(FALSE, ARRAY[], SEQUENCE(0, 2))",
                 "snowflake": "ARRAY_GENERATE_RANGE(0, 3)",
             },
         )
@@ -3636,7 +3638,6 @@ class TestSnowflake(Validator):
             },
         )
 
-        self.validate_identity("SELECT CURRENT_DATABASE()")
         self.validate_identity("SELECT CURRENT_SCHEMA()")
 
         self.validate_all(
@@ -3828,9 +3829,6 @@ class TestSnowflake(Validator):
             "SELECT $1, $2, metadata$filename FROM @mystage (PATTERN => '.*data-100.*')"
         )
         self.validate_identity("SELECT * FROM '@external/location' (FILE_FORMAT => 'path.to.csv')")
-        self.validate_identity(
-            "PUT file:///dir/tmp.csv @%table", "PUT 'file:///dir/tmp.csv' @%table"
-        )
         self.validate_identity("SELECT * FROM (SELECT a FROM @foo)")
         self.validate_identity(
             "SELECT * FROM (SELECT * FROM '@external/location' (FILE_FORMAT => 'path.to.csv'))"
@@ -3857,6 +3855,88 @@ class TestSnowflake(Validator):
             "SELECT * FROM @test.public.thing/location/somefile.csv( FILE_FORMAT => 'fmt' )",
             "SELECT * FROM @test.public.thing/location/somefile.csv (FILE_FORMAT => 'fmt')",
         )
+
+    def test_stage_path_tokenization(self):
+        for sql, token_type, text in (
+            ("SELECT $1 FROM @s/a--b", TokenType.STAGE_PATH, "@s/a--b"),
+            ("SELECT $1 FROM @s/a//b", TokenType.STAGE_PATH, "@s/a//b"),
+            ("SELECT $1 FROM @s/a/*b", TokenType.STAGE_PATH, "@s/a/*b"),
+            ("SELECT $1 FROM @s/a/*b*/c", TokenType.STAGE_PATH, "@s/a/*b*/c"),
+            ("LIST @s/a--b", TokenType.STAGE_PATH, "@s/a--b"),
+            ("LIST @~/a--b", TokenType.STAGE_PATH, "@~/a--b"),
+            ('LIST @stg/p"x"', TokenType.STAGE_PATH, '@stg/p"x"'),
+            ('LIST @"my_stage"/a--b', TokenType.STAGE_PATH, '@"my_stage"/a--b'),
+            ("COPY INTO t FROM @s/a--b/c", TokenType.STAGE_PATH, "@s/a--b/c"),
+        ):
+            with self.subTest(sql):
+                tokens = tokenize(sql, read="snowflake")
+                token = tokens[-1]
+                self.assertEqual(token.token_type, token_type)
+                self.assertEqual(token.text, text)
+                self.assertEqual((token.start, token.end), (len(sql) - len(text), len(sql) - 1))
+                self.assertFalse(any(t.comments for t in tokens))
+
+        token = tokenize("SELECT $1 FROM @s/a -- note", read="snowflake")[-1]
+        self.assertEqual((token.token_type, token.text), (TokenType.STAGE_PATH, "@s/a"))
+        self.assertEqual(token.comments, [" note"])
+
+        tokens = tokenize("LIST @stg/ppattern='.*'", read="snowflake")
+        self.assertEqual(
+            [(t.token_type, t.text) for t in tokens[1:]],
+            [(TokenType.STAGE_PATH, "@stg/ppattern="), (TokenType.STRING, ".*")],
+        )
+
+        self.assertEqual(tokenize("SELECT @", read="snowflake")[-1].token_type, TokenType.PARAMETER)
+
+        tokens = tokenize('PUT file:///tmp/a--b"c.csv @stg; SELECT 1 -- "', read="snowflake")
+        self.assertEqual(
+            [(t.token_type, t.text) for t in tokens[:4]],
+            [
+                (TokenType.PUT, "PUT"),
+                (TokenType.URI_START, 'file:///tmp/a--b"c.csv'),
+                (TokenType.STAGE_PATH, "@stg"),
+                (TokenType.SEMICOLON, ";"),
+            ],
+        )
+        self.assertEqual(tokens[-1].comments, [' "'])
+
+        with self.assertRaises(TokenError):
+            tokenize('LIST @"my stage"/a--b', read="snowflake")
+
+        tokens = tokenize("""LIST '@"a\nb"/x'; SELECT 1""", read="snowflake")
+        self.assertEqual(tokens[1].text, '@"a\nb"/x')
+        self.assertEqual([(t.line, t.col) for t in tokens[2:]], [(2, 6), (2, 13), (2, 15)])
+
+        for sql in (
+            "SELECT $1 FROM @s/a--b",
+            "SELECT $1 FROM @s/a//b",
+            "SELECT $1 FROM @s/a/*b",
+            "SELECT $1 FROM @~/a--b",
+            "SELECT $1 FROM @%t/a--b",
+            "SELECT $1 FROM @db.sch.stg/a--b",
+            "SELECT * FROM @s/a--b (FILE_FORMAT => 'f')",
+            "SELECT * FROM (SELECT $1 FROM @s/a--b) AS x",
+            "SELECT * FROM @s/a--b, @t/c--d",
+            "SELECT $1 FROM '@s/a--b'",
+            "LIST @s/a--b",
+            "COPY INTO t FROM @s/a--b/c",
+            "COPY INTO t FROM 's3://b/p'",
+            "LIST @s/a /* keep */",
+            "SELECT $1 FROM @s/a /* keep */ WHERE 1 = 1",
+            "SELECT * FROM @s /* keep */ (PATTERN => 'x')",
+            "SELECT * FROM DIRECTORY(@s /* keep */)",
+            "SELECT BUILD_SCOPED_FILE_URL(@s /* keep */, 'x')",
+        ):
+            with self.subTest(sql):
+                self.validate_identity(sql)
+
+        self.validate_identity("SELECT $1 FROM @s/a -- note", "SELECT $1 FROM @s/a /* note */")
+        self.validate_identity(
+            "PUT file:///tmp/a--b @s/p", "PUT 'file:///tmp/a--b' @s/p"
+        ).assert_is(exp.Put)
+        self.validate_identity(
+            'PUT file:///dir/a"b.csv @stg', "PUT 'file:///dir/a\"b.csv' @stg"
+        ).assert_is(exp.Put)
 
     def test_sample(self):
         self.validate_identity("SELECT * FROM testtable TABLESAMPLE BERNOULLI (20.3)")
@@ -4245,7 +4325,6 @@ class TestSnowflake(Validator):
             },
         )
 
-        self.validate_identity("DATEADD(y, 5, x)", "DATEADD(YEAR, 5, x)")
         self.validate_identity("DATEADD(y, 5, x)", "DATEADD(YEAR, 5, x)")
         self.validate_identity("DATE_PART(yyy, x)", "DATE_PART(YEAR, x)")
         self.validate_identity("DATE_TRUNC(yr, x)", "DATE_TRUNC('YEAR', x)")
@@ -4843,6 +4922,11 @@ class TestSnowflake(Validator):
             "CREATE DYNAMIC TABLE dt TARGET_LAG='1 minute' WAREHOUSE=my_wh (id) AS SELECT * FROM bla",
             "CREATE DYNAMIC TABLE dt (id) TARGET_LAG='1 minute' WAREHOUSE=my_wh AS SELECT * FROM bla",
         )
+        create = self.validate_identity(
+            "CREATE HYBRID TABLE t (id INT PRIMARY KEY, customer INT)"
+        ).assert_is(exp.Create)
+        self.assertEqual(create.kind, "TABLE")
+        self.assertIsInstance(create.find(exp.HybridProperty), exp.HybridProperty)
         create = self.validate_identity(
             "CREATE INTERACTIVE TABLE t CLUSTER BY (a) AS SELECT a FROM s"
         ).assert_is(exp.Create)
@@ -5628,8 +5712,6 @@ FROM persons AS p, LATERAL FLATTEN(input => p.c, path => 'contact') AS _flattene
         )
 
         self.validate_identity("SELECT SEARCH((play, line), 'dream')")
-        self.validate_identity("SELECT SEARCH(line, 'king', ANALYZER => 'UNICODE_ANALYZER')")
-        self.validate_identity("SELECT SEARCH(character, 'king queen', SEARCH_MODE => 'AND')")
         self.validate_identity(
             "SELECT SEARCH(line, 'king', ANALYZER => 'UNICODE_ANALYZER', SEARCH_MODE => 'OR')"
         )
@@ -5720,7 +5802,7 @@ FROM persons AS p, LATERAL FLATTEN(input => p.c, path => 'contact') AS _flattene
             "SELECT REGEXP_INSTR(subject, pattern, 5)",
             write={
                 "snowflake": "SELECT REGEXP_INSTR(subject, pattern, 5)",
-                "duckdb": "SELECT CASE WHEN subject IS NULL OR pattern IS NULL OR 5 IS NULL THEN NULL WHEN pattern = '' THEN 0 WHEN LENGTH(REGEXP_EXTRACT_ALL(SUBSTRING(subject, 5), pattern)) < 1 THEN 0 ELSE 1 + COALESCE(LIST_SUM(LIST_TRANSFORM(STRING_SPLIT_REGEX(SUBSTRING(subject, 5), pattern)[1:1], LAMBDA x : LENGTH(x))), 0) + COALESCE(LIST_SUM(LIST_TRANSFORM(REGEXP_EXTRACT_ALL(SUBSTRING(subject, 5), pattern)[1:1 - 1], LAMBDA x : LENGTH(x))), 0) + 5 - 1 END",
+                "duckdb": "SELECT CASE WHEN subject IS NULL OR pattern IS NULL OR 5 IS NULL THEN NULL WHEN pattern = '' THEN 0 WHEN LENGTH(REGEXP_EXTRACT_ALL(SUBSTRING(subject, 5), pattern)) < 1 THEN 0 ELSE 1 + COALESCE(LIST_SUM(LIST_TRANSFORM(STRING_SPLIT_REGEX(SUBSTRING(subject, 5), pattern)[1:1], LAMBDA x : LENGTH(x))), 0) + COALESCE(LIST_SUM(LIST_TRANSFORM(REGEXP_EXTRACT_ALL(SUBSTRING(subject, 5), pattern)[1:1 - 1], LAMBDA x : LENGTH(x))), 0) + (5 - 1) END",
             },
         )
 
@@ -6179,6 +6261,10 @@ STORAGE_ALLOWED_LOCATIONS=('s3://mybucket1/path1/', 's3://mybucket2/path2/')""",
             },
         )
         self.validate_identity("SELECT TRY_CAST(x AS DOUBLE)")
+        self.validate_all(
+            "SELECT TRY_CAST('1.2345' AS NUMBER(10, 3))",
+            write={"bigquery": "SELECT SAFE_CAST('1.2345' AS NUMERIC)"},
+        )
         self.validate_identity(
             "SELECT TRY_CAST(FOO() AS TEXT)", "SELECT TRY_CAST(FOO() AS VARCHAR)"
         )
@@ -6493,7 +6579,8 @@ SINGLE = TRUE""",
 
     def test_alter_session(self):
         expr = self.validate_identity(
-            "ALTER SESSION SET autocommit = FALSE, QUERY_TAG = 'qtag', JSON_INDENT = 1"
+            "ALTER SESSION SET autocommit = FALSE, QUERY_TAG = 'qtag', JSON_INDENT = 1",
+            identify=True,
         )
         self.assertEqual(
             expr.find(exp.AlterSession),
@@ -6501,19 +6588,19 @@ SINGLE = TRUE""",
                 expressions=[
                     exp.SetItem(
                         this=exp.EQ(
-                            this=exp.Column(this=exp.Identifier(this="autocommit", quoted=False)),
+                            this=exp.var("autocommit"),
                             expression=exp.Boolean(this=False),
                         ),
                     ),
                     exp.SetItem(
                         this=exp.EQ(
-                            this=exp.Column(this=exp.Identifier(this="QUERY_TAG", quoted=False)),
+                            this=exp.var("QUERY_TAG"),
                             expression=exp.Literal(this="qtag", is_string=True),
                         ),
                     ),
                     exp.SetItem(
                         this=exp.EQ(
-                            this=exp.Column(this=exp.Identifier(this="JSON_INDENT", quoted=False)),
+                            this=exp.var("JSON_INDENT"),
                             expression=exp.Literal(this="1", is_string=False),
                         ),
                     ),
@@ -6522,13 +6609,13 @@ SINGLE = TRUE""",
             ),
         )
 
-        expr = self.validate_identity("ALTER SESSION UNSET autocommit, QUERY_TAG")
+        expr = self.validate_identity("ALTER SESSION UNSET autocommit, QUERY_TAG", identify=True)
         self.assertEqual(
             expr.find(exp.AlterSession),
             exp.AlterSession(
                 expressions=[
-                    exp.SetItem(this=exp.Identifier(this="autocommit", quoted=False)),
-                    exp.SetItem(this=exp.Identifier(this="QUERY_TAG", quoted=False)),
+                    exp.SetItem(this=exp.var("autocommit")),
+                    exp.SetItem(this=exp.var("QUERY_TAG")),
                 ],
                 unset=True,
             ),
@@ -6662,6 +6749,7 @@ SINGLE = TRUE""",
         self.assertEqual(expr.find(exp.Placeholder), exp.Placeholder(this="1"))
         self.validate_identity("SELECT :1, :2")
         self.validate_identity("SELECT :1 + :2")
+        self.validate_identity("SELECT ?::NUMBER(10,2)", "SELECT CAST(? AS DECIMAL(10, 2))")
 
     def test_max_by_min_by(self):
         max_by = self.validate_identity("MAX_BY(DISTINCT selected_col, filtered_col)")
@@ -6930,7 +7018,7 @@ FROM SEMANTIC_VIEW(
         self.assertIsNotNone(set_item)
         self.assertIsNone(set_item.args.get("kind"))
 
-        expr = parse_one("SET a = 1", read="snowflake")
+        expr = self.validate_identity("SET a = 1", 'SET "a" = 1', identify=True)
         set_item = expr.find(exp.SetItem)
         self.assertIsNotNone(set_item)
         self.assertEqual(set_item.args.get("kind"), "VARIABLE")

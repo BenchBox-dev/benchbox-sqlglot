@@ -1405,14 +1405,20 @@ class Expression(Expr):
         return alias_(self, alias, quoted=quoted, dialect=dialect, copy=copy, table=table, **opts)
 
     def _binop(self, klass: Type[E], other: t.Any, reverse: bool = False) -> E:
-        this = self.copy()
-        other = convert(other, copy=True)
-        if not isinstance(this, klass) and not isinstance(other, klass):
-            this = _wrap(this, Binary)
-            other = _wrap(other, Binary)
+        left: Expr = self.copy()
+        right = convert(other, copy=True)
         if reverse:
-            return klass(this=other, expression=this)
-        return klass(this=this, expression=other)
+            left, right = right, left
+
+        # NOT binds more tightly than AND and OR, but more loosely than comparisons and arithmetic.
+        if not issubclass(klass, Connector):
+            left = _wrap(left, Not)
+            right = _wrap(right, Not)
+
+        # A repeated operator can chain on the left, but SQL may reject chained predicates.
+        if not isinstance(left, klass) or isinstance(left, Predicate):
+            left = _wrap(left, Binary)
+        return klass(this=left, expression=_wrap(right, Binary))
 
     def __getitem__(self, other: ExpOrStr | tuple[ExpOrStr, ...]) -> Bracket:
         return Bracket(
@@ -1473,6 +1479,10 @@ class Expression(Expr):
         return between
 
     def is_(self, other: ExpOrStr) -> Is:
+        if isinstance(other, Not) and isinstance(other.this, (Null, Boolean)):
+            predicate = self._binop(Is, other.this)
+            predicate.set("negate", True)
+            return predicate
         return self._binop(Is, other)
 
     def like(self, other: ExpOrStr) -> Like:
@@ -1900,6 +1910,8 @@ class Boolean(Expression, Condition):
 
 
 class Dot(Expression, Binary):
+    arg_types = {"this": True, "expression": True, "subcolumn_depth": False}
+
     @property
     def is_star(self) -> bool:
         return self.expression.is_star
@@ -2326,6 +2338,20 @@ class FormatPhrase(Expression):
     """
 
     arg_types = {"this": True, "format": True}
+
+    @property
+    def name(self) -> str:
+        return self.this.name
+
+    @property
+    def output_name(self) -> str:
+        return self.this.output_name
+
+
+class TeradataConversion(Expression):
+    """A postfix type conversion with Teradata-specific conversion or formatting semantics."""
+
+    arg_types = {"this": True, "to": True, "format": False}
 
     @property
     def name(self) -> str:

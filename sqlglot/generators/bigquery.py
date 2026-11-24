@@ -33,6 +33,7 @@ from sqlglot.dialects.dialect import (
 from sqlglot.errors import ErrorLevel
 from sqlglot.generator import unsupported_args
 from sqlglot.helper import seq_get
+from sqlglot.typing import TIMESTAMP_EXPRESSIONS
 
 if t.TYPE_CHECKING:
     from sqlglot.dialects.dialect import DialectType
@@ -42,6 +43,20 @@ logger = logging.getLogger("sqlglot")
 JSON_EXTRACT_TYPE = t.Union[exp.JSONExtract, exp.JSONExtractScalar, exp.JSONExtractArray]
 
 DQUOTES_ESCAPING_JSON_FUNCTIONS = ("JSON_QUERY", "JSON_VALUE", "JSON_QUERY_ARRAY")
+
+# BigQuery's DATE_ADD, DATE_SUB, TIMESTAMP_TRUNC, TIMESTAMP_ADD and TIMESTAMP_SUB return their first
+# argument's type, as parentheses do
+FIRST_ARG_TYPED = (
+    exp.Paren,
+    exp.DateAdd,
+    exp.DateSub,
+    exp.TimestampTrunc,
+    exp.TimestampAdd,
+    exp.TimestampSub,
+)
+
+# Expressions BigQuery writes as a TIMESTAMP, e.g. AT TIME ZONE as TIMESTAMP(DATETIME(x, zone))
+TIMESTAMP_TYPED = (exp.AtTimeZone, *TIMESTAMP_EXPRESSIONS)
 
 
 def _derived_table_values_to_unnest(self: BigQueryGenerator, expression: exp.Values) -> str:
@@ -116,6 +131,31 @@ def _alias_ordered_group(expression: exp.Expr) -> exp.Expr:
                     grouped.replace(exp.column(alias))
 
     return expression
+
+
+def _is_value_window(window: exp.Window) -> bool:
+    func = window.this
+    if isinstance(func, (exp.IgnoreNulls, exp.RespectNulls)):
+        func = func.this
+    return isinstance(func, (exp.FirstValue, exp.LastValue, exp.NthValue))
+
+
+def _nondefault_null_order(ordered: exp.Expr) -> bool:
+    # BigQuery sorts NULLs first in ascending order and last in descending order.
+    return isinstance(ordered, exp.Ordered) and bool(ordered.args.get("nulls_first")) == bool(
+        ordered.args.get("desc")
+    )
+
+
+def _inline_value_window_order(window: exp.Window, inherited: exp.Window) -> bool:
+    order = inherited.args.get("order") or window.args.get("order")
+    spec = window.args.get("spec") or inherited.args.get("spec")
+    return bool(
+        order
+        and _is_value_window(window)
+        and (not spec or spec.text("kind").upper() == "RANGE")
+        and any(_nondefault_null_order(key) for key in order.expressions)
+    )
 
 
 def _pushdown_cte_column_names(expression: exp.Expr) -> exp.Expr:
@@ -223,6 +263,10 @@ def _array_agg_fold_sql(
 
     order = array_sort_order(sort) if sort else None
 
+    condition = None
+    if isinstance(agg, exp.Filter):
+        condition, agg = agg.expression.this, agg.this
+
     # An ARRAY_AGG with its own ORDER BY or LIMIT can't take another
     if (
         not isinstance(agg, exp.ArrayAgg)
@@ -237,14 +281,35 @@ def _array_agg_fold_sql(
     value = agg.this
     if isinstance(value, exp.Distinct):
         distinct, value = True, value.expressions[0]
+    kept_nulls: exp.Expr | None = None
+    if condition is not None:
+        if not ignore_nulls and not agg.args.get("nulls_excluded"):
+            # A kept NULL contributes [NULL], a kept value contributes [], and a rejected row
+            # contributes no array. ARRAY_CONCAT_AGG returns NULL when no rows qualify.
+            nulls = exp.If(
+                this=value.is_(exp.null()),
+                true=exp.Array(expressions=[value.copy()], value_constructor=True),
+                false=exp.array(),
+            )
+            kept_nulls = exp.ArrayConcatAgg(
+                this=exp.If(this=condition.copy(), true=nulls, false=exp.null())
+            )
+            if distinct:
+                kept_nulls = exp.func("ARRAY_SLICE", kept_nulls, 0, 0)
+
+        # With DISTINCT, BigQuery only orders by the aggregated value, so the keys take the IF too
+        value = exp.If(this=condition, true=value, false=exp.null())
+        agg.set("nulls_excluded", None)
 
     folded: exp.Expr = exp.Distinct(expressions=[value]) if distinct else value
+    nulls_first = False
     if order is not None:
-        asc, nulls_first = order
+        asc, placement = order
+        nulls_first = asc if placement is None else placement
         keys = [exp.Ordered(this=value.copy(), desc=not asc or None, nulls_first=asc)]
 
         # Aggregate ORDER BY only puts NULLs first when ascending, so other placements need a key
-        if not ignore_nulls and nulls_first is not None and nulls_first != asc:
+        if not ignore_nulls and condition is None and nulls_first != asc:
             if distinct:
                 self.unsupported("ARRAY_AGG(DISTINCT) only puts NULLs first when ascending")
             else:
@@ -257,13 +322,19 @@ def _array_agg_fold_sql(
                 )
         folded = exp.Order(this=folded, expressions=keys)
     agg.set("this", folded)
+    if ignore_nulls or condition is not None:
+        agg = exp.func("COALESCE", exp.IgnoreNulls(this=agg), exp.array())
     if ignore_nulls:
         # All-NULL input yields [], but an empty input still yields NULL.
+        rows = exp.CountIf(this=condition.copy()) if condition else exp.Count(this=exp.Star())
         agg = exp.If(
-            this=exp.Count(this=exp.Star()).eq(0),
+            this=rows.eq(0),
             true=exp.null(),
-            false=exp.func("COALESCE", exp.IgnoreNulls(this=agg), exp.array()),
+            false=agg,
         )
+    elif kept_nulls is not None:
+        arrays = (kept_nulls, agg) if nulls_first else (agg, kept_nulls)
+        return self.func("ARRAY_CONCAT", *arrays)
     return self.sql(agg)
 
 
@@ -396,10 +467,6 @@ class BigQueryGenerator(generator.Generator):
         exp.RowNumber,
     )
 
-    # Frame-dependent windows: BigQuery accepts a non-default NULLS FIRST/LAST in their ORDER BY
-    # only with an explicit ROWS frame, and rejects it under the default or a RANGE frame
-    VALUE_WINDOW_FUNCS = (exp.FirstValue, exp.LastValue, exp.NthValue)
-
     TS_OR_DS_TYPES: t.ClassVar = (
         exp.TsOrDsToDatetime,
         exp.TsOrDsToTimestamp,
@@ -430,6 +497,9 @@ class BigQueryGenerator(generator.Generator):
         exp.Cast: transforms.preprocess(
             [_widen_decimal, transforms.remove_precision_parameterized_types]
         ),
+        exp.TryCast: transforms.preprocess(
+            [_widen_decimal, transforms.remove_precision_parameterized_types]
+        ),
         exp.CollateProperty: lambda self, e: (
             f"DEFAULT COLLATE {self.sql(e, 'this')}"
             if e.args.get("default")
@@ -439,11 +509,9 @@ class BigQueryGenerator(generator.Generator):
         exp.CountIf: rename_func("COUNTIF"),
         exp.Create: _create_sql,
         exp.CTE: transforms.preprocess([_pushdown_cte_column_names]),
-        exp.DateAdd: date_add_interval_sql("DATE", "ADD"),
         exp.DateDiff: lambda self, e: self.func("DATE_DIFF", e.this, e.expression, unit_to_var(e)),
         exp.DateFromParts: rename_func("DATE"),
         exp.DateStrToDate: datestrtodate_sql,
-        exp.DateSub: date_add_interval_sql("DATE", "SUB"),
         exp.DatetimeAdd: date_add_interval_sql("DATETIME", "ADD"),
         exp.DatetimeSub: date_add_interval_sql("DATETIME", "SUB"),
         exp.DateFromUnixDate: rename_func("DATE_FROM_UNIX_DATE"),
@@ -512,6 +580,7 @@ class BigQueryGenerator(generator.Generator):
                 transforms.unqualify_unnest,
                 transforms.eliminate_distinct_on,
                 _alias_ordered_group,
+                lambda e: transforms.eliminate_window_clause(e, _inline_value_window_order),
                 transforms.eliminate_semi_and_anti_joins,
             ]
         ),
@@ -791,6 +860,32 @@ class BigQueryGenerator(generator.Generator):
 
         return self.func("WEEK", expression.this)
 
+    def dateadd_sql(self, expression: exp.DateAdd | exp.DateSub) -> str:
+        kind = "SUB" if isinstance(expression, exp.DateSub) else "ADD"
+        this = expression.this
+        if expression.text("unit") in ("WEEK", "MONTH", "QUARTER", "YEAR"):
+            node = this
+            while isinstance(node, FIRST_ARG_TYPED):
+                node = node.this
+            # TIME_STR_TO_TIME is written as CAST(x AS DATETIME) without a zone, whatever its type
+            if (
+                node.args.get("zone")
+                if isinstance(node, exp.TimeStrToTime)
+                else isinstance(node, TIMESTAMP_TYPED) or node.is_type(exp.DType.TIMESTAMPTZ)
+            ):
+                # TIMESTAMP arithmetic only takes units up to DAY, so use the UTC DATETIME instead
+                shifted = (exp.DatetimeSub if kind == "SUB" else exp.DatetimeAdd)(
+                    this=exp.TsOrDsToDatetime(this=this),
+                    expression=expression.expression,
+                    unit=expression.unit,
+                )
+                return self.func("TIMESTAMP", shifted)
+
+        return date_add_interval_sql("DATE", kind)(self, expression)
+
+    def datesub_sql(self, expression: exp.DateSub) -> str:
+        return self.dateadd_sql(expression)
+
     def datetrunc_sql(self, expression: exp.DateTrunc) -> str:
         self._warn_unsupported_arg(expression, "century_from_zero")
         unit = expression.unit
@@ -975,40 +1070,39 @@ class BigQueryGenerator(generator.Generator):
     def ordered_sql(self, expression: exp.Ordered) -> str:
         order = expression.parent
         window = order.parent if isinstance(order, exp.Order) else None
-        if isinstance(window, exp.Window):
-            window_this = window.this
-            if isinstance(window_this, (exp.IgnoreNulls, exp.RespectNulls)):
-                window_this = window_this.this
+        if not isinstance(window, exp.Window) or not _nondefault_null_order(expression):
+            return super().ordered_sql(expression)
 
-            spec = window.args.get("spec")
-            desc = bool(expression.args.get("desc"))
-            # BigQuery's default is NULLS FIRST for ASC and NULLS LAST for DESC
-            if (
-                isinstance(window_this, self.VALUE_WINDOW_FUNCS)
-                and not (spec and spec.text("kind").upper() == "ROWS")
-                and bool(expression.args.get("nulls_first")) == desc
+        # A WINDOW definition can be used with different functions and frames.
+        if isinstance(window.this, exp.Identifier):
+            return super().ordered_sql(expression.copy())
+
+        spec = window.args.get("spec")
+        if not _is_value_window(window) or (spec and spec.text("kind").upper() != "RANGE"):
+            return super().ordered_sql(expression)
+
+        key = expression.this
+        needs_null_key = key not in (window.args.get("partition_by") or [])
+        if spec and any(isinstance(spec.args.get(bound), exp.Expr) for bound in ("start", "end")):
+            # An offset RANGE allows only one key. With finite bounds, NULL keys can
+            # only frame other NULLs, so their position relative to non-NULLs is immaterial.
+            if needs_null_key and any(
+                spec.text(bound).upper() == "UNBOUNDED" for bound in ("start", "end")
             ):
-                key = expression.this
-                if any(key == partition for partition in window.args.get("partition_by") or []):
-                    # The key is constant within each partition, so the clause cannot change
-                    # the result: drop it.
-                    expression.set("nulls_first", not desc)
-                else:
-                    # Sort on `key IS NULL` first, which orders the NULLs the way the clause asked
-                    wrapped = (
-                        key
-                        if isinstance(key, (exp.Column, exp.Literal, exp.Func))
-                        else exp.paren(key.copy())
-                    )
-                    is_null = self.sql(exp.Is(this=wrapped.copy(), expression=exp.null()))
-                    sort_order = (
-                        " DESC"
-                        if desc
-                        else (" ASC" if expression.args.get("desc") is False else "")
-                    )
-                    return f"{is_null}{' DESC' if desc else ''}, {self.sql(key)}{sort_order}"
+                return super().ordered_sql(expression)
+            needs_null_key = False
 
-        return super().ordered_sql(expression)
+        desc = expression.args.get("desc")
+        expression = expression.copy()
+        expression.set("nulls_first", not desc)
+        sql = super().ordered_sql(expression)
+        if not needs_null_key:
+            return sql
+
+        if isinstance(key, (exp.Not, exp.Predicate)):
+            key = exp.paren(key)
+        is_null = key.is_(exp.null())
+        return f"{self.sql(is_null)}{' DESC' if desc else ''}, {sql}"
 
     def clusterproperty_sql(self, expression: exp.ClusterProperty) -> str:
         if expression.this:

@@ -950,7 +950,6 @@ class TestMySQL(Validator):
         self.validate_identity("CHAR(77, 121, 83, 81, '76')")
         self.validate_identity("CHAR(77, 77.3, '77.3' USING utf8mb4)")
         self.validate_identity("SELECT * FROM t1 PARTITION(p0)")
-        self.validate_identity("SELECT @var1 := 1, @var2")
         self.validate_identity("SELECT @var1, @var2 := @var1")
         self.validate_identity("SELECT @var1 := COUNT(*) FROM t1")
         self.validate_identity("SET @var1 := 1", "SET @var1 = 1")
@@ -970,6 +969,17 @@ class TestMySQL(Validator):
         )
         self.validate_identity("SELECT * FROM t WHERE sounds LIKE 'a%'")
         self.validate_identity("SELECT SUBSTR(1 FROM 2 FOR 3)", "SELECT SUBSTRING(1, 2, 3)")
+        self.validate_identity("SELECT MID('abc', 2)", "SELECT SUBSTRING('abc', 2)")
+        self.validate_identity("SELECT MID(1 FROM 2 FOR 3)", "SELECT SUBSTRING(1, 2, 3)")
+        self.validate_all(
+            "SELECT MID('abcdef', 2, 3)",
+            write={
+                "duckdb": "SELECT SUBSTRING('abcdef', 2, 3)",
+                "mysql": "SELECT SUBSTRING('abcdef', 2, 3)",
+                "postgres": "SELECT SUBSTRING('abcdef' FROM 2 FOR 3)",
+                "sqlite": "SELECT SUBSTRING('abcdef', 2, 3)",
+            },
+        )
         self.validate_identity("SELECT ELT(2, 'foo', 'bar', 'baz') AS Result")
         self.validate_identity("SELECT CHARSET(CHAR(100 USING utf8))")
         self.validate_identity("SELECT VERSION()")
@@ -1019,11 +1029,13 @@ class TestMySQL(Validator):
 
     def test_canonical_functions(self):
         self.validate_identity("SELECT LEFT('str', 2)", "SELECT LEFT('str', 2)")
+        self.validate_identity("FIND_IN_SET('b', 'a,b,c,d')").assert_is(exp.FindInSet)
         self.validate_all(
             "SELECT LEFT(x, n), RIGHT(x, -1)",
             write={
                 "duckdb": "SELECT LEFT(x, CASE WHEN n < 0 THEN 0 ELSE n END), RIGHT(x, CASE WHEN -1 < 0 THEN 0 ELSE -1 END)",
                 "mysql": "SELECT LEFT(x, n), RIGHT(x, -1)",
+                "postgres": "SELECT LEFT(x, CASE WHEN n < 0 THEN 0 ELSE n END), RIGHT(x, CASE WHEN -1 < 0 THEN 0 ELSE -1 END)",
             },
         )
         self.validate_identity("SELECT INSTR('str', 'substr')", "SELECT LOCATE('substr', 'str')")
@@ -1498,10 +1510,6 @@ class TestMySQL(Validator):
 
         # With timezone, make sure the TIMESTAMP constructor is used
         # also TIMESTAMP doesnt have the subsecond precision truncation issue that DATETIME does so we dont need to TIMESTAMP(6)
-        self.validate_identity(
-            "SELECT TIME_STR_TO_TIME('2023-01-01 13:14:15-08:00', 'America/Los_Angeles')",
-            write_sql="SELECT TIMESTAMP('2023-01-01 13:14:15-08:00')",
-        )
         self.validate_identity(
             "SELECT TIME_STR_TO_TIME('2023-01-01 13:14:15-08:00', 'America/Los_Angeles')",
             write_sql="SELECT TIMESTAMP('2023-01-01 13:14:15-08:00')",

@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generators/singlestore.py b/sqlglot/generators/singlestore.py
-index 1220c30d..f2d73461 100644
+index 1220c30d1..f2d73461f 100644
 --- a/sqlglot/generators/singlestore.py
 +++ b/sqlglot/generators/singlestore.py
 @@ -155,8 +155,8 @@ class SingleStoreGenerator(MySQLGenerator):
@@ -29,10 +29,10 @@ index 1220c30d..f2d73461 100644
      def jsonextractarray_sql(self, expression: exp.JSONExtractArray) -> str:
          self.unsupported("Arrays are not supported in SingleStore")
 diff --git a/tests/dialects/test_singlestore.py b/tests/dialects/test_singlestore.py
-index c44ffdd3..9ae848a5 100644
+index 3b4649e02..256d1c091 100644
 --- a/tests/dialects/test_singlestore.py
 +++ b/tests/dialects/test_singlestore.py
-@@ -164,9 +164,9 @@ class TestSingleStore(Validator):
+@@ -163,9 +163,9 @@ class TestSingleStore(Validator):
          self.validate_identity("SELECT a::%b FROM t", "SELECT JSON_EXTRACT_DOUBLE(a, 'b') FROM t")
          self.validate_identity(
              "SELECT a::`b`::`2` FROM t",
@@ -44,7 +44,7 @@ index c44ffdd3..9ae848a5 100644
  
          self.validate_all(
              "SELECT JSON_EXTRACT_JSON(a, 'b') FROM t",
-@@ -193,10 +193,10 @@ class TestSingleStore(Validator):
+@@ -188,10 +188,10 @@ class TestSingleStore(Validator):
              write={"": "SELECT JSON_EXTRACT_SCALAR(a, '$.b', BIGINT) FROM t"},
          )
          self.validate_all(

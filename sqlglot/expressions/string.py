@@ -45,6 +45,10 @@ class Elt(Expression, Func):
     is_var_len_args = True
 
 
+class FindInSet(Expression, Func):
+    arg_types = {"this": True, "expression": True}
+
+
 class EndsWith(Expression, Func):
     _sql_names = ["ENDS_WITH", "ENDSWITH"]
     arg_types = {"this": True, "expression": True}
@@ -70,7 +74,7 @@ class Left(Expression, Func):
 
 
 class Length(Expression, Func):
-    arg_types = {"this": True, "binary": False, "encoding": False}
+    arg_types = {"this": True, "binary": False, "encoding": False, "null_terminated": False}
     _sql_names = ["LENGTH", "LEN", "CHAR_LENGTH", "CHARACTER_LENGTH"]
 
 

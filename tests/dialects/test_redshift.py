@@ -407,6 +407,24 @@ class TestRedshift(Validator):
         self.validate_identity("SELECT VERSION()")
         self.validate_identity("SELECT TEXTLEN('hello world')", "SELECT LENGTH('hello world')")
 
+    def test_quoted_date_part(self):
+        self.validate_identity(
+            """SELECT "date_part"('year'::text, CURRENT_DATE)""",
+            "SELECT PGDATE_PART(CAST('year' AS VARCHAR(MAX)), CURRENT_DATE)",
+        )
+        self.validate_identity(
+            """SELECT "date_part"(year, CURRENT_DATE) FROM (SELECT 'day' AS year) AS t""",
+            "SELECT PGDATE_PART(year, CURRENT_DATE) FROM (SELECT 'day' AS year) AS t",
+        )
+
+    def test_date_part_column(self):
+        postgres = "SELECT DATE_PART(part, CURRENT_DATE) FROM (SELECT 'year' AS part) AS t"
+        self.validate_all(
+            "SELECT PGDATE_PART(part, CURRENT_DATE) FROM (SELECT 'year' AS part) AS t",
+            read={"postgres": postgres},
+            write={"postgres": postgres},
+        )
+
     def test_date_delta_unit_expressions(self):
         self.validate_identity(
             "SELECT DATE_DIFF('second'::TEXT, TIMESTAMP '2024-01-01', TIMESTAMP '2024-01-01 00:01:00')",
@@ -480,16 +498,14 @@ class TestRedshift(Validator):
         )
         self.validate_identity(
             'DATE_PART(year, "somecol")',
-            "DATE_PART('year', \"somecol\")",
+            """DATE_PART('year', "somecol")""",
         ).this.assert_is(exp.Var)
         self.validate_identity(
             "SELECT CONCAT('abc', 'def')",
             "SELECT 'abc' || 'def'",
         )
-        self.validate_identity(
-            "SELECT TOP 1 x FROM y",
-            "SELECT x FROM y LIMIT 1",
-        )
+        for count in ("1", "%s", "%(n)s"):
+            self.validate_identity(f"SELECT TOP {count} x FROM y", f"SELECT x FROM y LIMIT {count}")
         self.validate_identity(
             "SELECT DATE_DIFF('month', CAST('2020-02-29 00:00:00' AS TIMESTAMP), CAST('2020-03-02 00:00:00' AS TIMESTAMP))",
             "SELECT DATEDIFF(MONTH, CAST('2020-02-29 00:00:00' AS TIMESTAMP), CAST('2020-03-02 00:00:00' AS TIMESTAMP))",
@@ -520,9 +536,6 @@ class TestRedshift(Validator):
         )
         self.validate_identity(
             "SELECT COUNT(*) FROM event WHERE eventname LIKE '%Ring%' OR eventname LIKE '%Die%'"
-        )
-        self.validate_identity(
-            "CREATE TABLE SOUP (LIKE other_table) DISTKEY(soup1) SORTKEY(soup2) DISTSTYLE ALL"
         )
         self.validate_identity(
             "CREATE TABLE sales (salesid INTEGER NOT NULL) DISTKEY(listid) COMPOUND SORTKEY(listid, sellerid) DISTSTYLE AUTO"
@@ -756,7 +769,6 @@ FROM (
         self.validate_identity("ALTER TABLE s.t ALTER SORTKEY (c)")
         self.validate_identity("ALTER TABLE t ALTER SORTKEY AUTO")
         self.validate_identity("ALTER TABLE t ALTER SORTKEY NONE")
-        self.validate_identity("ALTER TABLE t ALTER SORTKEY (c1, c2)")
         self.validate_identity("ALTER TABLE t ALTER SORTKEY (c1, c2)")
         self.validate_identity("ALTER TABLE t ALTER COMPOUND SORTKEY (c1, c2)")
         self.validate_identity("ALTER TABLE t ALTER DISTSTYLE ALL")

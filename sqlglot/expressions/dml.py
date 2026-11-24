@@ -305,6 +305,7 @@ class Update(Expression, DML):
         "limit": False,
         "options": False,
         "hint": False,
+        "alternative": False,
     }
 
     def table(
@@ -515,6 +516,7 @@ class Merge(Expression, DML):
         "whens": True,
         "with_": False,
         "returning": False,
+        "schema_evolution": False,
     }
 
 

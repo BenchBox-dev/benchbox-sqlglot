@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generator.py b/sqlglot/generator.py
-index fae46088..a00b8d96 100644
+index d423f879f..817d5f699 100644
 --- a/sqlglot/generator.py
 +++ b/sqlglot/generator.py
 @@ -8,6 +8,7 @@ from decimal import Decimal
@@ -10,7 +10,7 @@ index fae46088..a00b8d96 100644
  from sqlglot.errors import ErrorLevel, UnsupportedError, concat_messages
  from sqlglot.expressions import apply_index_offset
  from sqlglot.expressions.core import maybe_parse
-@@ -363,6 +364,9 @@ class Generator:
+@@ -366,6 +367,9 @@ class Generator:
      # Whether GROUP BY () is accepted
      SUPPORTS_EMPTY_GROUP_BY = True
  
@@ -20,7 +20,7 @@ index fae46088..a00b8d96 100644
      # The string used for creating an index on a table
      INDEX_ON = "ON"
  
-@@ -4824,6 +4828,9 @@ class Generator:
+@@ -4856,6 +4860,9 @@ class Generator:
              divisor.replace(exp.Nullif(this=divisor.copy(), expression=exp.Literal.number(0)))
  
      def div_sql(self, expression: exp.Div) -> str:
@@ -31,10 +31,10 @@ index fae46088..a00b8d96 100644
          self.nullif_zero_divisor(expression)
  
 diff --git a/sqlglot/generators/postgres.py b/sqlglot/generators/postgres.py
-index a1b17396..1dbb8c37 100644
+index ae5ed0cca..c9ab3c756 100644
 --- a/sqlglot/generators/postgres.py
 +++ b/sqlglot/generators/postgres.py
-@@ -278,6 +278,7 @@ class PostgresGenerator(generator.Generator):
+@@ -292,6 +292,7 @@ class PostgresGenerator(generator.Generator):
      TRY_SUPPORTED = False
      SUPPORTS_DECODE_CASE = False
      SUPPORTS_MULTI_ARG_CHR = False
@@ -43,13 +43,13 @@ index a1b17396..1dbb8c37 100644
      AFTER_HAVING_MODIFIER_TRANSFORMS = generator.AFTER_HAVING_MODIFIER_TRANSFORMS
  
 diff --git a/sqlglot/generators/redshift.py b/sqlglot/generators/redshift.py
-index cd45e522..c8f0b7fe 100644
+index c287c8551..7c03ef404 100644
 --- a/sqlglot/generators/redshift.py
 +++ b/sqlglot/generators/redshift.py
-@@ -19,6 +19,7 @@ from sqlglot.helper import seq_get
- 
+@@ -20,6 +20,7 @@ from sqlglot.helper import seq_get
  
  class RedshiftGenerator(PostgresGenerator):
+     DATE_PART_WITH_EXPRESSION = "PGDATE_PART"
 +    EXACT_DIVISION_TYPE = exp.DType.DOUBLE
      LOCKING_READS_SUPPORTED = False
      QUERY_HINTS = False

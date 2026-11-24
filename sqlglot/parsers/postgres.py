@@ -116,7 +116,6 @@ class PostgresParser(parser.Parser):
     ALTER_TABLE_MIXED_ACTIONS = True
     ALTER_COLUMN_TYPE_REQUIRES_KEYWORD = True
     SUPPORTS_OMITTED_INTERVAL_SPAN_UNIT = True
-    EXTRACT_RETURN_TYPE: t.ClassVar[exp.DType | None] = exp.DType.DECIMAL
 
     # The one-byte "char" type is distinct from CHAR, and it can only be referenced by
     # quoting it: https://www.postgresql.org/docs/current/datatype-character.html
@@ -145,6 +144,7 @@ class PostgresParser(parser.Parser):
         "BIT_OR": exp.BitwiseOrAgg.from_arg_list,
         "BIT_XOR": exp.BitwiseXorAgg.from_arg_list,
         "BTRIM": exp.Trim.from_arg_list,
+        "CARDINALITY": exp.ArraySize.from_arg_list,
         "VERSION": exp.CurrentVersion.from_arg_list,
         "DATE_TRUNC": build_timestamp_trunc,
         "DIV": lambda args: exp.cast(binary_from_function(exp.IntDiv)(args), exp.DType.DECIMAL),
@@ -155,6 +155,7 @@ class PostgresParser(parser.Parser):
         "JSON_EXTRACT_PATH": build_json_extract_path(exp.JSONExtract),
         "JSON_EXTRACT_PATH_TEXT": build_json_extract_path(exp.JSONExtractScalar),
         "LENGTH": lambda args: exp.Length(this=seq_get(args, 0), encoding=seq_get(args, 1)),
+        "MAKE_DATE": exp.DateFromParts.from_arg_list,
         "MAKE_INTERVAL": _build_make_interval,
         "MAKE_TIME": exp.TimeFromParts.from_arg_list,
         "MAKE_TIMESTAMP": exp.TimestampFromParts.from_arg_list,
@@ -200,7 +201,7 @@ class PostgresParser(parser.Parser):
 
     FUNCTION_PARSERS = {
         **parser.Parser.FUNCTION_PARSERS,
-        "DATE_PART": lambda self: self._parse_date_part(),
+        "DATE_PART": lambda self: self._parse_date_part(self._parse_assignment()),
         "JSON_AGG": lambda self: self.expression(
             exp.JSONArrayAgg(this=self._parse_lambda(), order=self._parse_order())
         ),
@@ -232,6 +233,7 @@ class PostgresParser(parser.Parser):
 
     UNARY_PARSERS = {
         **parser.Parser.UNARY_PARSERS,
+        TokenType.AT_SIGN: lambda self: self.expression(exp.Abs(this=self._parse_term())),
         # The `~` token is remapped from TILDE to RLIKE in Postgres due to the binary REGEXP LIKE operator
         TokenType.RLIKE: lambda self: self.expression(exp.BitwiseNot(this=self._parse_unary())),
     }
@@ -361,24 +363,13 @@ class PostgresParser(parser.Parser):
         self._match_text_seq("S")
         return self.expression(exp.Placeholder(this=this))
 
-    def _parse_extract(self) -> exp.Extract | exp.Anonymous:
-        expression = super()._parse_extract()
-        if isinstance(expression, exp.Extract) and self.EXTRACT_RETURN_TYPE:
-            expression.set("return_type", exp.DataType.build(self.EXTRACT_RETURN_TYPE))
-        return expression
-
-    def _parse_date_part(self) -> exp.Expr:
-        part = self._parse_type()
+    def _parse_date_part(self, part: exp.Expr | None) -> exp.Extract:
         self._match(TokenType.COMMA)
-        value = self._parse_bitwise()
-
-        if part and isinstance(part, (exp.Column, exp.Literal)):
+        if part and part.is_string and exp.SAFE_IDENTIFIER_RE.fullmatch(part.name):
             part = exp.var(part.name.upper())
 
         return self.expression(
-            exp.Extract(
-                this=part, expression=value, return_type=exp.DataType.build(exp.DType.DOUBLE)
-            )
+            exp.Extract(this=part, expression=self._parse_assignment(), date_part=True)
         )
 
     def _parse_convert(self, strict: bool, safe: bool | None = None) -> exp.Expr | None:

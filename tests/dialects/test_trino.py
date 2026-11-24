@@ -1,4 +1,4 @@
-from sqlglot import ErrorLevel, UnsupportedError, exp, parse_one
+from sqlglot import ErrorLevel, ParseError, UnsupportedError, exp, parse_one, transpile
 from sqlglot.generator import logger as generator_logger
 from sqlglot.optimizer.annotate_types import annotate_types
 from tests.dialects.test_dialect import Validator
@@ -6,6 +6,69 @@ from tests.dialects.test_dialect import Validator
 
 class TestTrino(Validator):
     dialect = "trino"
+
+    def test_execute_command_comments(self):
+        statements = [
+            "EXECUTE stmt USING 7 /* job; 42 */",
+            "EXECUTE stmt USING 8 -- job\n",
+            "SELECT 1",
+            "EXECUTE stmt USING\n/* before */ 9 -- done",
+        ]
+        with self.assertLogs("sqlglot"):
+            generated = transpile(";\n".join(statements), read="trino")
+        self.assertEqual(generated, statements)
+
+    def test_execute_immediate(self):
+        probe = self.validate_identity("EXECUTE IMMEDIATE 'SELECT 1'").assert_is(
+            exp.ExecuteImmediate
+        )
+        self.assertEqual(probe.this, exp.Literal.string("SELECT 1"))
+        self.assertEqual(probe.expressions, [])
+
+        sql = "EXECUTE IMMEDIATE 'SELECT ? AS x' USING 42"
+        self.validate_all(sql, write={"athena": UnsupportedError, "presto": UnsupportedError})
+        wrapper = self.validate_identity(sql)
+        self.assertEqual(wrapper.this, exp.Literal.string("SELECT ? AS x"))
+        self.assertEqual(wrapper.expressions, [exp.Literal.number(42)])
+
+        wrapper = self.validate_identity(
+            "EXECUTE IMMEDIATE 'WITH t AS (SELECT ? AS a) SELECT a, ''?'' AS marker, ? AS b FROM t' "
+            "USING 1 + 2, 'O''Brien'"
+        )
+        self.assertEqual(
+            wrapper.this.to_py(), "WITH t AS (SELECT ? AS a) SELECT a, '?' AS marker, ? AS b FROM t"
+        )
+        self.assertEqual(
+            wrapper.expressions, [self.parse_one("1 + 2"), exp.Literal.string("O'Brien")]
+        )
+
+        self.validate_identity(
+            "EXECUTE prepared_query USING 1", check_command_warning=True
+        ).assert_is(exp.Command)
+        for arguments in ("", ", 1", "1,", "1,, 2"):
+            with self.subTest(arguments=arguments), self.assertRaises(ParseError):
+                self.parse_one(f"EXECUTE IMMEDIATE 'SELECT ?' USING {arguments}")
+
+    def test_array_remove(self):
+        self.validate_all(
+            "ARRAY_REMOVE(ARRAY[1, 2, NULL, 2], 2)",
+            write={"clickhouse": "arrayFilter(_u -> NOT has([2], _u), [1, 2, NULL, 2])"},
+        )
+        for target in ("-1", "((2))", "-(1)"):
+            with self.subTest(target=target):
+                expr = self.parse_one(f"ARRAY_REMOVE(ARRAY[-1, 2], {target})")
+                self.assertEqual(
+                    expr.sql("clickhouse", unsupported_level=ErrorLevel.RAISE),
+                    f"arrayFilter(_u -> NOT has([{target}], _u), [-1, 2])",
+                )
+                self.assertEqual(
+                    expr.sql("duckdb"),
+                    f"LIST_FILTER([-1, 2], LAMBDA _u : _u IS DISTINCT FROM {target})",
+                )
+        self.validate_all(
+            "SELECT ARRAY_REMOVE(ARRAY[1, 2, NULL, 2], -target) FROM (VALUES (2), (NULL)) AS t(target)",
+            write={"clickhouse": UnsupportedError},
+        )
 
     def test_table_query_function(self):
         self.validate_identity(
@@ -519,6 +582,43 @@ class TestTrino(Validator):
             'CREATE TABLE "foo" ("a" VARCHAR, "b" INTEGER, "c" DATE) WITH (PARTITIONING=ARRAY[\'a\', \'bucket(4, b)\', \'month(c)\'])',
             identify=True,
         )
+
+    def test_add_months(self):
+        self.validate_all(
+            "SELECT DATE_ADD('MONTH', 1, d)",
+            read={"": "SELECT ADD_MONTHS(d, 1)"},
+        )
+
+        source = "FROM (SELECT '2019-02-28' AS d) AS t"
+        for arg in ("'2019-02-28'", "t.d"):
+            with self.subTest(arg=arg):
+                expression = annotate_types(
+                    parse_one(f"SELECT ADD_MONTHS({arg}, 1) {source}", read="snowflake"),
+                    dialect="snowflake",
+                )
+                timestamp = f"CAST({arg} AS TIMESTAMP)"
+                added = f"DATE_ADD('MONTH', 1, {timestamp})"
+                self.assertEqual(
+                    expression.sql(self.dialect),
+                    f"SELECT CASE WHEN DAY({timestamp}) = DAY(LAST_DAY_OF_MONTH({timestamp})) "
+                    f"THEN DATE_ADD('DAY', DATE_DIFF('DAY', CAST({timestamp} AS DATE), "
+                    f"LAST_DAY_OF_MONTH({added})), {timestamp}) ELSE {added} END {source}",
+                )
+
+        for dialect, arg, expected in (
+            ("spark", "DATE '2019-02-28'", "CAST('2019-02-28' AS DATE)"),
+            (
+                "spark",
+                "TIMESTAMP '2019-02-15 12:34:56'",
+                "CAST(CAST('2019-02-15 12:34:56' AS TIMESTAMP WITH TIME ZONE) AS DATE)",
+            ),
+            ("databricks", "'2019-02-28'", "CAST(CAST('2019-02-28' AS TIMESTAMP) AS DATE)"),
+        ):
+            with self.subTest(dialect=dialect, arg=arg):
+                expression = annotate_types(
+                    parse_one(f"ADD_MONTHS({arg}, 1)", read=dialect), dialect=dialect
+                )
+                self.assertEqual(expression.sql(self.dialect), f"DATE_ADD('MONTH', 1, {expected})")
 
     def test_analyze(self):
         self.validate_identity("ANALYZE tbl")

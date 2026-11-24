@@ -1,9 +1,9 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index c06ab9e8..e1c2bef8 100644
+index 80642c0bd..488772b14 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
-@@ -151,7 +151,55 @@ def _generated_to_auto_increment(expression: exp.Expr) -> exp.Expr:
-     return expression
+@@ -184,6 +184,53 @@ def _has_aggregate_projection(select: exp.Select) -> bool:
+     )
  
  
 +def _global_having_to_subquery(expression: exp.Expr) -> exp.Expr:
@@ -54,11 +54,9 @@ index c06ab9e8..e1c2bef8 100644
 +
 +
  class SQLiteGenerator(generator.Generator):
-+    SUPPORTS_EMPTY_GROUP_BY = False
      SELECT_KINDS = ()
      TRY_SUPPORTED = False
-     SUPPORTS_UESCAPE = False
-@@ -236,6 +284,7 @@ class SQLiteGenerator(generator.Generator):
+@@ -268,6 +315,7 @@ class SQLiteGenerator(generator.Generator):
          **{kind: _moments_sql for kind in MOMENT_AGGREGATES},
          exp.Select: transforms.preprocess(
              [
@@ -66,3 +64,42 @@ index c06ab9e8..e1c2bef8 100644
                  transforms.eliminate_distinct_on,
                  transforms.eliminate_qualify,
                  transforms.eliminate_semi_and_anti_joins,
+diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
+index 1d1630567..278743e3a 100644
+--- a/tests/dialects/test_sqlite.py
++++ b/tests/dialects/test_sqlite.py
+@@ -294,13 +294,16 @@ class TestSQLite(Validator):
+             read={"duckdb": "SELECT SUM(COUNT(*)) OVER () FROM t GROUP BY ()"},
+         )
+         self.validate_all(
+-            "SELECT COALESCE(SUM(x), 0) FROM t HAVING COUNT(*) > 1",
++            "SELECT _col_0 FROM (SELECT COALESCE(SUM(x), 0) AS _col_0, COUNT(*) > 1 AS _having FROM t) AS _global WHERE _having",
+             read={"duckdb": "SELECT COALESCE(SUM(x), 0) FROM t GROUP BY () HAVING COUNT(*) > 1"},
+         )
++        self.validate_all(
++            "SELECT _col_0 FROM (SELECT 1 AS _col_0, COUNT(*) > 0 AS _having FROM t) AS _global WHERE _having",
++            read={"duckdb": "SELECT 1 FROM t GROUP BY () HAVING COUNT(*) > 0"},
++        )
+ 
+         for sql in (
+             "SELECT 1 FROM t GROUP BY ()",
+-            "SELECT 1 FROM t GROUP BY () HAVING COUNT(*) > 0",
+             "SELECT COUNT(*) FILTER(WHERE TRUE) OVER () FROM t GROUP BY ()",
+             "SELECT SUM(COUNT(*)) OVER () FROM t GROUP BY () HAVING COUNT(*) > 1",
+             "SELECT (SELECT COUNT(*) FROM u) FROM t GROUP BY ()",
+@@ -316,7 +319,6 @@ class TestSQLite(Validator):
+         for sql in (
+             "SELECT MIN(x), MAX(y) FROM t GROUP BY ()",
+             "SELECT MIN(COUNT(*), 7) FROM t GROUP BY ()",
+-            "SELECT MAX(0, SUM(x)) FROM t GROUP BY () HAVING SUM(x) > 0",
+             "SELECT ROW_NUMBER() OVER w FROM t GROUP BY () WINDOW w AS (ORDER BY MAX(0, SUM(x)))",
+         ):
+             with self.subTest(sql=sql):
+@@ -327,7 +329,6 @@ class TestSQLite(Validator):
+ 
+         for dialect, sql in (
+             ("", "SELECT MIN(x, y) FROM t GROUP BY ()"),
+-            ("", "SELECT MAX(x, y) FROM t GROUP BY () HAVING COUNT(*) > 0"),
+             ("", "SELECT ROW_NUMBER() OVER w FROM t GROUP BY () WINDOW w AS (ORDER BY MAX(1, 2))"),
+             ("duckdb", "SELECT MIN(x, 2) FROM t GROUP BY ()"),
+         ):

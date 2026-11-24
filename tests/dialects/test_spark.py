@@ -9,6 +9,23 @@ from tests.dialects.test_dialect import Validator
 class TestSpark(Validator):
     dialect = "spark"
 
+    def test_merge_schema_evolution(self):
+        sql = (
+            "MERGE WITH SCHEMA EVOLUTION INTO target AS t USING source AS s ON t.id = s.id "
+            "WHEN MATCHED THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT *"
+        )
+        self.validate_all(
+            sql,
+            read={"databricks": sql},
+            write={
+                "spark, version=4.0": sql,
+                "spark, version=3.5": UnsupportedError,
+                "databricks, version=15.2": sql,
+                "databricks, version=15.1": UnsupportedError,
+                "postgres": UnsupportedError,
+            },
+        )
+
     def test_trunc_unknown_format(self):
         sql = "TRUNC(CAST('2024-05-15' AS DATE), 'WW')"
         self.assertEqual(self.parse_one(sql).sql("spark", unsupported_level=ErrorLevel.RAISE), sql)
@@ -41,8 +58,8 @@ class TestSpark(Validator):
                             dialects,
                             f"CREATE TABLE t (a INT) USING parquet OPTIONS ({key} {separator} 's3://b/t')",
                         ),
-                        write={**dict.fromkeys(dialects, sql), "hive": UnsupportedError},
                     )
+        self.validate_all(sql, write={**dict.fromkeys(dialects, sql), "hive": UnsupportedError})
         expression = self.validate_identity(sql)
         self.assertIsInstance(expression, exp.Create)
         options = expression.find(exp.OptionsProperty)
@@ -1164,6 +1181,7 @@ TBLPROPERTIES (
             "SELECT LEFT(x, n), RIGHT(x, -1)",
             write={
                 "duckdb": "SELECT LEFT(x, CASE WHEN n < 0 THEN 0 ELSE n END), RIGHT(x, CASE WHEN -1 < 0 THEN 0 ELSE -1 END)",
+                "postgres": "SELECT LEFT(x, CASE WHEN n < 0 THEN 0 ELSE n END), RIGHT(x, CASE WHEN -1 < 0 THEN 0 ELSE -1 END)",
                 "spark": "SELECT LEFT(x, n), RIGHT(x, -1)",
             },
         )
@@ -1763,6 +1781,27 @@ TBLPROPERTIES (
                 annotated.sql("presto"),
                 """WITH "t" AS (SELECT ARRAY[CAST(ROW(ARRAY[1, 2]) AS ROW("a" ARRAY(INTEGER)))] AS "arr") SELECT "t2"."x" AS "x" FROM "t" AS "t" CROSS JOIN UNNEST("t"."arr") AS "t1"("a") CROSS JOIN UNNEST("t1"."a") AS "t2"("x")""",
             )
+
+    def test_ordered_percentiles(self):
+        cont = "PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY x DESC)"
+        disc = "PERCENTILE_DISC(0.25) WITHIN GROUP (ORDER BY x DESC)"
+        approx = "PERCENTILE_APPROX(x, 0.25)"
+        source = "FROM VALUES (0), (10) AS t(x)"
+        sql = f"SELECT {cont}, {disc} {source}"
+        fallback = f"SELECT {approx}, {approx} {source}"
+        self.validate_all(
+            sql,
+            read={"databricks": sql},
+            write={
+                "spark2": fallback,
+                "spark, version=3.2": fallback,
+                "spark, version=3.3": sql,
+                "databricks, version=10.3": fallback,
+                "databricks, version=10.4": f"SELECT {cont}, {approx} {source}",
+                "databricks, version=11.3": sql,
+                "databricks": sql,
+            },
+        )
 
     def test_approx_percentile(self):
         self.validate_all(

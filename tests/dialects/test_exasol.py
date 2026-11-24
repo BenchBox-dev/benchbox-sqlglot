@@ -137,6 +137,17 @@ class TestExasol(Validator):
             "CAST(x AS TIMESTAMP WITH LOCAL TIME ZONE)",
         )
 
+    def test_hashtype(self):
+        for data_type in ("HASHTYPE", "HASHTYPE(16 BYTE)", "HASHTYPE(128 BIT)"):
+            with self.subTest(data_type=data_type):
+                expression = self.validate_identity(f"SELECT CAST(NULL AS {data_type}) AS h")
+                self.assertEqual(expression.find(exp.DataType).this, exp.DType.HASHTYPE)
+
+    def test_create_table_hashtype(self):
+        self.validate_identity(
+            "CREATE TABLE t (h1 HASHTYPE, h2 HASHTYPE(16 BYTE), h3 HASHTYPE(128 BIT))"
+        )
+
     def test_mod(self):
         self.validate_all(
             "SELECT MOD(x, 10)",
@@ -613,16 +624,6 @@ class TestExasol(Validator):
                     },
                 )
 
-                self.validate_all(
-                    "SELECT CAST(ADD_DAYS(ADD_MONTHS(DATE_TRUNC('MONTH', DATE '2008-11-25'), 1), -1) AS DATE)",
-                    read={
-                        "snowflake": "SELECT LAST_DAY(CAST('2008-11-25' AS DATE), MONTH)",
-                        "databricks": "SELECT LAST_DAY('2008-11-25')",
-                        "spark": "SELECT LAST_DAY(CAST('2008-11-25' AS DATE))",
-                        "presto": "SELECT LAST_DAY_OF_MONTH(CAST('2008-11-25' AS DATE))",
-                    },
-                )
-
             with self.subTest(f"Testing {unit}S_BETWEEN"):
                 self.validate_all(
                     f"SELECT {unit}S_BETWEEN(TIMESTAMP '2000-02-28 00:00:00', CURRENT_TIMESTAMP)",
@@ -636,6 +637,15 @@ class TestExasol(Validator):
                         "tsql": f"SELECT DATEDIFF({unit}, GETDATE(), CAST('2000-02-28 00:00:00' AS DATETIME2))",
                     },
                 )
+        self.validate_all(
+            "SELECT CAST(ADD_DAYS(ADD_MONTHS(DATE_TRUNC('MONTH', DATE '2008-11-25'), 1), -1) AS DATE)",
+            read={
+                "snowflake": "SELECT LAST_DAY(CAST('2008-11-25' AS DATE), MONTH)",
+                "databricks": "SELECT LAST_DAY('2008-11-25')",
+                "spark": "SELECT LAST_DAY(CAST('2008-11-25' AS DATE))",
+                "presto": "SELECT LAST_DAY_OF_MONTH(CAST('2008-11-25' AS DATE))",
+            },
+        )
         self.validate_all(
             "SELECT quarter('2016-08-31')",
             write={

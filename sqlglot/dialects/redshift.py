@@ -23,6 +23,7 @@ class Redshift(Postgres):
     COALESCE_COMPARISON_NON_STANDARD = True
     REGEXP_EXTRACT_POSITION_OVERFLOW_RETURNS_NULL = False
     ARRAY_FUNCS_PROPAGATES_NULLS = True
+    ARRAY_REMOVE_PROPAGATES_NULLS = True
 
     # ref: https://docs.aws.amazon.com/redshift/latest/dg/r_FORMAT_strings.html
     TIME_FORMAT = "'YYYY-MM-DD HH24:MI:SS'"
@@ -43,6 +44,7 @@ class Redshift(Postgres):
         DROP_UNKNOWN_ESCAPES = True
         BIT_STRINGS = []
         HEX_STRINGS = []
+        UNICODE_IDENTIFIERS = []
         STRING_ESCAPES = ["\\", "'"]
 
         KEYWORDS = {

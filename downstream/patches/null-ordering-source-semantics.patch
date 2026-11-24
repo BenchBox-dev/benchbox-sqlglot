@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generator.py b/sqlglot/generator.py
-index bd055be6..d02ff71b 100644
+index 817d5f699..8f2a89fbc 100644
 --- a/sqlglot/generator.py
 +++ b/sqlglot/generator.py
 @@ -301,6 +301,10 @@ class Generator:
@@ -13,7 +13,7 @@ index bd055be6..d02ff71b 100644
      # Window functions that support NULLS FIRST/LAST
      WINDOW_FUNCS_WITH_NULL_ORDERING: t.ClassVar[tuple[type[exp.Expression], ...]] = ()
  
-@@ -3439,6 +3443,42 @@ class Generator:
+@@ -3454,6 +3458,42 @@ class Generator:
  
          return match
  
@@ -56,7 +56,7 @@ index bd055be6..d02ff71b 100644
      def ordered_sql(self, expression: exp.Ordered) -> str:
          desc = expression.args.get("desc")
          asc = not desc
-@@ -3483,36 +3523,59 @@ class Generator:
+@@ -3498,36 +3538,59 @@ class Generator:
                  isinstance(window_this, self.WINDOW_FUNCS_WITH_NULL_ORDERING)
                  and (not spec or spec.text("kind").upper() == "ROWS")
              ):
@@ -132,10 +132,10 @@ index bd055be6..d02ff71b 100644
  
          with_fill = self.sql(expression, "with_fill")
 diff --git a/tests/dialects/test_bigquery.py b/tests/dialects/test_bigquery.py
-index 5052b229..59cb1040 100644
+index 881dd58c8..24d2ed92c 100644
 --- a/tests/dialects/test_bigquery.py
 +++ b/tests/dialects/test_bigquery.py
-@@ -3253,29 +3253,56 @@ OPTIONS (
+@@ -3361,29 +3361,56 @@ OPTIONS (
          )
  
      def test_null_ordering(self):
@@ -203,10 +203,10 @@ index 5052b229..59cb1040 100644
          for func_call in (
              "FIRST_VALUE(col1)",
 diff --git a/tests/dialects/test_dialect.py b/tests/dialects/test_dialect.py
-index d5773d61..93585ea4 100644
+index 66b7f1315..63e5abc1a 100644
 --- a/tests/dialects/test_dialect.py
 +++ b/tests/dialects/test_dialect.py
-@@ -1268,7 +1268,7 @@ class TestDialect(Validator):
+@@ -1285,7 +1285,7 @@ class TestDialect(Validator):
                  "postgres": "DATE_TRUNC('DAY', x)",
                  "snowflake": "DATE_TRUNC('DAY', x)",
                  "starrocks": "DATE_TRUNC('DAY', x)",
@@ -215,7 +215,7 @@ index d5773d61..93585ea4 100644
                  "doris": "DATE_TRUNC(x, 'DAY')",
              },
          )
-@@ -1823,7 +1823,10 @@ class TestDialect(Validator):
+@@ -1871,7 +1871,10 @@ class TestDialect(Validator):
              (
                  "trino",
                  "ARRAY_SORT(ARRAY_AGG(x ORDER BY y))",
@@ -228,10 +228,10 @@ index d5773d61..93585ea4 100644
              (
                  "",
 diff --git a/tests/dialects/test_duckdb.py b/tests/dialects/test_duckdb.py
-index f94ad743..0f785ca3 100644
+index c9c2adfa8..71623348f 100644
 --- a/tests/dialects/test_duckdb.py
 +++ b/tests/dialects/test_duckdb.py
-@@ -762,7 +762,7 @@ class TestDuckDB(Validator):
+@@ -786,7 +786,7 @@ class TestDuckDB(Validator):
          self.validate_all(
              "SELECT SUM(X) OVER (ORDER BY x)",
              write={
@@ -241,10 +241,10 @@ index f94ad743..0f785ca3 100644
                  "mysql": "SELECT SUM(X) OVER (ORDER BY CASE WHEN x IS NULL THEN 1 ELSE 0 END, x)",
              },
 diff --git a/tests/dialects/test_mysql.py b/tests/dialects/test_mysql.py
-index 35b6bc3b..58d7872f 100644
+index 1ae232ceb..053d8d9cb 100644
 --- a/tests/dialects/test_mysql.py
 +++ b/tests/dialects/test_mysql.py
-@@ -2434,10 +2434,14 @@ COMMENT='客户账户表'"""
+@@ -2442,10 +2442,14 @@ COMMENT='客户账户表'"""
  
      def test_ignore_respect_nulls(self):
          self.validate_all(
@@ -260,7 +260,7 @@ index 35b6bc3b..58d7872f 100644
              write={
                  "mysql": "SELECT FIRST_VALUE(col1) OVER (ORDER BY col2 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM table1",
                  "oracle": "SELECT FIRST_VALUE(col1) OVER (ORDER BY col2 NULLS FIRST ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM table1",
-@@ -2456,10 +2460,14 @@ COMMENT='客户账户表'"""
+@@ -2464,10 +2468,14 @@ COMMENT='客户账户表'"""
          )
  
          self.validate_all(

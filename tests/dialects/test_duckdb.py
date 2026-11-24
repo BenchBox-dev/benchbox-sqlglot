@@ -10,6 +10,30 @@ from tests.dialects.test_dialect import Validator
 class TestDuckDB(Validator):
     dialect = "duckdb"
 
+    def test_order_by_all(self):
+        self.validate_identity("SELECT ARRAY_AGG(x ORDER BY ALL) FROM t")
+        self.validate_all(
+            "SELECT x, y FROM t ORDER BY ALL DESC",
+            read={
+                "clickhouse": "SELECT x, y FROM t ORDER BY all DESC",
+                "snowflake": "SELECT x, y FROM t ORDER BY all DESC NULLS LAST",
+            },
+        )
+        for dialect, sort_key, expected in (
+            ("snowflake", '"ALL"', '"ALL"'),
+            ("clickhouse", "t.ALL", 't."ALL"'),
+            ("clickhouse", "ALL DESC, x", '"ALL" DESC, x'),
+            ("clickhouse", "x, ALL", 'x, "ALL"'),
+        ):
+            self.validate_all(
+                f"SELECT * FROM t ORDER BY {expected}",
+                read={dialect: f"SELECT * FROM t ORDER BY {sort_key}"},
+            )
+        self.validate_all(
+            'SELECT ROW_NUMBER() OVER (ORDER BY "ALL") FROM t',
+            read={"clickhouse": "SELECT ROW_NUMBER() OVER (ORDER BY ALL) FROM t"},
+        )
+
     def test_format(self):
         for sql in (
             "FORMAT('{}-{}', 1, 2)",
@@ -866,7 +890,7 @@ class TestDuckDB(Validator):
             "SELECT RANGE(1, 5)",
             write={
                 "duckdb": "SELECT RANGE(1, 5)",
-                "spark": "SELECT SEQUENCE(1, 4)",
+                "spark": "SELECT IF(FALSE, ARRAY(), SEQUENCE(1, 4))",
                 "snowflake": "SELECT ARRAY_GENERATE_RANGE(1, 5)",
             },
         )
@@ -874,14 +898,14 @@ class TestDuckDB(Validator):
             "SELECT RANGE(1, 5, 2)",
             write={
                 "duckdb": "SELECT RANGE(1, 5, 2)",
-                "spark": "SELECT SEQUENCE(1, 3, 2)",
+                "spark": "SELECT IF(FALSE, ARRAY(), SEQUENCE(1, 3, 2))",
             },
         )
         self.validate_all(
             "SELECT RANGE(1, 1)",
             write={
                 "duckdb": "SELECT RANGE(1, 1)",
-                "spark": "SELECT ARRAY()",
+                "spark": "SELECT IF(TRUE, ARRAY(), SEQUENCE(1, 0))",
             },
         )
         self.validate_all(
@@ -890,7 +914,7 @@ class TestDuckDB(Validator):
                 "bigquery": "SELECT GENERATE_ARRAY(5, 1 + 1, -1)",
                 "duckdb": "SELECT RANGE(5, 1, -1)",
                 "postgres": "SELECT GENERATE_SERIES(5, 1 + 1, -1)",
-                "spark": "SELECT SEQUENCE(5, 2, -1)",
+                "spark": "SELECT IF(FALSE, ARRAY(), SEQUENCE(5, 2, -1))",
                 "snowflake": "SELECT ARRAY_GENERATE_RANGE(5, 1, -1)",
             },
         )
@@ -898,7 +922,7 @@ class TestDuckDB(Validator):
             "SELECT RANGE(5, 1, 0)",
             write={
                 "duckdb": "SELECT RANGE(5, 1, 0)",
-                "spark": "SELECT ARRAY()",
+                "spark": "SELECT IF(TRUE, ARRAY(), SEQUENCE(5, 1, 0))",
             },
         )
         self.validate_all(
@@ -920,7 +944,7 @@ class TestDuckDB(Validator):
             "SELECT RANGE(1, 2)",
             write={
                 "duckdb": "SELECT RANGE(1, 2)",
-                "spark": "SELECT SEQUENCE(1, 1)",
+                "spark": "SELECT IF(FALSE, ARRAY(), SEQUENCE(1, 1))",
             },
         )
         self.validate_all(
@@ -1451,6 +1475,7 @@ class TestDuckDB(Validator):
             },
         )
         self.validate_identity("REGEXP_FULL_MATCH(x, y, 'i')")
+
         self.validate_all("SELECT * FROM 'x.y'", write={"duckdb": 'SELECT * FROM "x.y"'})
         self.validate_all(
             "SELECT LIST(DISTINCT sample_col) FILTER(WHERE NOT sample_col IS NULL) FROM sample_table",
@@ -1959,6 +1984,14 @@ class TestDuckDB(Validator):
             "SELECT PERCENTILE_DISC(0.25) WITHIN GROUP (ORDER BY y DESC) FROM t",
             "SELECT QUANTILE_DISC(y, 0.25 ORDER BY y DESC) FROM t",
         )
+        for suffix in ("CONT", "DISC"):
+            self.validate_all(
+                f"SELECT QUANTILE_{suffix}(x, CAST(0.9 AS DOUBLE) ORDER BY x ASC) FROM t",
+                read={
+                    "postgres": f"SELECT PERCENTILE_{suffix}(CAST(0.9 AS FLOAT)) "
+                    "WITHIN GROUP (ORDER BY x ASC) FROM t",
+                },
+            )
         self.validate_all(
             "SELECT QUANTILE_CONT(x, q) FROM t",
             write={
@@ -2172,6 +2205,8 @@ class TestDuckDB(Validator):
         )
 
         self.validate_identity("ARRAY_SLICE(x, 1, 3, 2)")
+        self.validate_identity("LIST_INTERSECT(x, y)", "ARRAY_INTERSECT(x, y)")
+        self.validate_identity("LIST_SLICE(x, 1, 3, 2)", "ARRAY_SLICE(x, 1, 3, 2)")
         self.validate_identity("SELECT #2, #1 FROM (VALUES (1, 'foo'))")
         self.validate_identity("SELECT #2 AS a, #1 AS b FROM (VALUES (1, 'foo'))")
 
@@ -2408,6 +2443,51 @@ class TestDuckDB(Validator):
             },
         )
 
+    def test_similar_to(self):
+        self.validate_identity("x SIMILAR TO 'a_c%'", "REGEXP_FULL_MATCH(x, 'a_c%')")
+        self.validate_identity("x NOT SIMILAR TO 'a.c'", "NOT REGEXP_FULL_MATCH(x, 'a.c')")
+        self.validate_all(
+            "x LIKE 'a_c%'",
+            read={"postgres": "x SIMILAR TO 'a_c%'", "redshift": "x SIMILAR TO 'a_c%'"},
+        )
+        self.validate_all("x LIKE 'a.c^$'", read={"postgres": "x SIMILAR TO ('a.c^$')"})
+        self.validate_all("NOT x LIKE '%b%'", read={"postgres": "x NOT SIMILAR TO '%b%'"})
+
+        for sql in (
+            "x SIMILAR TO '(a|b)%'",
+            r"x SIMILAR TO '\d'",
+            "x SIMILAR TO '[[:digit:]%]'",
+            "x SIMILAR TO 'a!_c' ESCAPE '!'",
+            "x SIMILAR TO y",
+        ):
+            with self.subTest(sql), self.assertRaises(UnsupportedError):
+                parse_one(sql, read="postgres").sql("duckdb", unsupported_level=ErrorLevel.RAISE)
+
+    def test_regexp_full_match_to_postgres(self):
+        sql = "SELECT 'abc' SIMILAR TO 'abc', 'xabc' SIMILAR TO 'abc'"
+        self.assertEqual(
+            self.parse_one(sql).sql("postgres", unsupported_level=ErrorLevel.RAISE),
+            "SELECT ('abc' SIMILAR TO 'abc'), ('xabc' SIMILAR TO 'abc')",
+        )
+        self.validate_all(
+            "SELECT 'xabc' NOT SIMILAR TO 'abc'",
+            write={"postgres": "SELECT NOT ('xabc' SIMILAR TO 'abc')"},
+        )
+        self.validate_all(
+            "SELECT REGEXP_FULL_MATCH('abc', 'abc') || '!', '!' || REGEXP_FULL_MATCH('abc', 'abc')",
+            write={
+                "postgres": "SELECT ('abc' SIMILAR TO 'abc') || '!', '!' || ('abc' SIMILAR TO 'abc')"
+            },
+        )
+        for sql in (
+            "SELECT 'abc' SIMILAR TO 'a.c'",
+            "SELECT 'a_c%' SIMILAR TO 'a_c%'",
+            "SELECT 'abc' SIMILAR TO p FROM (VALUES ('abc')) AS t(p)",
+            "SELECT REGEXP_FULL_MATCH('ABC', 'abc', 'i')",
+        ):
+            with self.subTest(sql):
+                self.validate_all(sql, write={"postgres": UnsupportedError})
+
     def test_array_index(self):
         with self.assertLogs(helper_logger) as cm:
             self.validate_all(
@@ -2584,27 +2664,40 @@ class TestDuckDB(Validator):
         )
 
     def test_array_remove(self):
-        # Test NULL propagation with column reference: Snowflake → DuckDB
         self.validate_all(
-            "CASE WHEN target IS NULL THEN NULL ELSE LIST_FILTER(the_array, LAMBDA _u : _u <> target) END",
+            "CASE WHEN target IS NULL THEN NULL ELSE LIST_FILTER(the_array, LAMBDA _u : _u IS DISTINCT FROM target) END",
             read={
+                "hive": "ARRAY_REMOVE(the_array, target)",
+                "presto": "ARRAY_REMOVE(the_array, target)",
                 "snowflake": "ARRAY_REMOVE(the_array, target)",
+                "spark": "ARRAY_REMOVE(the_array, target)",
+                "trino": "ARRAY_REMOVE(the_array, target)",
             },
         )
-
-        # Test literal values: Snowflake → DuckDB
         self.validate_all(
-            "LIST_FILTER([1, 2, 3], LAMBDA _u : _u <> 2)",
+            "LIST_FILTER([1, 2, NULL, 2], LAMBDA _u : _u IS DISTINCT FROM 2)",
             read={
-                "snowflake": "ARRAY_REMOVE([1, 2, 3], 2)",
+                "postgres": "ARRAY_REMOVE(ARRAY[1, 2, NULL, 2], 2)",
+                "snowflake": "ARRAY_REMOVE([1, 2, NULL, 2], 2)",
+                "spark": "ARRAY_REMOVE(ARRAY(1, 2, NULL, 2), 2)",
+                "trino": "ARRAY_REMOVE(ARRAY[1, 2, NULL, 2], 2)",
             },
         )
-
-        # Test NULL literal: Snowflake → DuckDB
         self.validate_all(
-            "CASE WHEN NULL IS NULL THEN NULL ELSE LIST_FILTER([1, 2, 3], LAMBDA _u : _u <> NULL) END",
+            "CASE WHEN NULL IS NULL THEN NULL ELSE LIST_FILTER([1, 2, NULL, 2], LAMBDA _u : _u IS DISTINCT FROM NULL) END",
             read={
-                "snowflake": "ARRAY_REMOVE([1, 2, 3], NULL)",
+                "snowflake": "ARRAY_REMOVE([1, 2, NULL, 2], NULL)",
+                "trino": "ARRAY_REMOVE(ARRAY[1, 2, NULL, 2], NULL)",
+            },
+        )
+        self.validate_all(
+            "LIST_FILTER([1, 2, NULL, 2], LAMBDA _u : _u IS DISTINCT FROM NULL)",
+            read={"postgres": "ARRAY_REMOVE(ARRAY[1, 2, NULL, 2], NULL)"},
+        )
+        self.validate_all(
+            "SELECT LIST_FILTER([TRUE, FALSE, NULL], LAMBDA _u_2 : _u_2 IS DISTINCT FROM (_u OR FALSE)) FROM (VALUES (TRUE)) AS t(_u)",
+            read={
+                "postgres": "SELECT ARRAY_REMOVE(ARRAY[TRUE, FALSE, NULL], _u OR FALSE) FROM (VALUES (TRUE)) AS t(_u)",
             },
         )
 
@@ -3342,6 +3435,17 @@ class TestDuckDB(Validator):
 
         self.validate_identity("DETACH DATABASE db", "DETACH db")
 
+    def test_pivot_source_qualifiers(self):
+        source = (
+            "SELECT s.region, s.amount FROM (VALUES ('east', 2), ('west', 5)) AS s(region, amount) "
+            "JOIN (VALUES ('east')) AS r(region) ON s.region = r.region"
+        )
+        self.validate_identity(
+            f"PIVOT ({source}) ON s.region USING SUM(s.amount)",
+            f"PIVOT ({source}) ON region USING SUM(amount)",
+        )
+        self.validate_identity(f"WITH sales AS ({source}) PIVOT sales ON region USING SUM(amount)")
+
     def test_simplified_pivot_unpivot(self):
         self.validate_identity("PIVOT Cities ON Year USING SUM(Population)")
         self.validate_identity("PIVOT Cities ON Year USING FIRST(Population)")
@@ -3575,6 +3679,26 @@ class TestDuckDB(Validator):
         self.validate_identity("CREATE SEQUENCE serial START WITH 99 INCREMENT BY -1 MAXVALUE 99")
         self.validate_identity("CREATE SEQUENCE serial START WITH 1 MAXVALUE 10 NO CYCLE")
         self.validate_identity("CREATE SEQUENCE serial START WITH 1 MAXVALUE 10 CYCLE")
+
+    def test_ddl_on_conflict_unsupported(self):
+        for columns, action in (
+            ("x INT NOT NULL", "IGNORE"),
+            ("x INT NULL", "IGNORE"),
+            ("x INT PRIMARY KEY", "REPLACE"),
+            ("x INT UNIQUE", "FAIL"),
+            ("x INT, y INT, UNIQUE (x, y)", "FAIL"),
+        ):
+            with self.subTest(columns=columns):
+                expression = parse_one(f"CREATE TABLE t ({columns} ON CONFLICT {action})", "sqlite")
+                with self.assertRaisesRegex(UnsupportedError, "ON CONFLICT on table or column"):
+                    expression.sql("duckdb", unsupported_level=ErrorLevel.RAISE)
+                self.assertEqual(
+                    expression.sql("duckdb", unsupported_level=ErrorLevel.IGNORE),
+                    f"CREATE TABLE t ({columns})",
+                )
+
+        sql = "INSERT INTO t VALUES (1) ON CONFLICT DO NOTHING"
+        self.assertEqual(self.parse_one(sql).sql("duckdb", unsupported_level=ErrorLevel.RAISE), sql)
 
     def test_install(self):
         ast = self.validate_identity("INSTALL httpfs")

@@ -23,6 +23,7 @@ class Snowflake(Dialect):
     UNESCAPED_SEQUENCES = {"\\a": "a", "\\v": "v"}
     NULL_ORDERING = "nulls_are_large"
     TIME_FORMAT = "'YYYY-MM-DD HH24:MI:SS'"
+    SUPPORTS_ORDER_BY_ALL = True
     SUPPORTS_USER_DEFINED_TYPES = False
     PREFER_CTE_ALIAS_COLUMN = True
     COLUMN_ALIAS_PRECEDENCE = {
@@ -34,6 +35,7 @@ class Snowflake(Dialect):
     COPY_PARAMS_ARE_CSV = False
     ARRAY_AGG_INCLUDES_NULLS = None
     ARRAY_FUNCS_PROPAGATES_NULLS = True
+    ARRAY_REMOVE_PROPAGATES_NULLS = True
     ALTER_TABLE_ADD_REQUIRED_FOR_EACH_COLUMN = False
     ALTER_TABLE_DROP_REQUIRED_FOR_EACH_COLUMN = False
     TRY_CAST_REQUIRES_STRING = True
@@ -110,6 +112,7 @@ class Snowflake(Dialect):
         "EPOCH_SECOND": "EPOCH_SECOND",
         "EPOCH_SECONDS": "EPOCH_SECOND",
     }
+    EXTRACT_DATE_PART_MAPPING = {"ISOYEAR": "YEAROFWEEKISO"}
 
     PSEUDOCOLUMNS = {"LEVEL"}
 
@@ -140,6 +143,8 @@ class Snowflake(Dialect):
         KEYWORDS = {
             **tokens.Tokenizer.KEYWORDS,
             "(+)": TokenType.JOIN_MARKER,
+            "@": TokenType.STAGE_PATH,
+            "@~": TokenType.STAGE_PATH,
             "BYTEINT": TokenType.INT,
             "FILE://": TokenType.URI_START,
             "FILE FORMAT": TokenType.FILE_FORMAT,
@@ -186,6 +191,9 @@ class Snowflake(Dialect):
         }
 
         VAR_SINGLE_TOKENS = {"$"}
+
+        # https://docs.snowflake.com/en/user-guide/querying-stage
+        UNQUOTED_PATH_TERMINATORS = {",", ";", "(", ")", "'", "`", "~", "<", ">", "|"}
 
         COMMANDS = tokens.Tokenizer.COMMANDS - {TokenType.SHOW}
 

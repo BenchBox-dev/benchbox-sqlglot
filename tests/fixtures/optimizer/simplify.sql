@@ -823,6 +823,55 @@ r IS NOT NULL AND r IS NULL;
 r IS NOT NULL AND r > 5;
 r > 5 AND r IS NOT NULL;
 
+# execute: true
+TIMESTAMP '2024-02-01 00:00:00' = DATE '2024-02-01';
+TRUE;
+
+# execute: true
+DATE '2024-02-01' >= TIMESTAMP '2024-02-01 10:00:00';
+FALSE;
+
+# dialect: bigquery
+DATE '2024-02-01' = DATETIME '2024-02-01 00:00:00';
+TRUE;
+
+# dialect: bigquery
+x > DATETIME_ADD(DATETIME '2024-01-31 00:00:00', INTERVAL 1 DAY) AND x > DATETIME '2024-02-01 10:00:00';
+x > CAST('2024-02-01 10:00:00' AS DATETIME);
+
+# dialect: duckdb
+# execute: true
+DATE '2024-01-31' + INTERVAL 1 DAY = DATE '2024-02-01';
+TRUE;
+
+# dialect: duckdb
+# execute: true
+DATE '2024-02-01' = TIMESTAMPTZ '2024-02-01 00:00:00+00:00';
+CAST('2024-02-01 00:00:00+00:00' AS TIMESTAMPTZ) = CAST('2024-02-01' AS DATE);
+
+# dialect: duckdb
+# execute: true
+DATE '2018-11-04' = TIMESTAMPTZ '2018-11-04 01:00:00';
+CAST('2018-11-04 01:00:00' AS TIMESTAMPTZ) = CAST('2018-11-04' AS DATE);
+
+# dialect: duckdb
+# execute: true
+CAST(TIMESTAMPTZ '2024-02-01 00:00:00+00:00' AS DATE) = DATE '2024-02-01';
+CAST('2024-02-01' AS DATE) = CAST(CAST('2024-02-01 00:00:00+00:00' AS TIMESTAMPTZ) AS DATE);
+
+# dialect: duckdb
+# execute: true
+DATE '2024-02-01' = TIMESTAMP_NS '2024-02-01 00:00:00.000000001';
+CAST('2024-02-01 00:00:00.000000001' AS TIMESTAMP_NS) = CAST('2024-02-01' AS DATE);
+
+# dialect: postgres
+DATE '2024-02-01' = TIMESTAMP '2024-02-01 00:00:00.0000009';
+CAST('2024-02-01 00:00:00.0000009' AS TIMESTAMP) = CAST('2024-02-01' AS DATE);
+
+# dialect: duckdb
+x > DATE '2024-02-01' AND x > TIMESTAMPTZ '2024-02-01 00:00:00+00:00';
+x > CAST('2024-02-01 00:00:00+00:00' AS TIMESTAMPTZ) AND x > CAST('2024-02-01' AS DATE);
+
 date '1998-12-01' - interval x day;
 CAST('1998-12-01' AS DATE) - INTERVAL x DAY;
 
@@ -936,9 +985,6 @@ x <= 0;
 
 x <= 1 AND x > 0;
 x <= 1 AND x > 0;
-
-x <= 1 OR x > 0;
-x <= 1 OR x > 0;
 
 x <= 0 OR x < 0;
 x <= 0;
@@ -1683,9 +1729,6 @@ x >= 2;
 x + 1 <= 3;
 x <= 2;
 
-x + 1 <= 3;
-x <= 2;
-
 x + 1 <> 3;
 x <> 2;
 
@@ -1910,25 +1953,25 @@ CASE WHEN y = 5 THEN x = z END AND x = 1;
 -- Simplify Conditionals
 --------------------------------------
 IF(TRUE, x, y);
-x;
+CASE WHEN TRUE THEN x ELSE y END;
 
 IF(FALSE, x, y);
-y;
+CASE WHEN FALSE THEN x ELSE y END;
 
 IF(FALSE, x);
-NULL;
+CASE WHEN FALSE THEN x END;
 
 IF(NULL, x, y);
-y;
+CASE WHEN NULL THEN x ELSE y END;
 
 IF(cond, x, y);
 CASE WHEN cond THEN x ELSE y END;
 
 CASE WHEN TRUE THEN x ELSE y END;
-x;
+CASE WHEN TRUE THEN x ELSE y END;
 
 CASE WHEN FALSE THEN x ELSE y END;
-y;
+CASE WHEN FALSE THEN x ELSE y END;
 
 CASE WHEN TRUE THEN (SELECT 1) ELSE (SELECT 2) END;
 (SELECT 1);
@@ -1943,52 +1986,52 @@ IF(FALSE, (SELECT 1), (SELECT 2));
 (SELECT 2);
 
 CASE WHEN FALSE THEN x WHEN FALSE THEN y WHEN TRUE THEN z END;
-z;
+CASE WHEN FALSE THEN x WHEN FALSE THEN y WHEN TRUE THEN z END;
 
 CASE WHEN cond THEN x WHEN TRUE THEN y END;
-CASE WHEN cond THEN x ELSE y END;
+CASE WHEN cond THEN x WHEN TRUE THEN y END;
 
 CASE WHEN cond THEN x WHEN TRUE THEN y WHEN other_cond THEN z ELSE w END;
-CASE WHEN cond THEN x ELSE y END;
+CASE WHEN cond THEN x WHEN TRUE THEN y WHEN other_cond THEN z ELSE w END;
 
 CASE WHEN FALSE THEN w WHEN cond THEN x WHEN NULL THEN y WHEN other_cond THEN z WHEN TRUE THEN v ELSE u END;
-CASE WHEN cond THEN x WHEN other_cond THEN z ELSE v END;
+CASE WHEN FALSE THEN w WHEN cond THEN x WHEN NULL THEN y WHEN other_cond THEN z WHEN TRUE THEN v ELSE u END;
 
 CASE WHEN cond THEN x WHEN 1 + 1 = 2 THEN y ELSE z END;
-CASE WHEN cond THEN x ELSE y END;
+CASE WHEN cond THEN x WHEN TRUE THEN y ELSE z END;
 
 CASE 1 WHEN x THEN y WHEN 1 THEN z ELSE w END;
-CASE WHEN x = 1 THEN y ELSE z END;
+CASE WHEN x = 1 THEN y WHEN TRUE THEN z ELSE w END;
 
 # execute: true
-SELECT CASE WHEN a > 1 THEN b WHEN TRUE THEN 2 END AS result FROM comparisons;
-SELECT CASE WHEN a > 1 THEN b ELSE 2 END AS result FROM comparisons;
+SELECT CASE WHEN a > 1 THEN comparisons.b WHEN TRUE THEN 2 END AS result FROM comparisons;
+SELECT CASE WHEN a > 1 THEN comparisons.b ELSE 2 END AS result FROM comparisons;
 
 # execute: true
-SELECT CASE WHEN c THEN a WHEN b = 1 THEN b WHEN TRUE THEN 2 WHEN a = 2 THEN 3 ELSE 4 END AS result FROM comparisons;
-SELECT CASE WHEN c THEN a WHEN b = 1 THEN b ELSE 2 END AS result FROM comparisons;
+SELECT CASE WHEN c THEN comparisons.a WHEN b = 1 THEN comparisons.b WHEN TRUE THEN 2 WHEN a = 2 THEN 3 ELSE 4 END AS result FROM comparisons;
+SELECT CASE WHEN c THEN comparisons.a WHEN b = 1 THEN comparisons.b ELSE 2 END AS result FROM comparisons;
 
 # execute: true
-SELECT CASE 1 WHEN a THEN b WHEN 1 THEN 2 ELSE 3 END AS result FROM comparisons;
-SELECT CASE WHEN a = 1 THEN b ELSE 2 END AS result FROM comparisons;
+SELECT CASE 1 WHEN a THEN comparisons.b WHEN 1 THEN 2 ELSE 3 END AS result FROM comparisons;
+SELECT CASE WHEN a = 1 THEN comparisons.b ELSE 2 END AS result FROM comparisons;
 
 CASE NULL WHEN NULL THEN x ELSE y END;
-y;
+CASE WHEN NULL THEN x ELSE y END;
 
 CASE 4 WHEN 1 THEN x WHEN 2 THEN y WHEN 3 THEN z ELSE w END;
-w;
+CASE WHEN FALSE THEN x WHEN FALSE THEN y WHEN FALSE THEN z ELSE w END;
 
 CASE 4 WHEN 1 THEN x WHEN 2 THEN y WHEN 3 THEN z WHEN 4 THEN w END;
-w;
+CASE WHEN FALSE THEN x WHEN FALSE THEN y WHEN FALSE THEN z WHEN TRUE THEN w END;
 
 CASE WHEN value = 1 THEN x ELSE y END;
 CASE WHEN value = 1 THEN x ELSE y END;
 
 CASE WHEN FALSE THEN x END;
-NULL;
+CASE WHEN FALSE THEN x END;
 
 CASE 1 WHEN 1 + 1 THEN x END;
-NULL;
+CASE WHEN FALSE THEN x END;
 
 CASE WHEN cond THEN x ELSE y END;
 CASE WHEN cond THEN x ELSE y END;
@@ -2007,31 +2050,31 @@ CASE WHEN x3 = (x1 + x2) THEN x4 WHEN (x1 + x2) = (x5 + x6) THEN x7 ELSE x8 END;
 
 -- collapsing a CASE under an operator must preserve the grouping of the branch
 x * CASE WHEN FALSE THEN NULL ELSE a - b END;
-x * (a - b);
+x * CASE WHEN FALSE THEN NULL ELSE a - b END;
 
 x * (CASE WHEN 1 IS NULL THEN NULL ELSE 1 - b END);
-x * (1 - b);
+x * CASE WHEN FALSE THEN NULL ELSE 1 - b END;
 
 x - CASE WHEN TRUE THEN a + b ELSE c END;
-x - (a + b);
+x - CASE WHEN TRUE THEN a + b ELSE c END;
 
 CASE WHEN FALSE THEN NULL ELSE a - b END * x;
-(a - b) * x;
+CASE WHEN FALSE THEN NULL ELSE a - b END * x;
 
 x / CASE WHEN FALSE THEN 1 ELSE a * b END;
-x / (a * b);
+x / CASE WHEN FALSE THEN 1 ELSE a * b END;
 
 x + CASE WHEN TRUE THEN a * b ELSE c END;
-x + a * b;
+x + CASE WHEN TRUE THEN a * b ELSE c END;
 
 x * IF(TRUE, a - b, c);
-x * (a - b);
+x * CASE WHEN TRUE THEN a - b ELSE c END;
 
 x * IF(FALSE, c, a - b);
-x * (a - b);
+x * CASE WHEN FALSE THEN c ELSE a - b END;
 
 x * CASE WHEN TRUE THEN IF(FALSE, c, a - b) ELSE c END;
-x * (a - b);
+x * CASE WHEN TRUE THEN CASE WHEN FALSE THEN c ELSE a - b END ELSE c END;
 
 CASE WHEN TRUE THEN NOT p ELSE FALSE END || 'x';
 (NOT p) || 'x';
@@ -2040,10 +2083,10 @@ IF(FALSE, FALSE, NOT p) || 'x';
 (NOT p) || 'x';
 
 NOT CASE WHEN TRUE THEN a AND b ELSE c END;
-NOT a OR NOT b;
+NOT CASE WHEN TRUE THEN a AND b ELSE c END;
 
 -CASE WHEN TRUE THEN a + b ELSE c END;
--(a + b);
+-CASE WHEN TRUE THEN a + b ELSE c END;
 
 --------------------------------------
 -- Simplify STARTSWITH

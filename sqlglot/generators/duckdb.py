@@ -41,9 +41,11 @@ from sqlglot.dialects.dialect import (
     WEEK_START_DAY_TO_DOW,
 )
 from sqlglot.generator import unsupported_args
-from sqlglot.helper import find_new_name, is_date_unit, seq_get
+from sqlglot.helper import decode_unicode_escapes, find_new_name, is_date_unit, seq_get
 from sqlglot.optimizer.scope import find_all_in_scope
 from builtins import type as Type
+
+_SIMILAR_TO_REGEX_CHARS = frozenset(r"\|*+?{}()[]")
 
 _CONNECT_BY_ARGS_TO_SKIP = frozenset({"connect", "where", "from_", "with_", "expressions"})
 
@@ -1593,6 +1595,15 @@ def _sha_sql(
     return self.func("UNHEX", result) if is_binary else result
 
 
+def _unqualify_pivot_columns(expression: exp.Expr) -> exp.Expr:
+    # DuckDB requires unqualified pivot expressions. The source and CTEs have their own scope.
+    # https://github.com/duckdb/duckdb/blob/671faf92411182f81dce42ac43de8bfb05d9909e/src/planner/binder/tableref/bind_pivot.cpp#L61-L62
+    for clause in expression.iter_expressions():
+        if clause.arg_key not in ("this", "with_"):
+            transforms.unqualify_columns(clause)
+    return expression
+
+
 class DuckDBGenerator(generator.Generator):
     PARAMETER_TOKEN = "$"
     NAMED_PLACEHOLDER_TOKEN = "$"
@@ -1787,9 +1798,7 @@ class DuckDBGenerator(generator.Generator):
         exp.NextDay: _day_navigation_sql,
         exp.PercentileCont: rename_func("QUANTILE_CONT"),
         exp.PercentileDisc: rename_func("QUANTILE_DISC"),
-        # DuckDB doesn't allow qualified columns inside of PIVOT expressions.
-        # See: https://github.com/duckdb/duckdb/blob/671faf92411182f81dce42ac43de8bfb05d9909e/src/planner/binder/tableref/bind_pivot.cpp#L61-L62
-        exp.Pivot: transforms.preprocess([transforms.unqualify_columns]),
+        exp.Pivot: transforms.preprocess([_unqualify_pivot_columns]),
         exp.PreviousDay: _day_navigation_sql,
         exp.RegexpILike: lambda self, e: self.func(
             "REGEXP_MATCHES", e.this, e.expression, exp.Literal.string("i")
@@ -2470,19 +2479,8 @@ class DuckDBGenerator(generator.Generator):
         # are decoded into the characters, e.g. U&'d\0061t\0061' and U&'d!+000061ta' UESCAPE '!'
         # are both 'data'
         escape = expression.args.get("escape")
-        escape_char = re.escape(escape.name if isinstance(escape, exp.Expr) else "\\")
-        pattern = re.compile(
-            rf"{escape_char}(?:\+([0-9a-fA-F]{{6}})|([0-9a-fA-F]{{4}})|({escape_char}))"
-        )
-
-        def decode(match: re.Match[str]) -> str:
-            if match.group(3):
-                return match.group(3)
-            return chr(int(match.group(1) or match.group(2), 16))
-
-        # A character outside the BMP can be written as a UTF-16 surrogate pair
-        text = (
-            pattern.sub(decode, expression.name).encode("utf-16", "surrogatepass").decode("utf-16")
+        text = decode_unicode_escapes(
+            expression.name, escape.name if isinstance(escape, exp.Expr) else "\\"
         )
         return self.sql(exp.Literal.string(text))
 
@@ -2865,6 +2863,18 @@ class DuckDBGenerator(generator.Generator):
             expression.set("position", position)
 
         return strposition_sql(self, expression)
+
+    def similarto_sql(self, expression: exp.SimilarTo) -> str:
+        pattern = expression.expression.unnest()
+        if (
+            pattern.is_string
+            and not isinstance(expression.parent, exp.Escape)
+            and _SIMILAR_TO_REGEX_CHARS.isdisjoint(pattern.name)
+        ):
+            return self.sql(expression.this.like(pattern))
+
+        self.unsupported("Cannot translate this SIMILAR TO pattern to DuckDB LIKE")
+        return super().similarto_sql(expression)
 
     def substring_sql(self, expression: exp.Substring) -> str:
         if expression.args.get("zero_start"):
@@ -3397,17 +3407,29 @@ class DuckDBGenerator(generator.Generator):
                 func.set("expression", func.this)
                 func.set("this", order_col.this)
 
-        this = self.sql(expression, "this").rstrip(")")
+        this = self.sql(expression, "this").removesuffix(")")
 
         return f"{this}{expression_sql})"
 
     def length_sql(self, expression: exp.Length) -> str:
         arg = expression.this
 
-        # Dialects like BQ and Snowflake also accept binary values as args, so
+        def text_arg(value: exp.Expr) -> exp.Expr:
+            if expression.args.get("null_terminated"):
+                return exp.SplitPart(
+                    this=value.copy(),
+                    delimiter=exp.Chr(expressions=[exp.Literal.number(0)]),
+                    part_index=exp.Literal.number(1),
+                )
+            return value
+
+        # SQLite, BQ and Snowflake also accept binary values as args, so
         # DDB will attempt to infer the type or resort to case/when resolution
-        if not expression.args.get("binary") or arg.is_string:
-            return self.func("LENGTH", arg)
+        if (
+            not (expression.args.get("binary") or expression.args.get("null_terminated"))
+            or arg.is_string
+        ):
+            return self.func("LENGTH", text_arg(arg))
 
         if not arg.type:
             from sqlglot.optimizer.annotate_types import annotate_types
@@ -3415,16 +3437,16 @@ class DuckDBGenerator(generator.Generator):
             arg = annotate_types(arg, dialect=self.dialect)
 
         if arg.is_type(*exp.DataType.TEXT_TYPES):
-            return self.func("LENGTH", arg)
+            return self.func("LENGTH", text_arg(arg))
 
         # We need these casts to make duckdb's static type checker happy
         blob = exp.cast(arg, exp.DType.VARBINARY)
         varchar = exp.cast(arg, exp.DType.VARCHAR)
 
         case = (
-            exp.case(exp.Anonymous(this="TYPEOF", expressions=[arg]))
+            exp.case(exp.Typeof(this=arg.copy()))
             .when(exp.Literal.string("BLOB"), exp.ByteLength(this=blob))
-            .else_(exp.Anonymous(this="LENGTH", expressions=[varchar]))
+            .else_(exp.Length(this=text_arg(varchar)))
         )
         return self.sql(case)
 
@@ -4561,6 +4583,12 @@ class DuckDBGenerator(generator.Generator):
     def autoincrementcolumnconstraint_sql(self, _) -> str:
         self.unsupported("The AUTOINCREMENT column constraint is not supported by DuckDB")
         return ""
+
+    def onconflict_sql(self, expression: exp.OnConflict) -> str:
+        if expression.arg_key == "on_conflict":
+            self.unsupported("DuckDB does not support ON CONFLICT on table or column constraints")
+            return ""
+        return super().onconflict_sql(expression)
 
     def aliases_sql(self, expression: exp.Aliases) -> str:
         this = expression.this

@@ -139,6 +139,7 @@ EXPRESSION_METADATA: ExprMetadataType = {
             exp.Datetime,
             exp.DatetimeAdd,
             exp.DatetimeSub,
+            exp.TsOrDsToDatetime,
         }
     },
     **{
@@ -375,6 +376,7 @@ EXPRESSION_METADATA: ExprMetadataType = {
         expr_type: {"annotator": lambda self, e: self._set_type(e, e.args["to"])}
         for expr_type in {
             exp.Cast,
+            exp.TeradataConversion,
             exp.TryCast,
         }
     },

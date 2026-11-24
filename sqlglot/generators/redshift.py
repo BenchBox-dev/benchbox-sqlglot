@@ -19,6 +19,7 @@ from sqlglot.helper import seq_get
 
 
 class RedshiftGenerator(PostgresGenerator):
+    DATE_PART_WITH_EXPRESSION = "PGDATE_PART"
     EXACT_DIVISION_TYPE = exp.DType.DOUBLE
     LOCKING_READS_SUPPORTED = False
     QUERY_HINTS = False
@@ -383,6 +384,9 @@ class RedshiftGenerator(PostgresGenerator):
         return f"SET{exprs}{location}{file_format}"
 
     def arraysize_sql(self, expression: exp.ArraySize) -> str:
+        if not expression.expression:
+            return self.func("GET_ARRAY_LENGTH", expression.this)
+
         return Generator.arraysize_sql(self, expression)
 
     def array_sql(self, expression: exp.Array) -> str:

@@ -303,7 +303,6 @@ class ClickHouseGenerator(generator.Generator):
         exp.ArrayContains: rename_func("has"),
         exp.ArrayFilter: lambda self, e: self.func("arrayFilter", e.expression, e.this),
         exp.Transform: lambda self, e: self.func("arrayMap", e.expression, e.this),
-        exp.ArrayRemove: remove_from_array_using_filter,
         exp.ArrayReverse: rename_func("arrayReverse"),
         exp.ArraySort: _array_sort_sql,
         exp.ArraySlice: rename_func("arraySlice"),
@@ -449,6 +448,32 @@ class ClickHouseGenerator(generator.Generator):
         exp.DType.POLYGON,
         exp.DType.MULTIPOLYGON,
     }
+
+    def arrayremove_sql(self, expression: exp.ArrayRemove) -> str:
+        return remove_from_array_using_filter(
+            self,
+            expression,
+            keep=lambda element, target: exp.ArrayContains(
+                this=exp.array(target), expression=element
+            ).not_(),
+            supports_nullable_arrays=False,
+        )
+
+    def dot_sql(self, expression: exp.Dot) -> str:
+        if depth := expression.args.get("subcolumn_depth"):
+            root: exp.Expr = expression
+            fields: list[str] = []
+            while isinstance(root, exp.Dot) and len(fields) < depth:
+                fields.append(root.expression.name)
+                root = root.this
+
+            # expr.a.b performs two lookups, while a column path resolves the entire subcolumn.
+            if len(fields) == depth and not isinstance(root, exp.Column):
+                return self.func(
+                    "getSubcolumn", root, exp.Literal.string(".".join(reversed(fields)))
+                )
+
+        return super().dot_sql(expression)
 
     @unsupported_args("json_scope")
     def contains_sql(self, expression: exp.Contains) -> str:

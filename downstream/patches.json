@@ -2,11 +2,11 @@
   "schema": 1,
   "distribution": "benchbox-sqlglot",
   "import_package": "benchbox._vendor.sqlglot",
-  "version": "30.33.0.1",
+  "version": "30.35.0.1",
   "upstream": {
     "repository": "https://github.com/tobymao/sqlglot",
-    "tag": "v30.33.0",
-    "sha": "0936dbe9192a3b57c6e6992acfcb93d4b429c51f"
+    "tag": "v30.35.0",
+    "sha": "324cdefc4abf291f997c8b241f40c0f5444896a5"
   },
   "infrastructure": [
     {
@@ -64,32 +64,17 @@
     {
       "id": "postgres-extract-return-types",
       "source": "eb360e1e2962b467ca093b9f6ab1000f9ced1a02",
-      "status": "carried",
-      "upstream_state": "offered",
+      "status": "upstreamed",
       "upstream": [
         "https://github.com/tobymao/sqlglot/issues/9272",
         "https://github.com/tobymao/sqlglot/pull/9288"
       ],
-      "upstream_reason": "Upstream fixed tobymao/sqlglot#9272 in #9288 (ca0d9539) with a date_part arg instead of this patch's return_type. downstream/staged/postgres-extract-return-types.retire.json retires this patch at the first refresh onto a tag containing that commit; the SQLite entries that read the return type are staged to read date_part.",
-      "depends": [],
-      "paths": [
-        "sqlglot/expressions/temporal.py",
-        "sqlglot/generators/postgres.py",
-        "sqlglot/optimizer/annotate_types.py",
-        "sqlglot/parsers/postgres.py",
-        "sqlglot/parsers/redshift.py",
-        "tests/dialects/test_postgres.py",
-        "tests/dialects/test_redshift.py",
-        "tests/fixtures/optimizer/annotate_types.sql"
-      ],
       "tests": [
-        "tests.dialects.test_postgres",
-        "tests.dialects.test_redshift",
-        "tests.test_optimizer",
-        "tests.test_serde"
+        "tests.dialects.test_postgres.TestPostgres.test_postgres",
+        "tests.dialects.test_redshift.TestRedshift.test_quoted_date_part",
+        "tests.test_optimizer.TestOptimizer.test_annotate_types"
       ],
-      "reason": "Preserve PostgreSQL EXTRACT numeric and DATE_PART double semantics while retaining Redshift input-dependent typing.",
-      "patch": "downstream/patches/postgres-extract-return-types.patch"
+      "reason": "Upstream #9288 types PostgreSQL EXTRACT as DECIMAL (DOUBLE before PostgreSQL 14) and DATE_PART as DOUBLE, marks DATE_PART with a date_part arg, and writes it back as DATE_PART; Redshift keeps input-dependent EXTRACT typing. The fork's SQLite extraction reads date_part instead of this patch's return_type arg."
     },
     {
       "id": "sqlite-date-extraction",
@@ -377,47 +362,27 @@
     {
       "id": "sqlite-date-day-arithmetic",
       "source": "a83f3dd0d29fbeda10ea1606e0903461ba1c4abc",
-      "status": "carried",
-      "upstream_state": "not_offered",
+      "status": "upstreamed",
       "upstream": [
         "https://github.com/tobymao/sqlglot/issues/9271",
         "https://github.com/tobymao/sqlglot/pull/9287"
       ],
-      "upstream_reason": "Replaced upstream by #9287 and earlier DATE_SUB lowering; downstream/staged/sqlite-date-day-arithmetic.retire.json retires it at the first refresh onto a tag containing 679c8c99.",
-      "depends": [
-        "sqlite-temporal-lowering"
-      ],
-      "paths": [
-        "sqlglot/generators/sqlite.py",
-        "tests/dialects/test_sqlite.py"
-      ],
       "tests": [
-        "tests.dialects.test_sqlite"
+        "tests.dialects.test_sqlite.TestSQLite.test_datediff_day_boundary"
       ],
-      "reason": "Write DATEDIFF in DAY units without an unsupported warning and write DATE_SUB as DATE(x, '-N UNIT'), so day differences and relative dates round-trip to SQLite.",
-      "patch": "downstream/patches/sqlite-date-day-arithmetic.patch"
+      "reason": "Upstream writes DATEDIFF in DAY units without an unsupported warning and, since #9287, counts calendar-day boundaries; DATE_SUB was already lowered upstream. This patch only added an equivalent DAY branch."
     },
     {
       "id": "sqlite-day-offset-date",
       "source": "7b929efa68cdd9a924c11f67b2f9dcac6712aa9a",
-      "status": "carried",
-      "upstream_state": "not_offered",
+      "status": "upstreamed",
       "upstream": [
         "https://github.com/tobymao/sqlglot/pull/9240"
       ],
-      "upstream_reason": "Replaced upstream by #9240, with the fork's DATE-result policy now in sqlite-date-interval-arithmetic; downstream/staged/sqlite-day-offset-date.retire.json retires it at the first refresh onto a tag containing 2d2f1b92.",
-      "depends": [
-        "sqlite-date-day-arithmetic"
-      ],
-      "paths": [
-        "sqlglot/generators/sqlite.py",
-        "tests/dialects/test_sqlite.py"
-      ],
       "tests": [
-        "tests.dialects.test_sqlite"
+        "tests.dialects.test_sqlite.TestSQLite.test_interval_arithmetic_execution"
       ],
-      "reason": "Write a whole-day offset of a DATE (DATE +/- INTERVAL n DAY) as DATE(x, 'n DAY') instead of DATETIME(x, 'n DAY'): DATETIME returns 'YYYY-MM-DD 00:00:00', which sorts after the date text of a DATE column, so d BETWEEN DATETIME(.., '-30 DAY') AND .. dropped the lower boundary day (TPC-DS Q21/Q40). HOUR, MINUTE and SECOND offsets keep DATETIME; TIMESTAMP operands stay Unsupported.",
-      "patch": "downstream/patches/sqlite-day-offset-date.patch"
+      "reason": "Upstream #9240 writes a whole-day offset of a DATE as DATE(x, 'n DAY'), so the result is a DATE and compares correctly with date text. On upstream main 089891f2 the fork and upstream agree on every DATE plus or minus day-interval case of a 390-case comparison on SQLite against DuckDB, including the TPC-DS Q21 BETWEEN shape."
     },
     {
       "id": "sqlite-exact-integer-division",
@@ -730,19 +695,15 @@
     {
       "id": "bigquery-window-nulls-ordering",
       "source": "0d895d597de14053cf10ef386767b7ad04309605",
-      "status": "carried",
-      "upstream_state": "not_offered",
-      "upstream_reason": "Self-contained BigQuery generator fix; an upstream-submission candidate.",
-      "depends": [],
-      "paths": [
-        "sqlglot/generators/bigquery.py",
-        "tests/dialects/test_bigquery.py"
-      ],
+      "status": "upstreamed",
       "tests": [
-        "tests.dialects.test_bigquery"
+        "tests.dialects.test_bigquery.TestBigQuery.test_null_ordering_in_value_windows"
       ],
-      "reason": "BigQuery rejects a non-default NULLS FIRST/LAST in the window ORDER BY of FIRST_VALUE, LAST_VALUE and NTH_VALUE unless the frame is an explicit ROWS frame. The BigQuery generator drops the clause when the key is a PARTITION BY key (constant per partition, so the result is unchanged) and otherwise sorts on `key IS NULL` first so the NULL placement is kept; a query's own ORDER BY keeps its clause. An upstream-submission candidate that depends on no other fork file.",
-      "patch": "downstream/patches/bigquery-window-nulls-ordering.patch"
+      "reason": "Upstream #9323 writes a non-default NULLS clause in the window ORDER BY of FIRST_VALUE, LAST_VALUE and NTH_VALUE without a ROWS frame as a `key IS NULL` sort key and drops it for a PARTITION BY key, as this patch did, and also inlines a named WINDOW and handles offset RANGE frames. On the v30.35.0 refresh, 22 of 23 DuckDB-to-BigQuery shapes from this patch's tests give the same output as the fork today; the named WINDOW shape, which the patch left with a NULLS LAST that BigQuery rejects, is now inlined. All 23 outputs run on BigQuery (project benchbox-testing) and return DuckDB's rows over data with NULL keys.",
+      "upstream": [
+        "https://github.com/tobymao/sqlglot/issues/9309",
+        "https://github.com/tobymao/sqlglot/pull/9323"
+      ]
     },
     {
       "id": "benchbox-row-sources",
@@ -765,27 +726,15 @@
     {
       "id": "sqlite-set-operation-operands",
       "source": "11bbf0319c08bba01fd19af2135a0a3f669ae9e3",
-      "status": "carried",
-      "upstream_state": "offered",
+      "status": "upstreamed",
       "upstream": [
         "https://github.com/tobymao/sqlglot/issues/9269",
         "https://github.com/tobymao/sqlglot/pull/9285"
       ],
-      "upstream_reason": "Upstream fixed tobymao/sqlglot#9269 in #9285 (0fc1041b), which wraps every parenthesized query operand. downstream/staged/sqlite-set-operation-operands.retire.json retires this patch at the first refresh onto a tag containing that commit.",
-      "depends": [
-        "empty-group-by-generator",
-        "sqlite-date-integer-semantics"
-      ],
-      "paths": [
-        "sqlglot/generator.py",
-        "tests/dialects/test_sqlite.py"
-      ],
       "tests": [
-        "tests.dialects.test_sqlite",
-        "tests.test_generator"
+        "tests.dialects.test_sqlite.TestSQLite.test_parenthesized_set_operands"
       ],
-      "reason": "SQLite rejects a parenthesised operand of UNION, INTERSECT and EXCEPT, so a dialect with SET_OP_PARENTHESIZED_OPERANDS off writes every parenthesised query operand as SELECT * FROM (...) (TPC-DS Q87's (SELECT DISTINCT ...) EXCEPT (SELECT DISTINCT ...) failed with a syntax error). Execution tests compare SQLite with DuckDB rows over EXCEPT, INTERSECT, UNION, ORDER BY and LIMIT operands.",
-      "patch": "downstream/patches/sqlite-set-operation-operands.patch"
+      "reason": "Upstream #9285 rewrites every parenthesized query operand of a set operation as SELECT * FROM (...) when SET_OP_PARENTHESIZED_OPERANDS is off, which covers this patch's plain SELECT, ORDER BY and LIMIT operands."
     },
     {
       "id": "sqlite-grouping-sets-modules",

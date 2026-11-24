@@ -49,6 +49,7 @@ class _TokenizerBase:
     RAW_STRINGS: t.ClassVar[list[str | tuple[str, str]]]
     HEREDOC_STRINGS: t.ClassVar[list[str | tuple[str, str]]]
     UNICODE_STRINGS: t.ClassVar[list[str | tuple[str, str]]]
+    UNICODE_IDENTIFIERS: t.ClassVar[list[str | tuple[str, str]]]
     STRING_ESCAPES: t.ClassVar[list[str]]
     BYTE_STRING_ESCAPES: t.ClassVar[list[str]]
     IDENTIFIER_ESCAPES: t.ClassVar[list[str]]
@@ -68,6 +69,7 @@ class _TokenizerBase:
     NESTED_COMMENTS: t.ClassVar[bool]
     DASH_COMMENT_REQUIRES_BOUNDARY: t.ClassVar[bool]
     COMMENTS_TERMINATE_AT_NEWLINE_ONLY: t.ClassVar[bool]
+    UNQUOTED_PATH_TERMINATORS: t.ClassVar[set[str]]
     TOKENS_PRECEDING_HINT: t.ClassVar[set[TokenType]]
     HEREDOC_STRING_ALTERNATIVE: t.ClassVar[TokenType]
     COMMENTS: t.ClassVar[list[str | tuple[str, str]]]
@@ -98,6 +100,7 @@ class _TokenizerBase:
             **_quotes_to_format(TokenType.RAW_STRING, cls.RAW_STRINGS),
             **_quotes_to_format(TokenType.HEREDOC_STRING, cls.HEREDOC_STRINGS),
             **_quotes_to_format(TokenType.UNICODE_STRING, cls.UNICODE_STRINGS),
+            **_quotes_to_format(TokenType.UNICODE_IDENTIFIER, cls.UNICODE_IDENTIFIERS),
         }
         if not any(
             "BYTE_STRING_ESCAPES" in k.__dict__ for k in cls.__mro__ if k.__module__ != __name__
@@ -167,6 +170,7 @@ class Tokenizer(_TokenizerBase):
     RAW_STRINGS: t.ClassVar[list[str | tuple[str, str]]] = []
     HEREDOC_STRINGS: t.ClassVar[list[str | tuple[str, str]]] = []
     UNICODE_STRINGS: t.ClassVar[list[str | tuple[str, str]]] = []
+    UNICODE_IDENTIFIERS: t.ClassVar[list[str | tuple[str, str]]] = []
     IDENTIFIERS: t.ClassVar[list[str | tuple[str, str]]] = ['"']
     QUOTES: t.ClassVar[list[tuple[str, str] | str]] = ["'"]
     STRING_ESCAPES: t.ClassVar[list[str]] = ["'"]
@@ -212,6 +216,9 @@ class Tokenizer(_TokenizerBase):
     # Whether "--"/"#" line comments are terminated only by "\n", and not also by "\r"
     COMMENTS_TERMINATE_AT_NEWLINE_ONLY = False
 
+    # Punctuation that ends an unquoted stage path or file URI in addition to whitespace.
+    UNQUOTED_PATH_TERMINATORS: t.ClassVar[set[str]] = set()
+
     HINT_START = "/*+"
 
     TOKENS_PRECEDING_HINT = {TokenType.SELECT, TokenType.INSERT, TokenType.UPDATE, TokenType.DELETE}
@@ -236,7 +243,6 @@ class Tokenizer(_TokenizerBase):
         "&>": TokenType.AMP_GT,
         "==": TokenType.EQ,
         "::": TokenType.DCOLON,
-        "?::": TokenType.QDCOLON,
         "||": TokenType.DPIPE,
         "|>": TokenType.PIPE_GT,
         ">=": TokenType.GTE,
@@ -608,6 +614,7 @@ class Tokenizer(_TokenizerBase):
             numeric_escapes_are_bytes=self.NUMERIC_ESCAPES_ARE_BYTES,
             byte_strings_are_bytes=self.dialect.BYTE_STRING_IS_BYTES_TYPE,
             lone_surrogate_replacement=self.LONE_SURROGATE_REPLACEMENT,
+            unquoted_path_terminators=self.UNQUOTED_PATH_TERMINATORS,
         )
 
     def tokenize(self, sql: str) -> list[Token]:
