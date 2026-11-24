@@ -1,9 +1,9 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index e65ff01d3..be32cd0af 100644
+index 7ad96ddd..d3942151 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
-@@ -563,11 +563,47 @@ class SQLiteGenerator(generator.Generator):
-             expression = expression.__class__(this=base.copy(), expression=interval.copy())
+@@ -574,11 +574,49 @@ class SQLiteGenerator(generator.Generator):
+             expression.type = exp.DType.DATE
          return self._date_delta_sql(expression, base, interval)
  
 +    def _is_date(self, node: exp.Expr) -> bool:
@@ -29,10 +29,12 @@ index e65ff01d3..be32cd0af 100644
 +            return self.datediff_sql(exp.DateDiff(this=left, expression=right, unit=exp.var("DAY")))
 +        else:
 +            return None
-+        day = exp.var("DAY")
-+        if isinstance(expression, exp.Sub):
-+            return self.datesub_sql(exp.DateSub(this=left, expression=days, unit=day))
-+        return self.dateadd_sql(exp.DateAdd(this=left, expression=days, unit=day))
++        # The operand is a DATE, so the offset is one too; typing it keeps DATE() without
++        # the unknown-type warning for operands such as CURRENT_DATE.
++        offset_class = exp.DateSub if isinstance(expression, exp.Sub) else exp.DateAdd
++        offset = offset_class(this=left, expression=days, unit=exp.var("DAY"))
++        offset.type = exp.DType.DATE
++        return self.sql(offset)
 +
      def add_sql(self, expression: exp.Add) -> str:
 -        return self._date_interval_sql(expression) or super().add_sql(expression)
@@ -52,7 +54,7 @@ index e65ff01d3..be32cd0af 100644
  
      def interval_sql(self, expression: exp.Interval) -> str:
          self.unsupported("SQLite does not support this INTERVAL expression")
-@@ -588,6 +624,47 @@ class SQLiteGenerator(generator.Generator):
+@@ -599,6 +637,47 @@ class SQLiteGenerator(generator.Generator):
          )
          return self.function_fallback_sql(expression)
  
@@ -101,10 +103,10 @@ index e65ff01d3..be32cd0af 100644
          return self._truncate_sql(expression)
  
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index c52987d1c..30981d7c1 100644
+index 29ce48a0..10b330c0 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
-@@ -2300,3 +2300,141 @@ class TestSQLite(Validator):
+@@ -2415,3 +2415,141 @@ class TestSQLite(Validator):
                      self.validate_all(sql, write={"sqlite": expected, "duckdb": expected})
                      expression = self.parse_one(sql).expressions[0]
                      self.assertIsInstance(expression.this if negate else expression, exp.Is)

@@ -27,10 +27,10 @@ index c0e1fd0c..a0b1eb5e 100644
          if nulls_sort_change and not self.NULL_ORDERING_SUPPORTED:
              window = expression.find_ancestor(exp.Window, exp.Select)
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index c932eeb6..4eec16ba 100644
+index 488772b1..e26b858c 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
-@@ -225,6 +225,9 @@ def _global_having_to_subquery(expression: exp.Expr) -> exp.Expr:
+@@ -232,6 +232,9 @@ def _global_having_to_subquery(expression: exp.Expr) -> exp.Expr:
  
  
  class SQLiteGenerator(generator.Generator):
@@ -41,10 +41,10 @@ index c932eeb6..4eec16ba 100644
      TRY_SUPPORTED = False
      SUPPORTS_UESCAPE = False
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index e4af23ad..807d5cab 100644
+index e1830171..29282186 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
-@@ -2736,3 +2736,26 @@ class TestSQLite(Validator):
+@@ -2651,3 +2651,26 @@ class TestSQLite(Validator):
              with self.subTest(query=query):
                  self.assertEqual(outputs["sqlite"], outputs["duckdb"])
                  self.assertGreater(outputs["duckdb"][0][0], 0)

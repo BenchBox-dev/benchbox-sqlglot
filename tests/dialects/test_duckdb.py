@@ -561,7 +561,7 @@ class TestDuckDB(Validator):
             with self.subTest(keyword=keyword):
                 self.assertEqual(exp.column(keyword).sql("duckdb"), f'"{keyword}"')
 
-    def test_order_by_all(self):
+    def test_order_by_all_read_as_a_column(self):
         # Dialects without the ORDER BY ALL keyword parse ALL as a column; DuckDB must
         # still emit the keyword, with or without identifier quoting.
         for identify, sql in (

@@ -115,13 +115,16 @@
       "id": "sqlite-date-interval-arithmetic",
       "source": "b60935672d3fc52c4982077131d4cb5140a69b72",
       "status": "carried",
-      "upstream_state": "offered",
+      "upstream_state": "not_offered",
       "upstream": [
         "https://github.com/tobymao/sqlglot/issues/9302",
         "https://github.com/tobymao/sqlglot/issues/9303",
-        "https://github.com/tobymao/sqlglot/issues/9304"
+        "https://github.com/tobymao/sqlglot/issues/9304",
+        "https://github.com/tobymao/sqlglot/pull/9316",
+        "https://github.com/tobymao/sqlglot/pull/9317",
+        "https://github.com/tobymao/sqlglot/pull/9318"
       ],
-      "upstream_reason": "Upstream #9240 lowers SQLite interval arithmetic itself; this entry is now only a guard around it for the three cases where upstream's output is wrong, reported as tobymao/sqlglot#9302 (month and year overflow at month end), #9303 (unknown-type operands lose the time) and #9304 (MySQL TIMESTAMP casts become numbers). It retires once upstream fixes them.",
+      "upstream_reason": "Upstream fixed the three cases this entry guarded, tobymao/sqlglot#9302 to #9304, in #9316 to #9318 (v30.34.0). The owner chose on 2026-11-24 to adopt upstream's interval arithmetic in full, so the staged resolution keeps only two things: a DATE plus a day-or-larger interval stays a DATE, a fork policy upstream does not share (it follows the source dialect's result type); and a CURRENT_DATE base is a DATE, which upstream misreports as unknown-type text (CURRENT_DATE - INTERVAL 90 DAY from MySQL raises). The CURRENT_DATE fix is an upstream candidate; not offered yet.",
       "depends": [],
       "paths": [
         "sqlglot/generators/sqlite.py",
@@ -130,7 +133,7 @@
       "tests": [
         "tests.dialects.test_sqlite"
       ],
-      "reason": "x +/- INTERVAL uses upstream's SQLite date modifiers, except where they give a wrong result, which stays Unsupported: a MONTH, QUARTER or YEAR offset unless the base is a NULL or a literal whose day of month is at most 28; a DAY, WEEK, MONTH or YEAR offset of an operand of unknown type, which may hold timestamp text; and any offset of a TIMESTAMPTZ operand. A DATE plus a day-or-larger interval stays a DATE even when the tree is type-annotated, so it compares correctly with date text (TPC-DS Q21 and Q40 boundaries). On upstream main 089891f2, 390 interval cases run on SQLite against DuckDB: every case that worked before gives the same result, 156 more now work, and none is wrong.",
+      "reason": "x +/- INTERVAL uses upstream's SQLite date modifiers. On upstream v30.33.0 the carried patch keeps them Unsupported where upstream's output is wrong (a MONTH, QUARTER or YEAR offset unless the base is a NULL or a literal whose day of month is at most 28; a DAY, WEEK, MONTH or YEAR offset of an operand of unknown type; any offset of a TIMESTAMPTZ operand). From v30.34.0 the staged resolution drops that guard for upstream's fixes: month, quarter and year offsets clamp at month end with SQLite's 'floor' modifier, which needs SQLite 3.46 (older SQLite returns NULL; sqlglot refuses the offset only when the dialect is given an older version). In both, a DATE plus a day-or-larger interval stays a DATE even when the tree is type-annotated, so it compares correctly with date text (TPC-DS Q21 and Q40 boundaries), and the staged resolution treats a CURRENT_DATE base as a DATE. On v30.34.0, 2,288 interval cases run on SQLite 3.54 against DuckDB: every case that worked before gives the same result, 1,064 more now work, and none is wrong.",
       "patch": "downstream/patches/sqlite-date-interval-arithmetic.patch"
     },
     {

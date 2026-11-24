@@ -74,7 +74,7 @@ class SqliteDateIdioms:
         self.assertEqual([number(v) for v in row], [2451545, 4903090, -2451544])
 
     def test_now_is_the_engine_current_date(self):
-        (row,) = self.query("SELECT DATE('now'), DATE('now', '-1 month') < DATE('now')")
+        (row,) = self.query("SELECT DATE('now'), DATE('now', '-30 days') < DATE('now')")
         today = datetime.date.today()
         near = {str(today + datetime.timedelta(days=d)) for d in (-1, 0, 1)}
         self.assertIn(str(row[0])[:10], near)
