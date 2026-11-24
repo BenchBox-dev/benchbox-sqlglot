@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generator.py b/sqlglot/generator.py
-index c0e1fd0c..a0b1eb5e 100644
+index 8f2a89fb..b69abc60 100644
 --- a/sqlglot/generator.py
 +++ b/sqlglot/generator.py
 @@ -301,6 +301,12 @@ class Generator:
@@ -15,7 +15,7 @@ index c0e1fd0c..a0b1eb5e 100644
      # Whether a window ORDER BY accepts an expression, so that an unsupported NULLS FIRST/LAST
      # can be simulated with a leading sort key
      SUPPORTS_NULL_SORT_KEY_IN_WINDOW = True
-@@ -3511,6 +3517,10 @@ class Generator:
+@@ -3519,6 +3525,10 @@ class Generator:
          ):
              nulls_sort_change = " NULLS LAST"
  
@@ -41,10 +41,10 @@ index 488772b1..e26b858c 100644
      TRY_SUPPORTED = False
      SUPPORTS_UESCAPE = False
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index e1830171..29282186 100644
+index 278743e3..58affd3c 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
-@@ -2651,3 +2651,26 @@ class TestSQLite(Validator):
+@@ -2656,3 +2656,26 @@ class TestSQLite(Validator):
              with self.subTest(query=query):
                  self.assertEqual(outputs["sqlite"], outputs["duckdb"])
                  self.assertGreater(outputs["duckdb"][0][0], 0)

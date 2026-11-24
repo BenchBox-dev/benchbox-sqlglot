@@ -1,5 +1,5 @@
 diff --git a/sqlglot/generator.py b/sqlglot/generator.py
-index 07f9f348..1deda4a5 100644
+index d423f879..817d5f69 100644
 --- a/sqlglot/generator.py
 +++ b/sqlglot/generator.py
 @@ -8,6 +8,7 @@ from decimal import Decimal
@@ -20,7 +20,7 @@ index 07f9f348..1deda4a5 100644
      # The string used for creating an index on a table
      INDEX_ON = "ON"
  
-@@ -4843,6 +4847,9 @@ class Generator:
+@@ -4856,6 +4860,9 @@ class Generator:
              divisor.replace(exp.Nullif(this=divisor.copy(), expression=exp.Literal.number(0)))
  
      def div_sql(self, expression: exp.Div) -> str:
