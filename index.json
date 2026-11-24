@@ -72,15 +72,10 @@
       "title": "Offer the databricks-primary-key-ordering carried patch upstream"
     },
     "offer-upstream-duckdb-order-by-all-keyword-20261114": {
-      "claim": {
-        "expires_at": "2026-11-25T21:59:27Z",
-        "generation": "132235e0a23b488ca56e5ebfbc31e5d5",
-        "renewals": 0,
-        "worker": "mcp:omp-coding-agent:joe@joe-mac-mini.local:dcd6200cab26496c63c901fc"
-      },
+      "claim": null,
       "needs": [],
       "priority": "low",
-      "status": "active",
+      "status": "done",
       "title": "Offer the duckdb-order-by-all-keyword carried patch upstream"
     },
     "offer-upstream-empty-group-by-generator-20261114": {
