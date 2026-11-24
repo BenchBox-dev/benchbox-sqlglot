@@ -58,10 +58,15 @@
       "title": "Triage the not_offered carried patches into owner-approved upstream offers or recorded declines"
     },
     "offer-upstream-bigquery-window-nulls-ordering-20261114": {
-      "claim": null,
+      "claim": {
+        "expires_at": "2026-11-25T21:59:23Z",
+        "generation": "85a565dfcc224684b6a192592cefde52",
+        "renewals": 0,
+        "worker": "mcp:omp-coding-agent:joe@joe-mac-mini.local:dcd6200cab26496c63c901fc"
+      },
       "needs": [],
       "priority": "low",
-      "status": "open",
+      "status": "active",
       "title": "Offer the bigquery-window-nulls-ordering carried patch upstream"
     },
     "offer-upstream-databricks-primary-key-ordering-20261114": {
