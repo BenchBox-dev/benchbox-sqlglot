@@ -154,10 +154,15 @@
       "title": "Adapt the five carried patches that conflict with upstream v30.33.0 and ship benchbox-sqlglot 30.33.0.1"
     },
     "refresh-upstream-v30-34-0-sqlite-conflicts-20261124": {
-      "claim": null,
+      "claim": {
+        "expires_at": "2026-11-25T20:06:10Z",
+        "generation": "c52674fa317c4a15ab80ea4c31ab0ae7",
+        "renewals": 0,
+        "worker": "mcp:omp-coding-agent:joe@joe-mac-mini.local:dcd6200cab26496c63c901fc"
+      },
       "needs": [],
       "priority": "high",
-      "status": "open",
+      "status": "active",
       "title": "Stage the nine SQLite patches that conflict with upstream v30.34.0 and merge the refresh"
     },
     "sqlglot-controller-mergeability-retry-misses-new-hold-20261107": {
