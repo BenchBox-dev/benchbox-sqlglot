@@ -4,6 +4,7 @@
     "the staging PR merges to main with checks green",
     "the controller refresh PR onto v30.34.0 merges and drift issues #137-#145 close"
   ],
+  "closing_note": "Done 2026-11-24. The fork refreshed onto upstream v30.35.0 (upstream tagged it during this work, so the controller targeted it rather than v30.34.0). Controller refresh PR BenchBox-dev/benchbox-sqlglot#151 was merged by the App as a235246d; verified delivery built benchbox_sqlglot-30.35.0.1 (sha256 703dfcca...). Path: #148 staged 12 SQLite entries (owner chose full convergence on upstream interval arithmetic; DATE-stays-DATE and CURRENT_DATE-as-DATE kept; 2,288-case SQLite-vs-DuckDB harness: 0 regressions, 1,064 newly correct, 0 wrong); #150 retired bigquery-window-nulls-ordering for upstream #9323 (23 shapes run on BigQuery, DuckDB rows match); #152 guarded three execution tests below SQLite 3.46 after #151 failed on CI's SQLite 3.37.2 (verified with pysqlite3 built on 3.37.2). A controller publish raced GitHub's head read (#153, publish-refused); a retry dispatch finalized the marker and merged. Drift issues #137-#145, #146 and #153 are closed. Known consequence recorded in ENGINE-GAPS.md: SQLite month/quarter/year offsets return NULL on SQLite < 3.46 because BenchBox passes no SQLite version.",
   "context": "2026-11-24: owner decision (choice dialog): converge fully on upstream v30.34.0 SQLite interval arithmetic (options were keep guard / middle / converge). Evidence: 2,288-case harness, SQLite 3.54 vs DuckDB: current fork 768 correct; converge 1,832 correct, 0 wrong, 0 regressions; on SQLite 3.45.3, 576 of the new month/quarter/year cases return NULL (floor modifier needs 3.46; BenchBox passes no SQLite version). Staging PR https://github.com/BenchBox-dev/benchbox-sqlglot/pull/148 (branch fix/stage-sqlite-v30.34.0, 01ce25c9): staged resolutions for 12 entries; sqlite-date-interval-arithmetic reduced to DATE-stays-DATE plus CURRENT_DATE-as-DATE (upstream false positive: CURRENT_DATE - INTERVAL 90 DAY from MySQL raises); date-integer-semantics types its day offset as DATE; date-literals keeps upstream TIMESTAMPTZ cast; duckdb-order-by-all-keyword test renamed (upstream test_order_by_all was shadowed). Verified: refresh auto --tag v30.34.0 in a fresh clone of the branch -> refreshed, 30.34.0.1, 50 entries, 4 retired; integration tree 3151 tests OK except 2 env errors (test_lazy_load, test_sqlglotc), ruff 0.15.6 clean. Drift probe vs upstream main c2a40c58: only bigquery-window-nulls-ordering fails (upstream #9323 landed after the tag) - follow-up, not this refresh.",
   "description": "Upstream v30.34.0 (4caae634) contains SQLite interval changes (#9316, #9317, #9318 and earlier) that stop nine carried SQLite patches from applying (drift issues BenchBox-dev/benchbox-sqlglot#137-#145). refresh auto --tag v30.34.0 stops with status conflict at sqlite-date-interval-arithmetic, so the controller cannot refresh.",
   "sessions": [
@@ -30,6 +31,15 @@
       "client": "omp-coding-agent",
       "op": "update",
       "op_id": "2c13e626b87c46ba99a6ab0623e7a669",
+      "session_id": "fc457bbf0f744d749038c0bbe63c2c57"
+    },
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:dcd6200cab26496c63c901fc",
+      "at": "2026-11-24T21:59:20Z",
+      "client": "omp-coding-agent",
+      "generation": "c52674fa317c4a15ab80ea4c31ab0ae7",
+      "op": "finish",
+      "op_id": "f8c474abc630454db676e80342b0be72",
       "session_id": "fc457bbf0f744d749038c0bbe63c2c57"
     }
   ]
