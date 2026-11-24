@@ -1,0 +1,11 @@
+{
+  "commit": "17fd48f5a2ade9838187be1dd7662604b040be8f",
+  "upstream": [
+    "https://github.com/tobymao/sqlglot/issues/9309",
+    "https://github.com/tobymao/sqlglot/pull/9323"
+  ],
+  "tests": [
+    "tests.dialects.test_bigquery.TestBigQuery.test_null_ordering_in_value_windows"
+  ],
+  "reason": "Upstream #9323 writes a non-default NULLS clause in the window ORDER BY of FIRST_VALUE, LAST_VALUE and NTH_VALUE without a ROWS frame as a `key IS NULL` sort key and drops it for a PARTITION BY key, as this patch did, and also inlines a named WINDOW and handles offset RANGE frames. On v30.35.0, 21 of the patch's 23 test shapes give identical output; the named WINDOW case, which the patch left invalid, is now valid, and the aggregate-window case is unchanged by this entry."
+}
