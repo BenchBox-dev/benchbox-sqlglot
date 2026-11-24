@@ -1,0 +1,18 @@
+{
+  "acceptance": [
+    "downstream/staged resolutions let refresh auto --tag v30.34.0 finish with status refreshed in a fresh clone",
+    "the staging PR merges to main with checks green",
+    "the controller refresh PR onto v30.34.0 merges and drift issues #137-#145 close"
+  ],
+  "description": "Upstream v30.34.0 (4caae634) contains SQLite interval changes (#9316, #9317, #9318 and earlier) that stop nine carried SQLite patches from applying (drift issues BenchBox-dev/benchbox-sqlglot#137-#145). refresh auto --tag v30.34.0 stops with status conflict at sqlite-date-interval-arithmetic, so the controller cannot refresh.",
+  "sessions": [
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:dcd6200cab26496c63c901fc",
+      "at": "2026-11-24T20:06:07Z",
+      "client": "omp-coding-agent",
+      "op": "create",
+      "op_id": "ee8cf1bc9c8348e9aa045190ed4b8c69",
+      "session_id": "fc457bbf0f744d749038c0bbe63c2c57"
+    }
+  ]
+}
