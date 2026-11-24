@@ -217,8 +217,13 @@
       "id": "duckdb-order-by-all-keyword",
       "source": "0e0e27da679d7c807a2ffafbdf87a95b01820e65",
       "status": "carried",
-      "upstream_state": "not_offered",
-      "upstream_reason": "Self-contained DuckDB generator fix; an upstream-submission candidate.",
+      "upstream_state": "declined",
+      "upstream": [
+        "https://github.com/tobymao/sqlglot/issues/9310",
+        "https://github.com/tobymao/sqlglot/issues/9331",
+        "https://github.com/tobymao/sqlglot/pull/9332"
+      ],
+      "upstream_reason": "Upstream closed tobymao/sqlglot#9310, which offered this patch for PostgreSQL input, as not planned: PostgreSQL has no ORDER BY ALL. It fixed the narrower case it asked for, tobymao/sqlglot#9331, in #9332 (v30.34.0), so ClickHouse and Snowflake now parse ORDER BY ALL as the keyword. The fork keeps this patch for sources that parse ALL as a column, such as PostgreSQL.",
       "depends": [],
       "paths": [
         "sqlglot/generators/duckdb.py",
