@@ -65,7 +65,7 @@ index 80642c0b..488772b1 100644
                  transforms.eliminate_qualify,
                  transforms.eliminate_semi_and_anti_joins,
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index c34cb64d..e1830171 100644
+index 1d163056..278743e3 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
 @@ -294,13 +294,16 @@ class TestSQLite(Validator):

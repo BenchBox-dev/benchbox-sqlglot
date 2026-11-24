@@ -166,10 +166,10 @@ index a761bf9b..80642c0b 100644
              return self.func("TIME", expression.this)
          if expression.is_type("json", "jsonb"):
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index 10b330c0..c34cb64d 100644
+index 4b1c1d38..1d163056 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
-@@ -2553,3 +2553,100 @@ class TestSQLite(Validator):
+@@ -2554,3 +2554,104 @@ class TestSQLite(Validator):
                          ]
                  with self.subTest(dialect=dialect, query=query):
                      self.assertEqual(outputs["sqlite"], outputs["duckdb"])
@@ -242,7 +242,7 @@ index 10b330c0..c34cb64d 100644
 +        from sqlglot.benchbox.rewrites import mark_date_columns
 +
 +        rows = ("1999-01-31", "1999-02-01", "1999-02-15", "1999-05-01", "1999-12-01", "2000-02-01")
-+        queries = (
++        queries = [
 +            "SELECT COUNT(*) FROM t WHERE d BETWEEN CAST('1999-2-01' AS DATE) "
 +            "AND CAST('1999-2-01' AS DATE) + INTERVAL '60' DAY",
 +            "SELECT COUNT(*) FROM t WHERE d >= DATE '1999-2-1' AND d < DATE '1999-5-1'",
@@ -250,8 +250,12 @@ index 10b330c0..c34cb64d 100644
 +            "SELECT COUNT(*) FROM t WHERE d IN ('1999-2-1', '1999-5-1', '2000-2-1')",
 +            "SELECT COUNT(*) FROM t WHERE d BETWEEN '1999-2-1' AND '1999-5-1'",
 +            "SELECT COUNT(*) FROM t WHERE d > '1999-2-1' AND d < '1999-12-1'",
-+            "SELECT COUNT(*) FROM t WHERE d <= CAST('1999-12-1' AS DATE) - INTERVAL '1' MONTH",
-+        )
++        ]
++        # A month offset clamps with SQLite's 'floor' modifier, which needs SQLite 3.46
++        if sqlite3.sqlite_version_info >= (3, 46):
++            queries.append(
++                "SELECT COUNT(*) FROM t WHERE d <= CAST('1999-12-1' AS DATE) - INTERVAL '1' MONTH"
++            )
 +        for query in queries:
 +            outputs = {}
 +            for engine in ("sqlite", "duckdb"):

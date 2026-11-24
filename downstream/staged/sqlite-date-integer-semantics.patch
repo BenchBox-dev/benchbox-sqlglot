@@ -103,10 +103,10 @@ index 7ad96ddd..d3942151 100644
          return self._truncate_sql(expression)
  
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index 29ce48a0..10b330c0 100644
+index 0026d293..4b1c1d38 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
-@@ -2415,3 +2415,141 @@ class TestSQLite(Validator):
+@@ -2416,3 +2416,141 @@ class TestSQLite(Validator):
                      self.validate_all(sql, write={"sqlite": expected, "duckdb": expected})
                      expression = self.parse_one(sql).expressions[0]
                      self.assertIsInstance(expression.this if negate else expression, exp.Is)
