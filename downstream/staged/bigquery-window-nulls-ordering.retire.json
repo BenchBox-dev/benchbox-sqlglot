@@ -7,5 +7,5 @@
   "tests": [
     "tests.dialects.test_bigquery.TestBigQuery.test_null_ordering_in_value_windows"
   ],
-  "reason": "Upstream #9323 writes a non-default NULLS clause in the window ORDER BY of FIRST_VALUE, LAST_VALUE and NTH_VALUE without a ROWS frame as a `key IS NULL` sort key and drops it for a PARTITION BY key, as this patch did, and also inlines a named WINDOW and handles offset RANGE frames. On v30.35.0, 21 of the patch's 23 test shapes give identical output; the named WINDOW case, which the patch left invalid, is now valid, and the aggregate-window case is unchanged by this entry."
+  "reason": "Upstream #9323 writes a non-default NULLS clause in the window ORDER BY of FIRST_VALUE, LAST_VALUE and NTH_VALUE without a ROWS frame as a `key IS NULL` sort key and drops it for a PARTITION BY key, as this patch did, and also inlines a named WINDOW and handles offset RANGE frames. On the v30.35.0 refresh, 22 of 23 DuckDB-to-BigQuery shapes from this patch's tests give the same output as the fork today; the named WINDOW shape, which the patch left with a NULLS LAST that BigQuery rejects, is now inlined. All 23 outputs run on BigQuery (project benchbox-testing) and return DuckDB's rows over data with NULL keys."
 }

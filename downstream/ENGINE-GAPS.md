@@ -66,7 +66,7 @@ subqueries and ordered list aggregates execute on Postgres, DuckDB, DataFusion a
 drop runs on all four (DataFusion and PySpark also assert the engine rejects the original); the ClickHouse `FILTER` combinators run on chDB. The BigQuery `COUNTIF`/`IF` shapes execute as
 BigQuery text transpiled to each engine, because BigQuery itself is a gap above; Trino and Presto get
 the same generic `IF` form executed on the four engines, not on Trino. The Snowflake `GROUP BY ()` drop and
-the BigQuery `FIRST_VALUE`/`LAST_VALUE`/`NTH_VALUE` window NULLS handling (`bigquery-window-nulls-ordering`) are AST/golden tests because Snowflake and BigQuery are gaps; BigQuery rejects the clause itself, so the rule comes from BigQuery's grammar and a live BigQuery run of TPC-Havoc 3_v9. The `IS NULL` sort key and the dropped clause are also executed as text on DuckDB (`TestBigQueryValueWindowNullOrderingOnDuckDB`) to prove they order rows as the original clause does.
+the BigQuery `FIRST_VALUE`/`LAST_VALUE`/`NTH_VALUE` window NULLS handling (upstream tobymao/sqlglot#9323 from v30.35.0, the carried `bigquery-window-nulls-ordering` before it) are AST/golden tests because Snowflake and BigQuery are gaps; BigQuery rejects the clause itself, so the rule comes from BigQuery's grammar and a live BigQuery run of TPC-Havoc 3_v9. The `IS NULL` sort key and the dropped clause are also executed as text on DuckDB (`TestBigQueryValueWindowNullOrderingOnDuckDB`) to prove they order rows as the original clause does.
 `tests/test_benchbox_list_aggregates_engines.py` runs the TPC-Havoc `1_v7` query and a NULL/uneven-zip query: DuckDB gives the
 expected rows, the SQLite form executes on `sqlite3` (JSON arrays), the PostgreSQL form (multi-argument `UNNEST`) on the PostgreSQL service (`postgres` job), the DataFusion form (folds pushed into the query that builds the lists) on DataFusion (`in-process` job), the Spark and Databricks forms execute on PySpark (`in-process` job) and the Presto, Trino and Athena forms on Trino
 (`trino` job; Presto and Athena are not engines of their own there). BigQuery's `UNNEST` form is a gap: it executes as its text
@@ -312,7 +312,7 @@ ClickHouse.
 
 - **BigQuery aggregate windows and `NULLS FIRST`/`LAST`.** The BigQuery generator writes a non-default
   `NULLS` clause as a `key IS NULL` sort key only for `FIRST_VALUE`, `LAST_VALUE` and `NTH_VALUE` without a
-  `ROWS` frame (`bigquery-window-nulls-ordering`). For an aggregate window (`SUM(x) OVER (ORDER BY d)`) upstream
+  `ROWS` frame (upstream tobymao/sqlglot#9323 from v30.35.0). For an aggregate window (`SUM(x) OVER (ORDER BY d)`) upstream
   removes the clause and reports an unsupported warning; `test_null_ordering` in `tests/dialects/test_bigquery.py`
   pins that. Rendering the key for aggregate windows too was tried and fails those upstream tests, and
   BigQuery's window grammar lists no `NULLS` modifier at all, with no engine to settle which forms it rejects,

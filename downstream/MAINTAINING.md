@@ -269,8 +269,8 @@ a carried patch: `empty-group-by-generator` (a `SUPPORTS_EMPTY_GROUP_BY` flag in
 Snowflake and Spark; `sqlite-empty-group-by` turns it off for SQLite). The DataFusion generator is a new file, so it needs no patch. `tests/test_benchbox_compat_engines.py` proves each piece on the engines in ENGINE-GAPS.md.
 BigQuery rejects a non-default `NULLS FIRST`/`LAST` in the window `ORDER BY` of `FIRST_VALUE`, `LAST_VALUE` and `NTH_VALUE`
 unless the frame is an explicit `ROWS` frame; the BigQuery generator drops the clause when the key is also a `PARTITION BY`
-key and otherwise sorts on `key IS NULL` first. That is the carried patch `bigquery-window-nulls-ordering`; a query's own
-`ORDER BY` keeps its clause.
+key and otherwise sorts on `key IS NULL` first. Upstream does this itself from v30.35.0 (tobymao/sqlglot#9323); before
+that it was the carried patch `bigquery-window-nulls-ordering`. A query's own `ORDER BY` keeps its clause.
 
 `sqlglot.benchbox.subqueries` is the same kind of module for subquery rewrites: nullability of columns and the schema
 arrive as arguments, no table or query of a benchmark exists in the fork, and the module and its two test
