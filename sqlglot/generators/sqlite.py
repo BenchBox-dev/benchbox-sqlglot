@@ -572,6 +572,25 @@ class SQLiteGenerator(generator.Generator):
     def dateadd_sql(self, expression: exp.DateAdd) -> str:
         return self._date_delta_sql(expression, expression.this, expression.expression)
 
+    @staticmethod
+    def _month_offset_cannot_overflow(base: exp.Expr) -> bool:
+        base = base.unnest()
+        if isinstance(base, (exp.Cast, exp.TryCast)):
+            if not base.is_type(exp.DType.DATE, exp.DType.DATE32):
+                return False
+        elif not (
+            isinstance(base, (exp.Date, exp.TsOrDsToDate, exp.DateStrToDate))
+            and not base.args.get("zone")
+            and not base.args.get("format")
+            and not base.expressions
+        ):
+            return False
+        literal = base.this
+        if not (isinstance(literal, exp.Literal) and literal.is_string):
+            return False
+        date = _canonical_date(literal.name)
+        return date is not None and int(date[-2:]) <= 28
+
     def _date_delta_sql(self, expression: exp.Expr, base: exp.Expr, modifier: exp.Expr) -> str:
         unit = expression.args.get("unit")
         # An INTERVAL amount carries its own unit, e.g. DATE_ADD(d, INTERVAL 1 DAY);
@@ -597,8 +616,11 @@ class SQLiteGenerator(generator.Generator):
             # SQLite otherwise rolls overflowing days into the following month.
             if self.dialect.version >= (3, 46):
                 floor = "'floor'"
-            else:
-                self.unsupported("Clamping month-end interval arithmetic requires SQLite 3.46+")
+            elif not self._month_offset_cannot_overflow(base):
+                self.unsupported(
+                    "Clamping month-end interval arithmetic requires SQLite 3.46+ "
+                    "unless the base is a DATE literal whose day of month is at most 28"
+                )
 
         # DATE + INTERVAL can return DATE or TIMESTAMP depending on the source dialect.
         # A CURRENT_DATE base is a DATE even in a tree that was not type-annotated.

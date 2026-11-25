@@ -520,6 +520,93 @@ class TestSQLite(Validator):
             "SELECT DATE(d, '-1 MONTH') FROM t",
         )
 
+    def test_month_offset_overflow_guard_before_sqlite_3_46(self):
+        old = "sqlite, version=3.45"
+        current = "sqlite, version=3.46"
+        unversioned = "sqlite"
+
+        def generate(sql, dialect, read="postgres", level=ErrorLevel.RAISE):
+            return parse_one(sql, read=read).sql(dialect, unsupported_level=level)
+
+        for sql, plain, floored in (
+            (
+                "SELECT DATE '1994-01-01' + INTERVAL '3 month'",
+                "SELECT DATE(DATE('1994-01-01'), '3 MONTH')",
+                "SELECT DATE(DATE('1994-01-01'), '3 MONTH', 'floor')",
+            ),
+            (
+                "SELECT DATE '1994-01-28' - INTERVAL '1 year'",
+                "SELECT DATE(DATE('1994-01-28'), '-1 YEAR')",
+                "SELECT DATE(DATE('1994-01-28'), '-1 YEAR', 'floor')",
+            ),
+            (
+                "SELECT CAST('1994-01-01' AS DATE) + INTERVAL '1 month'",
+                "SELECT DATE(DATE('1994-01-01'), '1 MONTH')",
+                "SELECT DATE(DATE('1994-01-01'), '1 MONTH', 'floor')",
+            ),
+            (
+                "SELECT DATE '1994-01-15' + INTERVAL '1 year'",
+                "SELECT DATE(DATE('1994-01-15'), '1 YEAR')",
+                "SELECT DATE(DATE('1994-01-15'), '1 YEAR', 'floor')",
+            ),
+        ):
+            with self.subTest(sql=sql):
+                self.assertEqual(generate(sql, old), plain)
+                self.assertEqual(generate(sql, current), floored)
+                self.assertEqual(generate(sql, unversioned), floored)
+
+        for read, sql, plain in (
+            (
+                "mysql",
+                "SELECT DATE_ADD(DATE '1994-01-01', INTERVAL 1 QUARTER)",
+                "SELECT DATE(DATE('1994-01-01'), ('1' * 3) || ' MONTH')",
+            ),
+            (
+                "mysql",
+                "SELECT DATE_SUB(DATE '1994-12-28', INTERVAL 1 YEAR)",
+                "SELECT DATE(DATE('1994-12-28'), '-1 YEAR')",
+            ),
+        ):
+            with self.subTest(sql=sql):
+                self.assertEqual(generate(sql, old, read), plain)
+
+        for read, sql in (
+            ("postgres", "SELECT DATE '1994-01-31' + INTERVAL '1 month'"),
+            ("postgres", "SELECT DATE '1994-01-29' + INTERVAL '1 year'"),
+            ("postgres", "SELECT DATE '1996-02-29' + INTERVAL '1 year'"),
+            ("postgres", "SELECT CAST('1994-01-31' AS DATE) + INTERVAL '1 month'"),
+            ("mysql", "SELECT DATE_ADD(DATE '1994-01-31', INTERVAL 1 QUARTER)"),
+            ("mysql", "SELECT d - INTERVAL 1 MONTH FROM t"),
+            ("mysql", "SELECT CURRENT_DATE + INTERVAL 1 YEAR"),
+            ("postgres", "SELECT CAST('not a date' AS DATE) + INTERVAL '1 month'"),
+            ("postgres", "SELECT CAST('1994-02-30' AS DATE) + INTERVAL '1 month'"),
+            ("postgres", "SELECT CAST(x AS DATE) + INTERVAL '1 month' FROM t"),
+        ):
+            with self.subTest(sql=sql):
+                with self.assertRaisesRegex(UnsupportedError, "requires SQLite 3.46"):
+                    generate(sql, old, read)
+                self.assertIn("'floor'", generate(sql, current, read, ErrorLevel.IGNORE))
+
+        self.assertEqual(
+            generate("SELECT DATE '1994-01-31' + INTERVAL '1 day'", old),
+            "SELECT DATE(DATE('1994-01-31'), '1 DAY')",
+        )
+
+    def test_month_offset_of_a_safe_literal_executes_on_any_sqlite(self):
+        dialect = "sqlite, version=3.45"
+        with closing(sqlite3.connect(":memory:")) as connection:
+            for sql, expected in (
+                ("SELECT DATE '1994-01-01' + INTERVAL '3 month'", "1994-04-01"),
+                ("SELECT DATE '1994-01-28' + INTERVAL '1 month'", "1994-02-28"),
+                ("SELECT DATE '1996-02-28' + INTERVAL '1 year'", "1997-02-28"),
+                ("SELECT DATE '1994-03-15' - INTERVAL '1 year'", "1993-03-15"),
+            ):
+                with self.subTest(sql=sql):
+                    generated = parse_one(sql, read="postgres").sql(
+                        dialect, unsupported_level=ErrorLevel.RAISE
+                    )
+                    self.assertEqual(connection.execute(generated).fetchone(), (expected,))
+
     def test_interval_arithmetic_unknown_type(self):
         for sql in (
             "SELECT ts + INTERVAL 1 DAY FROM t",

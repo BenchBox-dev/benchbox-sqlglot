@@ -1,9 +1,44 @@
 diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
-index 474f3e361..a11608d92 100644
+index 474f3e361..5cfc59a97 100644
 --- a/sqlglot/generators/sqlite.py
 +++ b/sqlglot/generators/sqlite.py
-@@ -453,7 +453,10 @@ class SQLiteGenerator(generator.Generator):
-                 self.unsupported("Clamping month-end interval arithmetic requires SQLite 3.46+")
+@@ -424,6 +424,25 @@ class SQLiteGenerator(generator.Generator):
+     def dateadd_sql(self, expression: exp.DateAdd) -> str:
+         return self._date_delta_sql(expression, expression.this, expression.expression)
+ 
++    @staticmethod
++    def _month_offset_cannot_overflow(base: exp.Expr) -> bool:
++        base = base.unnest()
++        if isinstance(base, (exp.Cast, exp.TryCast)):
++            if not base.is_type(exp.DType.DATE, exp.DType.DATE32):
++                return False
++        elif not (
++            isinstance(base, (exp.Date, exp.TsOrDsToDate, exp.DateStrToDate))
++            and not base.args.get("zone")
++            and not base.args.get("format")
++            and not base.expressions
++        ):
++            return False
++        literal = base.this
++        if not (isinstance(literal, exp.Literal) and literal.is_string):
++            return False
++        date = _canonical_date(literal.name)
++        return date is not None and int(date[-2:]) <= 28
++
+     def _date_delta_sql(self, expression: exp.Expr, base: exp.Expr, modifier: exp.Expr) -> str:
+         unit = expression.args.get("unit")
+         # An INTERVAL amount carries its own unit, e.g. DATE_ADD(d, INTERVAL 1 DAY);
+@@ -449,11 +468,17 @@ class SQLiteGenerator(generator.Generator):
+             # SQLite otherwise rolls overflowing days into the following month.
+             if self.dialect.version >= (3, 46):
+                 floor = "'floor'"
+-            else:
+-                self.unsupported("Clamping month-end interval arithmetic requires SQLite 3.46+")
++            elif not self._month_offset_cannot_overflow(base):
++                self.unsupported(
++                    "Clamping month-end interval arithmetic requires SQLite 3.46+ "
++                    "unless the base is a DATE literal whose day of month is at most 28"
++                )
  
          # DATE + INTERVAL can return DATE or TIMESTAMP depending on the source dialect.
 -        if expression.is_type(exp.DType.DATE, exp.DType.DATE32):
@@ -14,7 +49,7 @@ index 474f3e361..a11608d92 100644
              func = "DATE"
          elif expression.is_type(exp.DType.TIME, exp.DType.TIMETZ):
              func = "TIME"
-@@ -490,22 +493,6 @@ class SQLiteGenerator(generator.Generator):
+@@ -490,22 +515,6 @@ class SQLiteGenerator(generator.Generator):
              modifier = exp.Literal.string(f"{value} {unit.name}" if unit else value)
          return self.func(func, base, modifier, floor)
  
@@ -37,7 +72,7 @@ index 474f3e361..a11608d92 100644
      def datesub_sql(self, expression: exp.DateSub) -> str:
          return self._date_delta_sql(expression, expression.this, expression.expression)
  
-@@ -522,6 +509,33 @@ class SQLiteGenerator(generator.Generator):
+@@ -522,6 +531,33 @@ class SQLiteGenerator(generator.Generator):
              else exp.paren(amount, copy=False)
          )
  
@@ -72,7 +107,7 @@ index 474f3e361..a11608d92 100644
          if expression.is_type("date"):
              return self.func("DATE", expression.this)
 diff --git a/tests/dialects/test_sqlite.py b/tests/dialects/test_sqlite.py
-index 24846d6b3..6d5bf7fd0 100644
+index 24846d6b3..f8485a78c 100644
 --- a/tests/dialects/test_sqlite.py
 +++ b/tests/dialects/test_sqlite.py
 @@ -443,18 +443,10 @@ class TestSQLite(Validator):
@@ -117,7 +152,101 @@ index 24846d6b3..6d5bf7fd0 100644
                  ),
                  (
                      "postgres",
-@@ -565,6 +559,64 @@ class TestSQLite(Validator):
+@@ -523,6 +517,93 @@ class TestSQLite(Validator):
+             "SELECT DATE(d, '-1 MONTH') FROM t",
+         )
+ 
++    def test_month_offset_overflow_guard_before_sqlite_3_46(self):
++        old = "sqlite, version=3.45"
++        current = "sqlite, version=3.46"
++        unversioned = "sqlite"
++
++        def generate(sql, dialect, read="postgres", level=ErrorLevel.RAISE):
++            return parse_one(sql, read=read).sql(dialect, unsupported_level=level)
++
++        for sql, plain, floored in (
++            (
++                "SELECT DATE '1994-01-01' + INTERVAL '3 month'",
++                "SELECT DATE(DATE('1994-01-01'), '3 MONTH')",
++                "SELECT DATE(DATE('1994-01-01'), '3 MONTH', 'floor')",
++            ),
++            (
++                "SELECT DATE '1994-01-28' - INTERVAL '1 year'",
++                "SELECT DATE(DATE('1994-01-28'), '-1 YEAR')",
++                "SELECT DATE(DATE('1994-01-28'), '-1 YEAR', 'floor')",
++            ),
++            (
++                "SELECT CAST('1994-01-01' AS DATE) + INTERVAL '1 month'",
++                "SELECT DATE(DATE('1994-01-01'), '1 MONTH')",
++                "SELECT DATE(DATE('1994-01-01'), '1 MONTH', 'floor')",
++            ),
++            (
++                "SELECT DATE '1994-01-15' + INTERVAL '1 year'",
++                "SELECT DATE(DATE('1994-01-15'), '1 YEAR')",
++                "SELECT DATE(DATE('1994-01-15'), '1 YEAR', 'floor')",
++            ),
++        ):
++            with self.subTest(sql=sql):
++                self.assertEqual(generate(sql, old), plain)
++                self.assertEqual(generate(sql, current), floored)
++                self.assertEqual(generate(sql, unversioned), floored)
++
++        for read, sql, plain in (
++            (
++                "mysql",
++                "SELECT DATE_ADD(DATE '1994-01-01', INTERVAL 1 QUARTER)",
++                "SELECT DATE(DATE('1994-01-01'), ('1' * 3) || ' MONTH')",
++            ),
++            (
++                "mysql",
++                "SELECT DATE_SUB(DATE '1994-12-28', INTERVAL 1 YEAR)",
++                "SELECT DATE(DATE('1994-12-28'), '-1 YEAR')",
++            ),
++        ):
++            with self.subTest(sql=sql):
++                self.assertEqual(generate(sql, old, read), plain)
++
++        for read, sql in (
++            ("postgres", "SELECT DATE '1994-01-31' + INTERVAL '1 month'"),
++            ("postgres", "SELECT DATE '1994-01-29' + INTERVAL '1 year'"),
++            ("postgres", "SELECT DATE '1996-02-29' + INTERVAL '1 year'"),
++            ("postgres", "SELECT CAST('1994-01-31' AS DATE) + INTERVAL '1 month'"),
++            ("mysql", "SELECT DATE_ADD(DATE '1994-01-31', INTERVAL 1 QUARTER)"),
++            ("mysql", "SELECT d - INTERVAL 1 MONTH FROM t"),
++            ("mysql", "SELECT CURRENT_DATE + INTERVAL 1 YEAR"),
++            ("postgres", "SELECT CAST('not a date' AS DATE) + INTERVAL '1 month'"),
++            ("postgres", "SELECT CAST('1994-02-30' AS DATE) + INTERVAL '1 month'"),
++            ("postgres", "SELECT CAST(x AS DATE) + INTERVAL '1 month' FROM t"),
++        ):
++            with self.subTest(sql=sql):
++                with self.assertRaisesRegex(UnsupportedError, "requires SQLite 3.46"):
++                    generate(sql, old, read)
++                self.assertIn("'floor'", generate(sql, current, read, ErrorLevel.IGNORE))
++
++        self.assertEqual(
++            generate("SELECT DATE '1994-01-31' + INTERVAL '1 day'", old),
++            "SELECT DATE(DATE('1994-01-31'), '1 DAY')",
++        )
++
++    def test_month_offset_of_a_safe_literal_executes_on_any_sqlite(self):
++        dialect = "sqlite, version=3.45"
++        with closing(sqlite3.connect(":memory:")) as connection:
++            for sql, expected in (
++                ("SELECT DATE '1994-01-01' + INTERVAL '3 month'", "1994-04-01"),
++                ("SELECT DATE '1994-01-28' + INTERVAL '1 month'", "1994-02-28"),
++                ("SELECT DATE '1996-02-28' + INTERVAL '1 year'", "1997-02-28"),
++                ("SELECT DATE '1994-03-15' - INTERVAL '1 year'", "1993-03-15"),
++            ):
++                with self.subTest(sql=sql):
++                    generated = parse_one(sql, read="postgres").sql(
++                        dialect, unsupported_level=ErrorLevel.RAISE
++                    )
++                    self.assertEqual(connection.execute(generated).fetchone(), (expected,))
++
+     def test_interval_arithmetic_unknown_type(self):
+         for sql in (
+             "SELECT ts + INTERVAL 1 DAY FROM t",
+@@ -565,6 +646,64 @@ class TestSQLite(Validator):
                  with self.assertRaisesRegex(UnsupportedError, "may discard the time"):
                      query.sql("sqlite", unsupported_level=ErrorLevel.RAISE)
  
