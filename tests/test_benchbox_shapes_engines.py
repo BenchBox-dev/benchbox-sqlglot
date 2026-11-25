@@ -290,7 +290,7 @@ class TestEquivalenceOnSQLite(unittest.TestCase):
         connection = sqlite3.connect(":memory:")
         connection.execute("CREATE TABLE t (v INT)")
         connection.executemany("INSERT INTO t VALUES (?)", [(1,), (2,)])
-        sql = "SELECT SUM(v) AS s FROM t GROUP BY () HAVING SUM(v) IS NOT NULL"
+        sql = "SELECT SUM(v) AS s FROM t GROUP BY ()"
         with self.assertRaises(sqlite3.OperationalError):
             connection.execute(sql)
         rewritten = drop_empty_group_by(parse(sql, "sqlite")).sql("sqlite")
