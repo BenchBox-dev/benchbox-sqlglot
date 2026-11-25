@@ -89,6 +89,15 @@ def _build_generate_series(end_exclusive: bool = False) -> t.Callable[[list], ex
     return _builder
 
 
+def _build_array_vector_function(
+    expression_type: type[exp.Expr],
+) -> t.Callable[[list], exp.Expr]:
+    def _build(args: list) -> exp.Expr:
+        return expression_type(this=seq_get(args, 0), expression=seq_get(args, 1), array=True)
+
+    return _build
+
+
 def _build_make_timestamp(args: list) -> exp.Expr:
     if len(args) == 1:
         return exp.UnixToTime(this=seq_get(args, 0), scale=exp.UnixToTime.MICROS)
@@ -180,6 +189,8 @@ class DuckDBParser(parser.Parser):
             lambda args: exp.ArrayDistinct(this=seq_get(args, 0), check_null=False),
         ),
         "ANY_VALUE": lambda args: exp.IgnoreNulls(this=exp.AnyValue.from_arg_list(args)),
+        "ARRAY_COSINE_SIMILARITY": _build_array_vector_function(exp.CosineSimilarity),
+        "ARRAY_DISTANCE": _build_array_vector_function(exp.EuclideanDistance),
         "ARRAY_PREPEND": _build_array_prepend,
         "ARRAY_REVERSE_SORT": _build_list_sort("ARRAY_REVERSE_SORT", desc=True),
         "ARRAY_SORT": _build_list_sort("ARRAY_SORT"),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from sqlglot import exp
 from sqlglot import generator
+from sqlglot.benchbox.extract_parts import epoch_difference, is_day_of_week
 from sqlglot.dialects.dialect import (
     array_append_sql,
     rename_func,
@@ -165,6 +166,18 @@ class SparkGenerator(Spark2Generator):
             )
 
         return super().dateadd_sql(expression)
+
+    def extract_sql(self, expression: exp.Extract) -> str:
+        # Spark has no DOW or EPOCH field; DAYOFWEEK counts from Sunday = 1
+        if is_day_of_week(expression) and not expression.args.get("date_part"):
+            day = exp.DayOfWeek(this=expression.expression.copy())
+            return self.sql(exp.paren(exp.Sub(this=day, expression=exp.Literal.number(1))))
+
+        if epoch := epoch_difference(expression):
+            this, other = (exp.TimeToUnix(this=node.copy()) for node in epoch)
+            return self.sql(exp.paren(exp.Sub(this=this, expression=other)))
+
+        return super().extract_sql(expression)
 
     def ignorenulls_sql(self, expression: exp.IgnoreNulls) -> str:
         return generator.Generator.ignorenulls_sql(self, expression)

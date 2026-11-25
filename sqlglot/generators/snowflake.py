@@ -5,6 +5,7 @@ import typing as t
 from collections import defaultdict
 
 from sqlglot import exp, generator, transforms
+from sqlglot.benchbox.extract_parts import epoch_difference
 from sqlglot.dialects.dialect import (
     array_append_sql,
     array_concat_sql,
@@ -533,9 +534,6 @@ class SnowflakeGenerator(generator.Generator):
         exp.DayOfYear: rename_func("DAYOFYEAR"),
         exp.DotProduct: rename_func("VECTOR_INNER_PRODUCT"),
         exp.Explode: rename_func("FLATTEN"),
-        exp.Extract: lambda self, e: self.func(
-            "DATE_PART", self.extract_date_part(e.this), e.expression
-        ),
         exp.Filter: no_filter_sql,
         exp.CosineDistance: rename_func("VECTOR_COSINE_SIMILARITY"),
         exp.EuclideanDistance: rename_func("VECTOR_L2_DISTANCE"),
@@ -678,6 +676,16 @@ class SnowflakeGenerator(generator.Generator):
             "SHA2_BINARY", e.this, e.args.get("length") or exp.Literal.number(256)
         ),
     }
+
+    def extract_sql(self, expression: exp.Extract) -> str:
+        # DATE_PART(EPOCH, (a - b)) is not a number of seconds for timestamps; DATEDIFF is
+        if epoch := epoch_difference(expression):
+            this, other = epoch
+            return f"({self.func('DATEDIFF', exp.var('second'), other, this)})"
+
+        return self.func(
+            "DATE_PART", self.extract_date_part(expression.this), expression.expression
+        )
 
     def dynamicidentifier_sql(self, expression: exp.DynamicIdentifier) -> str:
         this = self.func("IDENTIFIER", expression.this)
