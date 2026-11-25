@@ -17,6 +17,7 @@ from sqlglot.dialects.dialect import (
     rename_func,
     strposition_sql,
 )
+from sqlglot.benchbox.extract_parts import epoch_difference
 from sqlglot.benchbox.grouping_sets import expand_grouping_sets
 from sqlglot.benchbox.moments import SUPPORTED as MOMENT_AGGREGATES, expand_moments, is_expandable
 from sqlglot.benchbox.pivot import expand_order_by_all, lower_pivots, reject_pivot_sql
@@ -40,6 +41,7 @@ EXTRACT_FORMATS = {
     "HOUR": "%H",
     "MINUTE": "%M",
     "SECOND": "%S",
+    "DOW": "%w",
 }
 DATE_PARTS = {"YEAR", "MONTH", "DAY"}
 TRUNC_FORMATS = {
@@ -514,6 +516,18 @@ class SQLiteGenerator(generator.Generator):
                     exp.DType.INT,
                 )
             )
+        if (epoch := epoch_difference(expression)) and all(
+            self._strftime_input(node, False) for node in epoch
+        ):
+            this, other = (
+                exp.cast(
+                    exp.TimeToStr(this=node.copy(), format=exp.Literal.string("%s")),
+                    exp.DType.INT,
+                )
+                for node in epoch
+            )
+            return self.sql(exp.paren(exp.Sub(this=this, expression=other)))
+
         self.unsupported(
             "SQLite EXTRACT requires a YEAR to SECOND field of an input of unknown type "
             "(YEAR/MONTH/DAY for a DATE) with integer or decimal return semantics"

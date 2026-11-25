@@ -7,6 +7,7 @@ from decimal import Decimal
 from fractions import Fraction
 
 from sqlglot import exp, generator, transforms
+from sqlglot.benchbox.extract_parts import epoch_difference, is_day_of_week
 from sqlglot.dialects.dialect import (
     arg_max_or_min_no_count,
     array_sort_order,
@@ -852,6 +853,18 @@ class BigQueryGenerator(generator.Generator):
         fraction = Fraction(value)
         quantiles = exp.func("APPROX_QUANTILES", expression.this, fraction.denominator, copy=False)
         return self.sql(quantiles[fraction.numerator])
+
+    def extract_sql(self, expression: exp.Extract) -> str:
+        # BigQuery has no DOW field (DAYOFWEEK counts from Sunday = 1) and no EPOCH field
+        if is_day_of_week(expression) and not expression.args.get("date_part"):
+            day = exp.DayOfWeek(this=expression.expression.copy())
+            return self.sql(exp.paren(exp.Sub(this=day, expression=exp.Literal.number(1))))
+
+        if epoch := epoch_difference(expression):
+            this, other = (exp.UnixSeconds(this=exp.Timestamp(this=node.copy())) for node in epoch)
+            return self.sql(exp.paren(exp.Sub(this=this, expression=other)))
+
+        return super().extract_sql(expression)
 
     def weekstart_sql(self, expression: exp.WeekStart) -> str:
         if expression.this.name.upper() == "SUNDAY":

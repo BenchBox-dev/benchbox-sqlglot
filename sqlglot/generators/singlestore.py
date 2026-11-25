@@ -4,6 +4,7 @@ import re
 import typing as t
 
 from sqlglot import exp
+from sqlglot.benchbox.extract_parts import epoch_difference, is_day_of_week
 from sqlglot.dialects.dialect import (
     json_extract_segments,
     json_path_key_only_name,
@@ -23,6 +24,10 @@ from sqlglot.generators.mysql import MySQLGenerator, date_add_sql
 
 def _unicode_substitute(m: re.Match[str]) -> str:
     return chr(int(m.group(1), 16))
+
+
+def _vector_norm(node: exp.Expr) -> exp.Sqrt:
+    return exp.Sqrt(this=exp.DotProduct(this=node.copy(), expression=node.copy()))
 
 
 class SingleStoreGenerator(MySQLGenerator):
@@ -1422,6 +1427,38 @@ class SingleStoreGenerator(MySQLGenerator):
         "zerofill",
         "zone",
     }
+
+    def extract_sql(self, expression: exp.Extract) -> str:
+        # DAYOFWEEK counts from Sunday = 1. MySQL's EPOCH rewrite, UNIX_TIMESTAMP(a - b), reads the
+        # subtraction as a number, so a difference of two datetimes is written with TIMESTAMPDIFF
+        if is_day_of_week(expression) and not expression.args.get("date_part"):
+            day = exp.DayOfWeek(this=expression.expression.copy())
+            return self.sql(exp.paren(exp.Sub(this=day, expression=exp.Literal.number(1))))
+
+        if epoch := epoch_difference(expression):
+            this, other = epoch
+            return self.func("TIMESTAMPDIFF", exp.var("SECOND"), other, this)
+
+        return super().extract_sql(expression)
+
+    def euclideandistance_sql(self, expression: exp.EuclideanDistance) -> str:
+        return self.func("EUCLIDEAN_DISTANCE", expression.this, expression.expression)
+
+    def cosinesimilarity_sql(self, expression: exp.CosineSimilarity) -> str:
+        # SingleStore has DOT_PRODUCT but no cosine function: dot(a, b) / (|a| * |b|), NULL for a zero vector
+        this, other = expression.this, expression.expression
+        similarity: exp.Expr = exp.Div(
+            this=exp.DotProduct(this=this.copy(), expression=other.copy()),
+            expression=exp.Nullif(
+                this=exp.Mul(this=_vector_norm(this), expression=_vector_norm(other)),
+                expression=exp.Literal.number(0),
+            ),
+            typed=False,
+            safe=False,
+        )
+        if isinstance(expression.parent, (exp.Binary, exp.Unary)):
+            similarity = exp.paren(similarity, copy=False)
+        return self.sql(similarity)
 
     def isascii_sql(self, expression: exp.IsAscii) -> str:
         return self.sql(

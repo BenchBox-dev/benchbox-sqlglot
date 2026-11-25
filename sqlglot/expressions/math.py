@@ -99,12 +99,18 @@ class CosineDistance(Expression, Func):
     arg_types = {"this": True, "expression": True}
 
 
+class CosineSimilarity(Expression, Func):
+    # `array` marks DuckDB's ARRAY_COSINE_SIMILARITY, which reads fixed-size arrays (the LIST_ form reads lists)
+    arg_types = {"this": True, "expression": True, "array": False}
+
+
 class DotProduct(Expression, Func):
     arg_types = {"this": True, "expression": True}
 
 
 class EuclideanDistance(Expression, Func):
-    arg_types = {"this": True, "expression": True}
+    # `array` marks DuckDB's ARRAY_DISTANCE, which reads fixed-size arrays (LIST_DISTANCE reads lists)
+    arg_types = {"this": True, "expression": True, "array": False}
 
 
 class JarowinklerSimilarity(Expression, Func):

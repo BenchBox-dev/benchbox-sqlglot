@@ -377,6 +377,25 @@ is the carried patch `sqlite-pivot-lowering`; the module, the DataFusion generat
 entry `pivot-lowering`. PostgreSQL and the other generators that map `Pivot` to `no_pivot_sql` still drop it with a
 warning.
 
+`sqlglot.benchbox.series.lower_series_selects(expression, dialect)` (an `original` file, entry `series-select-lowering`)
+follows the same rule: the alias and both bounds come from the query, and no table or benchmark is named. It writes
+`SELECT unnest(generate_series(lo, hi)) AS n` as a recursive CTE on SQLite, `numbers()` on Doris, a digit cross join on
+SingleStore (no series function, no table function), table functions on Snowflake, BigQuery, QuestDB and StarRocks, and
+`generate_series(lo, hi)` without `unnest` on PostgreSQL; any other dialect raises `ValueError`, so the caller gates by
+dialect. BenchBox keeps its transaction-control handling (isolation levels) outside the fork. The QuestDB generator writes
+`exp.CurrentTimestamp` without a precision as `now()` (`platform-dialect-modules`, no patch because the file is an original).
+
+Behavior that belongs to one dialect's output stays a generator change and a carried patch.
+`extract-day-epoch-generators` writes `EXTRACT(DOW FROM x)` and `EXTRACT(EPOCH FROM (a - b))` in the BigQuery, Spark
+(and so Databricks), SingleStore, SQLite and Snowflake generators; `sqlglot/benchbox/extract_parts.py` (`original`
+entry `extract-parts`) only finds the two shapes. The SingleStore difference is `TIMESTAMPDIFF(SECOND, b, a)`: before the
+patch SingleStore wrote the MySQL form `UNIX_TIMESTAMP((a - b))`, which subtracts two datetimes as numbers.
+`vector-similarity-functions` reads DuckDB's `ARRAY_DISTANCE` and `ARRAY_COSINE_SIMILARITY` into `EuclideanDistance`
+and a new `CosineSimilarity` expression (`array=True` records the DuckDB spelling, which reads fixed-size arrays) and
+writes them for SingleStore as `EUCLIDEAN_DISTANCE` and the `DOT_PRODUCT` cosine formula; DuckDB writes the `ARRAY_` and
+`LIST_` spellings back. `tests/test_benchbox_vector_functions.py` runs the formula on DuckDB (`ARRAY_INNER_PRODUCT` for
+`DOT_PRODUCT`) against the native function.
+
 `ansi` and `standard` are not dialects the fork provides, and the fork has no alias
 dialects. The caller resolves them before calling SQLGlot: BenchBox's platform
 registry maps `ansi` and `standard` (and every platform name) to a dialect that

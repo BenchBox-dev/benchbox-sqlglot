@@ -42,6 +42,36 @@ class TestQuestDB(Validator):
         self.assertIs(Dialect.get_or_raise(Dialects.QUESTDB).__class__, type(dialect))
         self.assertIsInstance(parse_one("x::INT", read="questdb"), exp.Cast)
 
+    def test_current_timestamp_is_now(self):
+        self.validate_all(
+            "SELECT now()",
+            read={
+                "duckdb": "SELECT CURRENT_TIMESTAMP",
+                "postgres": "SELECT CURRENT_TIMESTAMP",
+                "questdb": "SELECT CURRENT_TIMESTAMP",
+                "snowflake": "SELECT CURRENT_TIMESTAMP()",
+            },
+        )
+        self.validate_all(
+            "INSERT INTO t (id, ts) VALUES (1, now())",
+            read={"postgres": "INSERT INTO t (id, ts) VALUES (1, CURRENT_TIMESTAMP)"},
+        )
+        self.validate_all(
+            "SELECT CAST(now() AS TIMESTAMP) FROM t WHERE ts < now()",
+            read={
+                "postgres": "SELECT CAST(CURRENT_TIMESTAMP AS TIMESTAMP) FROM t WHERE ts < CURRENT_TIMESTAMP"
+            },
+        )
+        # A precision keeps the PostgreSQL spelling; only the bare keyword is now()
+        self.assertEqual(
+            parse_one("SELECT CURRENT_TIMESTAMP(3)", read="postgres").sql("questdb"),
+            "SELECT CURRENT_TIMESTAMP(3)",
+        )
+        # Other generators are unchanged
+        self.assertEqual(
+            parse_one("SELECT now()", read="questdb").sql("postgres"), "SELECT CURRENT_TIMESTAMP"
+        )
+
     def test_comma_joins(self):
         self.validate_all(
             "SELECT l.x, o.y FROM a AS l JOIN b AS o ON l.k = o.k WHERE l.q > 10",
