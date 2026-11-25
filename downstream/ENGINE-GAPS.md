@@ -157,6 +157,20 @@ rewrite quoted, ANSI `SUBSTRING ... FROM ... FOR` and double-quoted identifiers 
 four engines and DuckDB also run the Netezza `+ N days` durations. ClickHouse server-only behavior is not
 covered (see below); the chDB engine runs the same planner and analyzer.
 
+`tests/test_benchbox_shapes_engines.py` runs in the `in-process`, `starrocks` and `doris` jobs. On DuckDB it executes
+the original and the rewritten text of each query-shape rewrite and compares rows (`IN` under `OR` as a `LEFT JOIN`, the
+Q41 count/conjunct/`IN` chain, `EXISTS` as a derived-table join, padded `CHAR` comparison, `QUALIFY` order and `LIMIT`
+hoisting, aggregate subqueries, `ORDER BY` a subquery alias, a pinned scalar `GROUP BY`, `ROLLUP` over empty input, an empty
+`GROUP BY ()`, one grouping set, sourceless `EXISTS`, date arithmetic, `COALESCE` of a `COUNT`, the aliased outer table and
+derived-table aliases); SQLite checks `EXISTS` as a join and that `GROUP BY ()` only runs after the rewrite; DataFusion and
+chDB run the hoisted `QUALIFY` form; StarRocks and Doris run the `ROLLUP` grand-total row, day arithmetic and derived-table
+aliases. `tests/test_benchbox_doris_starrocks_generators.py` holds the TPC-Havoc 1_v8, 6_v2 and 14_v2 text BenchBox wrote
+before the Doris and StarRocks generators inlined named windows and dropped `GROUP BY ()`, runs the inlined window query on
+DuckDB, StarRocks and Doris and compares its rows with the named-window form. SingleStore has no engine, so
+`add_dual_source_to_filtered_selects` (`FROM DUAL`), `unwrap_single_grouping_set`, `drop_empty_group_by`,
+`qualify_aggregated_columns`, `wrap_order_by_subquery_aliases`, `hoist_aggregate_subqueries`, `exists_to_derived_join` and
+`rollup_empty_input_row` are proved by row equivalence on DuckDB or SQLite plus text assertions of what SingleStore receives.
+
 ## Unpadded date literals
 
 dsqgen writes `[YEAR]-[MONTH]-01` with an unpadded month (`1999-5-01`), and TPC-DS Q16, Q94 and Q95 bound a date range by

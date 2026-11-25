@@ -68,3 +68,27 @@ index 9c820d8ca..53bb08bd4 100644
      QUERY_HINTS = True
      NVL2_SUPPORTED = True
      CAN_IMPLEMENT_ARRAY_ANY = True
+diff --git a/sqlglot/generators/doris.py b/sqlglot/generators/doris.py
+index 41afa3c..ea6a010 100644
+--- a/sqlglot/generators/doris.py
++++ b/sqlglot/generators/doris.py
+@@ -35,6 +35,7 @@ class DorisGenerator(MySQLGenerator):
+     WITH_PROPERTIES_PREFIX = "PROPERTIES"
+     RENAME_TABLE_WITH_DB = False
+     UPDATE_STATEMENT_SUPPORTS_FROM = True
++    SUPPORTS_EMPTY_GROUP_BY = False
+ 
+     TYPE_MAPPING = {
+         **MySQLGenerator.TYPE_MAPPING,
+diff --git a/sqlglot/generators/starrocks.py b/sqlglot/generators/starrocks.py
+index 8640977..ad27b2d 100644
+--- a/sqlglot/generators/starrocks.py
++++ b/sqlglot/generators/starrocks.py
+@@ -62,6 +62,7 @@ class StarRocksGenerator(MySQLGenerator):
+     PARSE_JSON_NAME: str | None = "PARSE_JSON"
+     WITH_PROPERTIES_PREFIX = "PROPERTIES"
+     UPDATE_STATEMENT_SUPPORTS_FROM = True
++    SUPPORTS_EMPTY_GROUP_BY = False
+     INSERT_OVERWRITE = " OVERWRITE"
+     CAST_TO_INT_ROUNDS = False
+ 

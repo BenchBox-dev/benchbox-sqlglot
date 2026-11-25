@@ -272,6 +272,21 @@ unless the frame is an explicit `ROWS` frame; the BigQuery generator drops the c
 key and otherwise sorts on `key IS NULL` first. Upstream does this itself from v30.35.0 (tobymao/sqlglot#9323); before
 that it was the carried patch `bigquery-window-nulls-ordering`. A query's own `ORDER BY` keeps its clause.
 
+`sqlglot.benchbox.shapes` and `sqlglot.benchbox.dialect_rewrites` hold the query-shape rewrites BenchBox ran in
+`benchbox/utils/query_shape_rewrites.py` and `benchbox/utils/dialect_utils.py` (the `_LOCAL_REWRITES`), the `original`
+entry `benchbox-shapes`. Each keeps the name BenchBox's rule `transformer_id` strings use and writes the text BenchBox wrote
+(`tests/test_benchbox_shapes.py` and `tests/test_benchbox_dialect_rewrites.py` hold BenchBox's output for each); none names a
+benchmark, a table or a column. `date_column_integer_arithmetic` takes the column-name suffix as an argument and
+`drop_correlated_scalar_group_by`, `qualify_aggregated_columns` and `alias_outer_table_references` their columns and tables.
+A rewrite that overlaps `compat`, `engine_rewrites` or `grouping_sets` writes different text (`FROM DUAL` as a keyword, unquoted
+`_dt1` aliases, `UNION ALL` versus a single grouping set, no `ORDER BY` qualification), so it stays a separate function;
+replacing one changes BenchBox's output. The Doris and StarRocks generators carry two edits, both on files upstream owns:
+`SUPPORTS_EMPTY_GROUP_BY = False` (in `empty-group-by-generator`) and `transforms.eliminate_window_clause` first in their
+`Select` preprocessing (`doris-starrocks-named-windows`). A named window is inlined by the generator instead of a rewrite, and
+`GROUP BY ()` is dropped by the generator instead of a text edit. BenchBox replaces `TRANSFORMS[exp.Select]` of the Doris,
+SingleStore and StarRocks generators at run time to keep `FULL OUTER JOIN` and add QUALIFY elimination; the replacement
+list must keep `eliminate_window_clause` for Doris and StarRocks, or the WINDOW clause comes back.
+
 `sqlglot.benchbox.subqueries` is the same kind of module for subquery rewrites: nullability of columns and the schema
 arrive as arguments, no table or query of a benchmark exists in the fork, and the module and its two test
 files are the `original` entry `benchbox-subqueries`. `decorrelate_subqueries` reuses `decorrelate` and `unnest`

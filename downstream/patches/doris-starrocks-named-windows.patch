@@ -1,0 +1,43 @@
+diff --git a/sqlglot/generators/doris.py b/sqlglot/generators/doris.py
+index ea6a010..66105ee 100644
+--- a/sqlglot/generators/doris.py
++++ b/sqlglot/generators/doris.py
+@@ -2,7 +2,7 @@ from __future__ import annotations
+ 
+ import typing as t
+ 
+-from sqlglot import exp
++from sqlglot import exp, transforms
+ from sqlglot.dialects.dialect import (
+     approx_count_distinct_sql,
+     property_sql,
+@@ -74,6 +74,17 @@ class DorisGenerator(MySQLGenerator):
+             "GROUP_CONCAT", e.this, e.args.get("separator") or exp.Literal.string(",")
+         ),
+         exp.JSONExtractScalar: lambda self, e: self.func("JSON_EXTRACT", e.this, e.expression),
++        # MySQL's steps, plus inlining named windows (Doris rejects the WINDOW clause)
++        exp.Select: transforms.preprocess(
++            [
++                transforms.eliminate_window_clause,
++                transforms.eliminate_distinct_on,
++                transforms.eliminate_semi_and_anti_joins,
++                transforms.eliminate_qualify,
++                transforms.eliminate_full_outer_join,
++                transforms.unnest_generate_date_array_using_recursive_cte,
++            ]
++        ),
+         exp.Lag: _lag_lead_sql,
+         exp.Lead: _lag_lead_sql,
+         exp.Map: rename_func("ARRAY_MAP"),
+diff --git a/sqlglot/generators/starrocks.py b/sqlglot/generators/starrocks.py
+index ad27b2d..1cdae60 100644
+--- a/sqlglot/generators/starrocks.py
++++ b/sqlglot/generators/starrocks.py
+@@ -131,6 +131,7 @@ class StarRocksGenerator(MySQLGenerator):
+         # (QUALIFY, FULL OUTER JOIN, SEMI/ANTI JOIN)
+         exp.Select: transforms.preprocess(
+             [
++                transforms.eliminate_window_clause,
+                 transforms.eliminate_distinct_on,
+                 transforms.unnest_generate_date_array_using_recursive_cte,
+             ]
