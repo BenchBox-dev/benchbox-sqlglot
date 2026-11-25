@@ -270,6 +270,27 @@ class TestCteColumnList(QuestDBExecutionCase):
         self.assertEqual(rows, [(1, 10), (4, 50)])
 
 
+class TestCurrentTimestamp(QuestDBExecutionCase):
+    def test_now_in_a_select_and_a_predicate(self):
+        generated, rows = self.run_rewritten(
+            "SELECT id FROM qx_d WHERE CAST(CURRENT_TIMESTAMP AS DATE) > d ORDER BY id"
+        )
+        self.assertIn("now()", generated)
+        self.assertNotIn("CURRENT_TIMESTAMP", generated)
+        self.assertEqual(rows, [(1,), (2,), (3,)])
+
+    def test_now_in_an_insert(self):
+        before = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+        self.rows("CREATE TABLE IF NOT EXISTS qx_t (id INT, ts TIMESTAMP) TIMESTAMP(ts)")
+        self.addCleanup(self.rows, "DROP TABLE IF EXISTS qx_t")
+        generated, _ = self.run_rewritten("INSERT INTO qx_t VALUES (1, CURRENT_TIMESTAMP)")
+        self.assertEqual(generated, "INSERT INTO qx_t VALUES (1, now())")
+        ((stamp,),) = self.rows("SELECT ts FROM qx_t")
+        after = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+        self.assertLessEqual(before - datetime.timedelta(minutes=5), stamp)
+        self.assertLessEqual(stamp, after + datetime.timedelta(minutes=5))
+
+
 class TestComposition(QuestDBExecutionCase):
     def test_all_rewrites_in_one_query(self):
         generated, rows = self.run_rewritten(

@@ -330,6 +330,12 @@ class QuestDBGenerator(DateLiteralPadding, PostgresGenerator):
         exp.Substring: _substring_sql,
     }
 
+    def currenttimestamp_sql(self, expression: exp.CurrentTimestamp) -> str:
+        # QuestDB spells the current time now(); a precision argument keeps the PostgreSQL form
+        if expression.this:
+            return super().currenttimestamp_sql(expression)
+        return "now()"
+
     def _dateadd_sql(self, expression: exp.Add | exp.Sub, sign: int) -> str | None:
         interval = expression.expression
         if not isinstance(interval, exp.Interval):
