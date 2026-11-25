@@ -227,6 +227,32 @@ every gate (which columns, which alias, which keys) to the caller and returns a 
   `apply_rewrite("reduce_list_aggregates", tree, dialect)` on the tree parsed from the DuckDB query, and writes the
   tree for the target (`translate_sql_query` has no `rewrites=` argument; `apply_rewrite` takes the string or the tree).
 
+`sqlglot.benchbox.shapes` and `sqlglot.benchbox.dialect_rewrites` hold the query-shape rewrites BenchBox ran locally
+before they moved here. Each takes an expression, returns a copy (`copy=False` mutates), and every gate is an
+argument; the text each writes is the text BenchBox wrote. Names are the ones BenchBox's `transformer_id` strings use.
+
+- `shapes`: `drop_empty_group_by`, `unwrap_single_grouping_set`, `add_dual_source_to_filtered_selects` (the bare
+  keyword `FROM DUAL`), `inline_sourceless_exists`, `exists_to_derived_join`,
+  `drop_correlated_scalar_group_by(expression, columns)` (run it before `fold_scalar_having_into_case`, which needs the
+  `GROUP BY` gone), `fold_scalar_having_into_case`, `qualify_aggregated_columns(expression, tables)` (aggregate
+  arguments only), `wrap_order_by_subquery_aliases`, `alias_order_by_projections`,
+  `date_column_integer_arithmetic(expression, suffix)` (a column whose name ends with `suffix` plus or minus an
+  integer becomes `DATE_ADD`/`DATE_SUB` in days; the caller names the convention), `rollup_empty_input_row` and
+  `hoist_aggregate_subqueries`.
+- `dialect_rewrites`: `alias_outer_table_references(expression, table, alias)`, `alias_derived_tables(expression,
+  prefix="_dt")` (unquoted `_dt1`, `_dt2`, ... in breadth-first order, which `compat`'s and `engine_rewrites`'s
+  derived-table aliases do not write), `coalesce_count_subqueries`, `trim_char_case_comparisons`,
+  `in_subquery_or_to_left_join`, `factor_common_conjuncts`, `positive_count_subquery_to_exists` and
+  `hoist_qualify_outer_clauses`, which runs `transforms.eliminate_qualify` and keeps `ORDER BY`, `LIMIT`, `OFFSET` and
+  `DISTINCT` on the outermost select (it logs through the `sqlglot` logger when a sort key is not projected).
+
+Order matters in two chains BenchBox runs: `drop_correlated_scalar_group_by` then `fold_scalar_having_into_case`, and
+`positive_count_subquery_to_exists`, `factor_common_conjuncts`, then `correlated_exists_to_in`. The Doris and StarRocks
+generators inline named windows (`transforms.eliminate_window_clause`, patch `doris-starrocks-named-windows`) and drop
+`GROUP BY ()` of a global aggregate (`SUPPORTS_EMPTY_GROUP_BY = False`), so BenchBox needs no rewrite for TPC-Havoc 1_v8,
+6_v2 or 14_v2 on them. `tests/test_benchbox_shapes_engines.py` and `tests/test_benchbox_doris_starrocks_generators.py`
+execute them (ENGINE-GAPS.md lists SingleStore, which has no engine in CI).
+
 `sqlglot.benchbox.subqueries` holds the subquery rewrites for engines that plan a subquery badly or wrongly:
 
 - `not_in_subquery_to_not_exists(expression, non_null_columns)` turns `x NOT IN (SELECT y FROM ... WHERE p)`

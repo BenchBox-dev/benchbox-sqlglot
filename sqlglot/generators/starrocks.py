@@ -62,6 +62,7 @@ class StarRocksGenerator(MySQLGenerator):
     PARSE_JSON_NAME: str | None = "PARSE_JSON"
     WITH_PROPERTIES_PREFIX = "PROPERTIES"
     UPDATE_STATEMENT_SUPPORTS_FROM = True
+    SUPPORTS_EMPTY_GROUP_BY = False
     INSERT_OVERWRITE = " OVERWRITE"
     CAST_TO_INT_ROUNDS = False
 
@@ -130,6 +131,7 @@ class StarRocksGenerator(MySQLGenerator):
         # (QUALIFY, FULL OUTER JOIN, SEMI/ANTI JOIN)
         exp.Select: transforms.preprocess(
             [
+                transforms.eliminate_window_clause,
                 transforms.eliminate_distinct_on,
                 transforms.unnest_generate_date_array_using_recursive_cte,
             ]

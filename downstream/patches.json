@@ -2,7 +2,7 @@
   "schema": 1,
   "distribution": "benchbox-sqlglot",
   "import_package": "benchbox._vendor.sqlglot",
-  "version": "30.35.0.4",
+  "version": "30.35.0.5",
   "upstream": {
     "repository": "https://github.com/tobymao/sqlglot",
     "tag": "v30.35.0",
@@ -525,14 +525,36 @@
       "depends": [],
       "paths": [
         "sqlglot/generator.py",
+        "sqlglot/generators/doris.py",
         "sqlglot/generators/snowflake.py",
-        "sqlglot/generators/spark2.py"
+        "sqlglot/generators/spark2.py",
+        "sqlglot/generators/starrocks.py"
       ],
       "tests": [
-        "tests.test_benchbox_generators"
+        "tests.test_benchbox_generators",
+        "tests.test_benchbox_doris_starrocks_generators"
       ],
-      "reason": "A SUPPORTS_EMPTY_GROUP_BY generator flag, off for Snowflake and Spark (and Databricks, which inherits it): a global aggregate (one with an aggregate or HAVING) drops its GROUP BY (), which those engines reject, and any other GROUP BY () warns as unsupported. The DataFusion generator turns the flag off in its own file.",
+      "reason": "A SUPPORTS_EMPTY_GROUP_BY generator flag, off for Snowflake and Spark (and Databricks, which inherits it): a global aggregate (one with an aggregate or HAVING) drops its GROUP BY (), which those engines reject, and any other GROUP BY () warns as unsupported. The DataFusion generator turns the flag off in its own file. The Doris and StarRocks generators turn the flag off as well: neither accepts GROUP BY (), so TPC-Havoc 6_v2 and 14_v2 (a global aggregate written GROUP BY () HAVING ...) are written without the clause by the generator instead of a text edit after translation.",
       "patch": "downstream/patches/empty-group-by-generator.patch"
+    },
+    {
+      "id": "doris-starrocks-named-windows",
+      "source": "e015509a8c2bf29c8c0ce800b236c649a2cd35d7",
+      "status": "carried",
+      "upstream_state": "not_offered",
+      "upstream_reason": "Upstream's presto, redshift, snowflake and bigquery generators already run transforms.eliminate_window_clause; Doris and StarRocks reject the WINDOW clause too, and adding the existing transform to their Select preprocessing is a one-line change that needs no BenchBox behavior. Not offered yet.",
+      "depends": [
+        "empty-group-by-generator"
+      ],
+      "paths": [
+        "sqlglot/generators/doris.py",
+        "sqlglot/generators/starrocks.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_doris_starrocks_generators"
+      ],
+      "reason": "The Doris and StarRocks generators inline a named window (WINDOW w AS (...), OVER w) into each use, because neither engine accepts the WINDOW clause (TPC-Havoc 1_v8). The step is transforms.eliminate_window_clause, the same function upstream's presto, redshift, snowflake and bigquery generators run, placed first in the Select preprocessing (Doris keeps MySQL's other steps). Output is byte-identical to the BenchBox rewrite inline_named_windows it replaces; tests/test_benchbox_doris_starrocks_generators.py holds the 1_v8 text BenchBox wrote and executes the inlined form.",
+      "patch": "downstream/patches/doris-starrocks-named-windows.patch"
     },
     {
       "id": "pivot-lowering",
@@ -575,6 +597,33 @@
         "tests.test_benchbox_compat_engines"
       ],
       "reason": "Engine-compatibility rewrites in sqlglot.benchbox.compat (alias inlining, column qualification by name, one-row sources for FROM-less selects, FILTER removal for BigQuery, ClickHouse and others, literal-subquery naming and VALUES, grouped scalar subqueries, ordered list aggregates) with every gate an argument, the DataFusion generator that drops an unsupported GROUP BY () and lowers PIVOT, UNPIVOT and ORDER BY ALL (pivot-lowering) (SQLite drops it through sqlite-empty-group-by), and execution tests on Postgres, DuckDB, DataFusion, PySpark and chDB."
+    },
+    {
+      "id": "benchbox-shapes",
+      "source": "e015509a8c2bf29c8c0ce800b236c649a2cd35d7",
+      "status": "original",
+      "depends": [
+        "real-engine-ci",
+        "benchbox-rewrites",
+        "engine-rewrites",
+        "engine-compat-rewrites",
+        "doris-starrocks-named-windows"
+      ],
+      "paths": [
+        "sqlglot/benchbox/dialect_rewrites.py",
+        "sqlglot/benchbox/shapes.py",
+        "tests/test_benchbox_dialect_rewrites.py",
+        "tests/test_benchbox_doris_starrocks_generators.py",
+        "tests/test_benchbox_shapes.py",
+        "tests/test_benchbox_shapes_engines.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_shapes",
+        "tests.test_benchbox_dialect_rewrites",
+        "tests.test_benchbox_doris_starrocks_generators",
+        "tests.test_benchbox_shapes_engines"
+      ],
+      "reason": "Query-shape rewrites BenchBox ran locally, moved here with identical output and every gate as an argument. sqlglot/benchbox/shapes.py: drop_empty_group_by, unwrap_single_grouping_set, add_dual_source_to_filtered_selects, inline_sourceless_exists, exists_to_derived_join, drop_correlated_scalar_group_by (columns), fold_scalar_having_into_case (run after the group by is dropped), qualify_aggregated_columns (tables), wrap_order_by_subquery_aliases, alias_order_by_projections, date_column_integer_arithmetic (suffix, the column-name convention BenchBox passed as '_date'), rollup_empty_input_row and hoist_aggregate_subqueries. sqlglot/benchbox/dialect_rewrites.py: alias_outer_table_references (table, alias), alias_derived_tables, coalesce_count_subqueries, trim_char_case_comparisons, in_subquery_or_to_left_join, factor_common_conjuncts, positive_count_subquery_to_exists and hoist_qualify_outer_clauses (logs through the sqlglot logger). Each differs from a near-duplicate in compat, engine_rewrites or grouping_sets in the text it writes, so none replaces one. Tests hold the text BenchBox wrote for each rewrite, port its unit tests, and execute the rewrites on DuckDB, SQLite, DataFusion, chDB, StarRocks and Doris; SingleStore has no engine in CI, so its rewrites are proved by equivalence on the others plus text assertions."
     },
     {
       "id": "netezza-exact-division",

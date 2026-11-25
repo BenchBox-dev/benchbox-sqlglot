@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import typing as t
 
-from sqlglot import exp
+from sqlglot import exp, transforms
 from sqlglot.dialects.dialect import (
     approx_count_distinct_sql,
     property_sql,
@@ -35,6 +35,7 @@ class DorisGenerator(MySQLGenerator):
     WITH_PROPERTIES_PREFIX = "PROPERTIES"
     RENAME_TABLE_WITH_DB = False
     UPDATE_STATEMENT_SUPPORTS_FROM = True
+    SUPPORTS_EMPTY_GROUP_BY = False
 
     TYPE_MAPPING = {
         **MySQLGenerator.TYPE_MAPPING,
@@ -73,6 +74,17 @@ class DorisGenerator(MySQLGenerator):
             "GROUP_CONCAT", e.this, e.args.get("separator") or exp.Literal.string(",")
         ),
         exp.JSONExtractScalar: lambda self, e: self.func("JSON_EXTRACT", e.this, e.expression),
+        # MySQL's steps, plus inlining named windows (Doris rejects the WINDOW clause)
+        exp.Select: transforms.preprocess(
+            [
+                transforms.eliminate_window_clause,
+                transforms.eliminate_distinct_on,
+                transforms.eliminate_semi_and_anti_joins,
+                transforms.eliminate_qualify,
+                transforms.eliminate_full_outer_join,
+                transforms.unnest_generate_date_array_using_recursive_cte,
+            ]
+        ),
         exp.Lag: _lag_lead_sql,
         exp.Lead: _lag_lead_sql,
         exp.Map: rename_func("ARRAY_MAP"),
