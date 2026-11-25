@@ -168,7 +168,8 @@ def in_subquery_or_to_left_join(expression: E, copy: bool = True) -> E:
         The rewritten expression.
     """
     tree = expression.copy() if copy else expression
-    select = tree if isinstance(tree, exp.Select) else tree.find(exp.Select)
+    root: exp.Expr = tree
+    select = root if isinstance(root, exp.Select) else root.find(exp.Select)
     if select is None or select.args.get("joins"):
         return tree
     source = select.args.get("from_")
