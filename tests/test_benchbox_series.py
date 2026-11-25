@@ -230,13 +230,20 @@ class SeriesExecution:
     ENGINE = ""
     DIALECT = ""
     CREATE = "CREATE TABLE target (k INT, v VARCHAR(10))"
+    SETUP = ()
+
+    def connect(self):
+        connection = engines.connect(self.ENGINE)
+        for statement in self.SETUP:
+            connection.execute(statement)
+        return connection
 
     def lowered_insert(self, sql=INSERT):
         tree = lower_series_selects(sqlglot.parse_one(sql, read="duckdb"), self.DIALECT)
         return tree.sql(self.DIALECT)
 
     def test_insert_from_a_series(self):
-        with engines.connect(self.ENGINE) as connection:
+        with self.connect() as connection:
             connection.execute("DROP TABLE IF EXISTS target")
             connection.execute(self.CREATE)
             connection.execute(self.lowered_insert())
@@ -244,7 +251,7 @@ class SeriesExecution:
         self.assertEqual([(int(k), v) for k, v in rows], EXPECTED_ROWS)
 
     def test_larger_and_offset_series(self):
-        with engines.connect(self.ENGINE) as connection:
+        with self.connect() as connection:
             connection.execute("DROP TABLE IF EXISTS target")
             connection.execute(self.CREATE)
             connection.execute(
@@ -266,7 +273,7 @@ class SeriesExecution:
         )
 
     def test_a_single_row_series(self):
-        with engines.connect(self.ENGINE) as connection:
+        with self.connect() as connection:
             rows = connection.execute(
                 self.lowered_insert("SELECT n FROM (SELECT unnest(generate_series(7, 7)) AS n) t")
             )
@@ -305,6 +312,7 @@ class TestPostgresExecution(SeriesExecution, unittest.TestCase):
 @requires_engine("doris")
 class TestDorisExecution(SeriesExecution, unittest.TestCase):
     ENGINE = DIALECT = "doris"
+    SETUP = ("CREATE DATABASE IF NOT EXISTS series_tests", "USE series_tests")
     CREATE = (
         "CREATE TABLE target (k INT, v VARCHAR(10)) DUPLICATE KEY(k) DISTRIBUTED BY HASH(k) "
         "BUCKETS 1 PROPERTIES ('replication_num' = '1')"
@@ -314,6 +322,7 @@ class TestDorisExecution(SeriesExecution, unittest.TestCase):
 @requires_engine("starrocks")
 class TestStarRocksExecution(SeriesExecution, unittest.TestCase):
     ENGINE = DIALECT = "starrocks"
+    SETUP = ("CREATE DATABASE IF NOT EXISTS series_tests", "USE series_tests")
     CREATE = (
         "CREATE TABLE target (k INT, v VARCHAR(10)) DUPLICATE KEY(k) DISTRIBUTED BY HASH(k) "
         "BUCKETS 1 PROPERTIES ('replication_num' = '1')"
