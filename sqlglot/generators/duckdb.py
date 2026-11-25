@@ -1751,7 +1751,6 @@ class DuckDBGenerator(generator.Generator):
         exp.EqualNull: lambda self, e: self.sql(
             exp.NullSafeEQ(this=e.this, expression=e.expression)
         ),
-        exp.EuclideanDistance: rename_func("LIST_DISTANCE"),
         exp.GenerateDateArray: _generate_datetime_array_sql,
         exp.GenerateSeries: generate_series_sql("GENERATE_SERIES", "RANGE"),
         exp.GenerateTimestampArray: _generate_datetime_array_sql,
@@ -2414,6 +2413,16 @@ class DuckDBGenerator(generator.Generator):
     # Ref: https://docs.snowflake.com/en/sql-reference/date-time-input-output#date-formats
     _TRYCAST_DATE_SLASH_FMT = "%m/%d/%Y"
     _TRYCAST_DATE_MON_FMT = "%d-%b-%Y"
+
+    def euclideandistance_sql(self, expression: exp.EuclideanDistance) -> str:
+        name = "ARRAY_DISTANCE" if expression.args.get("array") else "LIST_DISTANCE"
+        return self.func(name, expression.this, expression.expression)
+
+    def cosinesimilarity_sql(self, expression: exp.CosineSimilarity) -> str:
+        name = (
+            "ARRAY_COSINE_SIMILARITY" if expression.args.get("array") else "LIST_COSINE_SIMILARITY"
+        )
+        return self.func(name, expression.this, expression.expression)
 
     def datatype_sql(self, expression: exp.DataType) -> str:
         if expression.is_type(exp.DType.ARRAY):

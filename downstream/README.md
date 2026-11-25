@@ -284,6 +284,45 @@ plain functions, as before. The Snowflake generator rewrites a `REGEXP_REPLACE` 
 non-capturing groups `(?:...)` into capturing groups and renumbers the `\N` references in the
 replacement, because Snowflake's regular expression syntax lacks non-capturing groups.
 
+`sqlglot.benchbox.series.lower_series_selects(expression, dialect, copy=True)` writes
+`SELECT unnest(generate_series(lo, hi)) AS n` (DuckDB and PostgreSQL write it as is) in the form the target runs,
+returning the same rows. SQLite, Doris, StarRocks and SingleStore have no `GENERATE_SERIES` or `UNNEST` in a select
+list, so without it they get `EXPLODE(GENERATE_SERIES(...))`. The select is replaced wherever it sits (a derived table,
+a CTE, a set operation) and has to be exactly that shape: one aliased projection, no `FROM` or other clause, no step and
+no exclusive end; anything else is left alone. `dialect` is the dialect the tree will be written in:
+
+| Dialect | Form |
+|---|---|
+| `sqlite` | `WITH RECURSIVE _series(n) AS (SELECT lo UNION ALL SELECT n + 1 FROM _series WHERE n < hi) SELECT n FROM _series` |
+| `doris` | `SELECT number + lo AS n FROM NUMBERS('number' = hi - lo + 1)` (integer literal bounds, else `ValueError`) |
+| `singlestore` | the digits 0 to 9 cross joined four times, filtered with `n BETWEEN lo AND hi` (at most 9999) |
+| `snowflake` | `FLATTEN(ARRAY_GENERATE_RANGE(lo, hi + 1))` |
+| `bigquery` | `UNNEST(GENERATE_ARRAY(lo, hi)) AS n` |
+| `questdb`, `starrocks` | `generate_series(lo, hi)` as a table |
+| `postgres` | `SELECT generate_series(lo, hi) AS n`: every `UNNEST(GENERATE_SERIES(...))` in a select list loses its `UNNEST` |
+
+Any other dialect raises `ValueError`. The rest of a transactional script needs no rewrite: `BEGIN TRANSACTION` is
+written `BEGIN` for Doris, StarRocks, SingleStore and QuestDB, `CREATE TEMP TABLE` is `CREATE TEMPORARY TABLE`,
+`DATE '1998-01-01'` is `'1998-01-01' :> DATE` on SingleStore and `DATE('1998-01-01')` on SQLite. The QuestDB
+generator writes `CURRENT_TIMESTAMP` (without a precision) as `now()`.
+
+The generators write two `EXTRACT` shapes that DuckDB, the source of NYC Taxi, reads natively. `EXTRACT(DOW FROM x)`
+(Sunday is 0) is `(EXTRACT(DAYOFWEEK FROM x) - 1)` on BigQuery, `(DAYOFWEEK(x) - 1)` on Spark, Databricks and
+SingleStore, and `CAST(STRFTIME('%w', x) AS INTEGER)` on SQLite. `EXTRACT(EPOCH FROM (a - b))` is
+`(UNIX_SECONDS(TIMESTAMP(a)) - UNIX_SECONDS(TIMESTAMP(b)))` on BigQuery, `(UNIX_TIMESTAMP(a) - UNIX_TIMESTAMP(b))` on
+Spark and Databricks, `(CAST(STRFTIME('%s', a) AS INTEGER) - CAST(STRFTIME('%s', b) AS INTEGER))` on SQLite (an operand
+of a known non-text type is unsupported, as for the other SQLite extractions), `(DATEDIFF(second, b, a))` on Snowflake
+and `TIMESTAMPDIFF(SECOND, b, a)` on SingleStore (MySQL's `UNIX_TIMESTAMP((a - b))` subtracts two datetimes as numbers,
+which is not a number of seconds). `EXTRACT(EPOCH FROM x)` of a single value is unchanged. The shapes are found by
+`sqlglot.benchbox.extract_parts`.
+
+DuckDB's `ARRAY_DISTANCE` and `ARRAY_COSINE_SIMILARITY` are read as `EuclideanDistance` and the new
+`CosineSimilarity` (both carry `array=True`, so DuckDB writes `ARRAY_DISTANCE` and `ARRAY_COSINE_SIMILARITY` back,
+while `LIST_DISTANCE` stays `LIST_DISTANCE`). SingleStore writes `EUCLIDEAN_DISTANCE(a, b)` and
+`DOT_PRODUCT(a, b) / NULLIF(SQRT(DOT_PRODUCT(a, a)) * SQRT(DOT_PRODUCT(b, b)), 0)` (parenthesized inside a larger
+expression; a zero vector gives NULL). Other targets write `COSINE_SIMILARITY(a, b)`, which none of them has, as they did
+`ARRAY_COSINE_SIMILARITY(a, b)` before.
+
 ## DDL
 
 `sqlglot.benchbox.ddl.transpile_ddl(sql, read, write, options=None, **generator_options)` translates

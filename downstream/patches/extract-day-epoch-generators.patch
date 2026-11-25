@@ -1,0 +1,172 @@
+diff --git a/sqlglot/generators/bigquery.py b/sqlglot/generators/bigquery.py
+index 826d4e0..021bb4a 100644
+--- a/sqlglot/generators/bigquery.py
++++ b/sqlglot/generators/bigquery.py
+@@ -7,6 +7,7 @@ from decimal import Decimal
+ from fractions import Fraction
+ 
+ from sqlglot import exp, generator, transforms
++from sqlglot.benchbox.extract_parts import epoch_difference, is_day_of_week
+ from sqlglot.dialects.dialect import (
+     arg_max_or_min_no_count,
+     array_sort_order,
+@@ -853,6 +854,18 @@ class BigQueryGenerator(generator.Generator):
+         quantiles = exp.func("APPROX_QUANTILES", expression.this, fraction.denominator, copy=False)
+         return self.sql(quantiles[fraction.numerator])
+ 
++    def extract_sql(self, expression: exp.Extract) -> str:
++        # BigQuery has no DOW field (DAYOFWEEK counts from Sunday = 1) and no EPOCH field
++        if is_day_of_week(expression) and not expression.args.get("date_part"):
++            day = exp.DayOfWeek(this=expression.expression.copy())
++            return self.sql(exp.paren(exp.Sub(this=day, expression=exp.Literal.number(1))))
++
++        if epoch := epoch_difference(expression):
++            this, other = (exp.UnixSeconds(this=exp.Timestamp(this=node.copy())) for node in epoch)
++            return self.sql(exp.paren(exp.Sub(this=this, expression=other)))
++
++        return super().extract_sql(expression)
++
+     def weekstart_sql(self, expression: exp.WeekStart) -> str:
+         if expression.this.name.upper() == "SUNDAY":
+             # BigQuery specific optimization since WEEK(SUNDAY) == WEEK
+diff --git a/sqlglot/generators/singlestore.py b/sqlglot/generators/singlestore.py
+index f2d7346..2159377 100644
+--- a/sqlglot/generators/singlestore.py
++++ b/sqlglot/generators/singlestore.py
+@@ -4,6 +4,7 @@ import re
+ import typing as t
+ 
+ from sqlglot import exp
++from sqlglot.benchbox.extract_parts import epoch_difference, is_day_of_week
+ from sqlglot.dialects.dialect import (
+     json_extract_segments,
+     json_path_key_only_name,
+@@ -1423,6 +1424,19 @@ class SingleStoreGenerator(MySQLGenerator):
+         "zone",
+     }
+ 
++    def extract_sql(self, expression: exp.Extract) -> str:
++        # DAYOFWEEK counts from Sunday = 1. MySQL's EPOCH rewrite, UNIX_TIMESTAMP(a - b), reads the
++        # subtraction as a number, so a difference of two datetimes is written with TIMESTAMPDIFF
++        if is_day_of_week(expression) and not expression.args.get("date_part"):
++            day = exp.DayOfWeek(this=expression.expression.copy())
++            return self.sql(exp.paren(exp.Sub(this=day, expression=exp.Literal.number(1))))
++
++        if epoch := epoch_difference(expression):
++            this, other = epoch
++            return self.func("TIMESTAMPDIFF", exp.var("SECOND"), other, this)
++
++        return super().extract_sql(expression)
++
+     def isascii_sql(self, expression: exp.IsAscii) -> str:
+         return self.sql(
+             exp.paren(expression.this.rlike(exp.Literal.string("^[\x00-\x7f]*$")), copy=False)
+diff --git a/sqlglot/generators/snowflake.py b/sqlglot/generators/snowflake.py
+index 88252d5..5e9dbf0 100644
+--- a/sqlglot/generators/snowflake.py
++++ b/sqlglot/generators/snowflake.py
+@@ -5,6 +5,7 @@ import typing as t
+ from collections import defaultdict
+ 
+ from sqlglot import exp, generator, transforms
++from sqlglot.benchbox.extract_parts import epoch_difference
+ from sqlglot.dialects.dialect import (
+     array_append_sql,
+     array_concat_sql,
+@@ -533,9 +534,6 @@ class SnowflakeGenerator(generator.Generator):
+         exp.DayOfYear: rename_func("DAYOFYEAR"),
+         exp.DotProduct: rename_func("VECTOR_INNER_PRODUCT"),
+         exp.Explode: rename_func("FLATTEN"),
+-        exp.Extract: lambda self, e: self.func(
+-            "DATE_PART", self.extract_date_part(e.this), e.expression
+-        ),
+         exp.Filter: no_filter_sql,
+         exp.CosineDistance: rename_func("VECTOR_COSINE_SIMILARITY"),
+         exp.EuclideanDistance: rename_func("VECTOR_L2_DISTANCE"),
+@@ -679,6 +677,16 @@ class SnowflakeGenerator(generator.Generator):
+         ),
+     }
+ 
++    def extract_sql(self, expression: exp.Extract) -> str:
++        # DATE_PART(EPOCH, (a - b)) is not a number of seconds for timestamps; DATEDIFF is
++        if epoch := epoch_difference(expression):
++            this, other = epoch
++            return f"({self.func('DATEDIFF', exp.var('second'), other, this)})"
++
++        return self.func(
++            "DATE_PART", self.extract_date_part(expression.this), expression.expression
++        )
++
+     def dynamicidentifier_sql(self, expression: exp.DynamicIdentifier) -> str:
+         this = self.func("IDENTIFIER", expression.this)
+         if "expressions" in expression.args:
+diff --git a/sqlglot/generators/spark.py b/sqlglot/generators/spark.py
+index 19b6493..c79a592 100644
+--- a/sqlglot/generators/spark.py
++++ b/sqlglot/generators/spark.py
+@@ -2,6 +2,7 @@ from __future__ import annotations
+ 
+ from sqlglot import exp
+ from sqlglot import generator
++from sqlglot.benchbox.extract_parts import epoch_difference, is_day_of_week
+ from sqlglot.dialects.dialect import (
+     array_append_sql,
+     rename_func,
+@@ -166,6 +167,18 @@ class SparkGenerator(Spark2Generator):
+ 
+         return super().dateadd_sql(expression)
+ 
++    def extract_sql(self, expression: exp.Extract) -> str:
++        # Spark has no DOW or EPOCH field; DAYOFWEEK counts from Sunday = 1
++        if is_day_of_week(expression) and not expression.args.get("date_part"):
++            day = exp.DayOfWeek(this=expression.expression.copy())
++            return self.sql(exp.paren(exp.Sub(this=day, expression=exp.Literal.number(1))))
++
++        if epoch := epoch_difference(expression):
++            this, other = (exp.TimeToUnix(this=node.copy()) for node in epoch)
++            return self.sql(exp.paren(exp.Sub(this=this, expression=other)))
++
++        return super().extract_sql(expression)
++
+     def ignorenulls_sql(self, expression: exp.IgnoreNulls) -> str:
+         return generator.Generator.ignorenulls_sql(self, expression)
+ 
+diff --git a/sqlglot/generators/sqlite.py b/sqlglot/generators/sqlite.py
+index 60f5f77..c16b85e 100644
+--- a/sqlglot/generators/sqlite.py
++++ b/sqlglot/generators/sqlite.py
+@@ -17,6 +17,7 @@ from sqlglot.dialects.dialect import (
+     rename_func,
+     strposition_sql,
+ )
++from sqlglot.benchbox.extract_parts import epoch_difference
+ from sqlglot.benchbox.grouping_sets import expand_grouping_sets
+ from sqlglot.benchbox.moments import SUPPORTED as MOMENT_AGGREGATES, expand_moments, is_expandable
+ from sqlglot.benchbox.pivot import expand_order_by_all, lower_pivots, reject_pivot_sql
+@@ -40,6 +41,7 @@ EXTRACT_FORMATS = {
+     "HOUR": "%H",
+     "MINUTE": "%M",
+     "SECOND": "%S",
++    "DOW": "%w",
+ }
+ DATE_PARTS = {"YEAR", "MONTH", "DAY"}
+ TRUNC_FORMATS = {
+@@ -514,6 +516,18 @@ class SQLiteGenerator(generator.Generator):
+                     exp.DType.INT,
+                 )
+             )
++        if (epoch := epoch_difference(expression)) and all(
++            self._strftime_input(node, False) for node in epoch
++        ):
++            this, other = (
++                exp.cast(
++                    exp.TimeToStr(this=node.copy(), format=exp.Literal.string("%s")),
++                    exp.DType.INT,
++                )
++                for node in epoch
++            )
++            return self.sql(exp.paren(exp.Sub(this=this, expression=other)))
++
+         self.unsupported(
+             "SQLite EXTRACT requires a YEAR to SECOND field of an input of unknown type "
+             "(YEAR/MONTH/DAY for a DATE) with integer or decimal return semantics"
