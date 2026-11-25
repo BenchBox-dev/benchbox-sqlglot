@@ -2,7 +2,7 @@
   "schema": 1,
   "distribution": "benchbox-sqlglot",
   "import_package": "benchbox._vendor.sqlglot",
-  "version": "30.35.0.1",
+  "version": "30.35.0.2",
   "upstream": {
     "repository": "https://github.com/tobymao/sqlglot",
     "tag": "v30.35.0",
@@ -118,7 +118,7 @@
       "tests": [
         "tests.dialects.test_sqlite"
       ],
-      "reason": "x +/- INTERVAL uses upstream's SQLite date modifiers. On upstream v30.33.0 the carried patch keeps them Unsupported where upstream's output is wrong (a MONTH, QUARTER or YEAR offset unless the base is a NULL or a literal whose day of month is at most 28; a DAY, WEEK, MONTH or YEAR offset of an operand of unknown type; any offset of a TIMESTAMPTZ operand). From v30.34.0 the staged resolution drops that guard for upstream's fixes: month, quarter and year offsets clamp at month end with SQLite's 'floor' modifier, which needs SQLite 3.46 (older SQLite returns NULL; sqlglot refuses the offset only when the dialect is given an older version). In both, a DATE plus a day-or-larger interval stays a DATE even when the tree is type-annotated, so it compares correctly with date text (TPC-DS Q21 and Q40 boundaries), and the staged resolution treats a CURRENT_DATE base as a DATE. On v30.34.0, 2,288 interval cases run on SQLite 3.54 against DuckDB: every case that worked before gives the same result, 1,064 more now work, and none is wrong.",
+      "reason": "x +/- INTERVAL uses upstream's SQLite date modifiers. On upstream v30.33.0 the carried patch keeps them Unsupported where upstream's output is wrong (a MONTH, QUARTER or YEAR offset unless the base is a NULL or a literal whose day of month is at most 28; a DAY, WEEK, MONTH or YEAR offset of an operand of unknown type; any offset of a TIMESTAMPTZ operand). From v30.34.0 the staged resolution drops that guard for upstream's fixes: month, quarter and year offsets clamp at month end with SQLite's 'floor' modifier, which needs SQLite 3.46 (older SQLite returns NULL, so for a dialect given an older version the carried patch keeps the offset Unsupported unless the base is a DATE literal whose day of month is at most 28, where no overflow is possible and the offset is written without 'floor'). In both, a DATE plus a day-or-larger interval stays a DATE even when the tree is type-annotated, so it compares correctly with date text (TPC-DS Q21 and Q40 boundaries), and the staged resolution treats a CURRENT_DATE base as a DATE. On v30.34.0, 2,288 interval cases run on SQLite 3.54 against DuckDB: every case that worked before gives the same result, 1,064 more now work, and none is wrong.",
       "patch": "downstream/patches/sqlite-date-interval-arithmetic.patch"
     },
     {
