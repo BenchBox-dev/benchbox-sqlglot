@@ -157,6 +157,15 @@ rewrite quoted, ANSI `SUBSTRING ... FROM ... FOR` and double-quoted identifiers 
 four engines and DuckDB also run the Netezza `+ N days` durations. ClickHouse server-only behavior is not
 covered (see below); the chDB engine runs the same planner and analyzer.
 
+`tests/test_benchbox_extract_parts.py` runs `EXTRACT(DOW FROM x)` and `EXTRACT(EPOCH FROM (a - b))` as written for SQLite and
+PySpark (the Spark generator also writes Databricks) in the `in-process` job and compares the rows with DuckDB and with values worked out
+by hand; BigQuery, Snowflake and SingleStore output is text only. `tests/test_benchbox_series.py` executes
+`lower_series_selects` on SQLite and DuckDB (`in-process`), PostgreSQL, Doris, StarRocks and QuestDB (their jobs); SingleStore's digit
+cross join is plain SQL, so DuckDB runs it, and Snowflake and BigQuery forms are text only.
+`tests/test_benchbox_vector_functions.py` runs the SingleStore cosine formula on DuckDB (`ARRAY_INNER_PRODUCT` for `DOT_PRODUCT`) against
+`ARRAY_COSINE_SIMILARITY`; no SingleStore server runs `DOT_PRODUCT` or `EUCLIDEAN_DISTANCE`. `tests/test_questdb_execution.py` checks
+`now()` for `CURRENT_TIMESTAMP` on QuestDB.
+
 ## Unpadded date literals
 
 dsqgen writes `[YEAR]-[MONTH]-01` with an unpadded month (`1999-5-01`), and TPC-DS Q16, Q94 and Q95 bound a date range by
@@ -255,7 +264,7 @@ weaker than execution and must be named as such in the pull request.
 
 | Engine | Why | Substitute evidence |
 |---|---|---|
-| SingleStore | The only dev container (`singlestoredb-dev`) requires a license key, which is a secret; the workflow forbids secrets | Golden-output tests with the `singlestore` dialect, including the query forms BenchBox generates from it (`:>` casts and `NULLS FIRST`/`NULLS LAST` instead of the `CASE WHEN ... IS NULL` emulation the `mysql` dialect writes; `tests/test_benchbox_native_dialects.py`). Those forms are text only: no run checks `:>` precedence against `+ INTERVAL`, or `NULLS FIRST`/`LAST`, on a SingleStore server. JSON array indexes are written as integers (`JSON_EXTRACT_JSON(c, 'a', 0)`), as the SingleStore keypath documentation specifies, but no run executes them on a SingleStore server. The MySQL-protocol client path is covered by the StarRocks and Doris jobs |
+| SingleStore | The only dev container (`singlestoredb-dev`) requires a license key, which is a secret; the workflow forbids secrets | Golden-output tests with the `singlestore` dialect, including the query forms BenchBox generates from it (`:>` casts and `NULLS FIRST`/`NULLS LAST` instead of the `CASE WHEN ... IS NULL` emulation the `mysql` dialect writes; `tests/test_benchbox_native_dialects.py`). Those forms are text only: no run checks `:>` precedence against `+ INTERVAL`, or `NULLS FIRST`/`LAST`, on a SingleStore server. JSON array indexes are written as integers (`JSON_EXTRACT_JSON(c, 'a', 0)`), as the SingleStore keypath documentation specifies, but no run executes them on a SingleStore server. The MySQL-protocol client path is covered by the StarRocks and Doris jobs `EXTRACT(DOW ...)` and `EXTRACT(EPOCH FROM (a - b))` (`DAYOFWEEK(x) - 1`, `TIMESTAMPDIFF(SECOND, b, a)`), `EUCLIDEAN_DISTANCE`, the `DOT_PRODUCT` cosine formula and the digit cross join of `lower_series_selects` are text only on SingleStore itself; DuckDB executes the cross join and the cosine formula (with `ARRAY_INNER_PRODUCT`). |
 
 ### Obtainable engine, not yet added to CI
 

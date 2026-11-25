@@ -1,0 +1,123 @@
+diff --git a/sqlglot/expressions/math.py b/sqlglot/expressions/math.py
+index 0c60cfc..c025a0d 100644
+--- a/sqlglot/expressions/math.py
++++ b/sqlglot/expressions/math.py
+@@ -99,12 +99,18 @@ class CosineDistance(Expression, Func):
+     arg_types = {"this": True, "expression": True}
+ 
+ 
++class CosineSimilarity(Expression, Func):
++    # `array` marks DuckDB's ARRAY_COSINE_SIMILARITY, which reads fixed-size arrays (the LIST_ form reads lists)
++    arg_types = {"this": True, "expression": True, "array": False}
++
++
+ class DotProduct(Expression, Func):
+     arg_types = {"this": True, "expression": True}
+ 
+ 
+ class EuclideanDistance(Expression, Func):
+-    arg_types = {"this": True, "expression": True}
++    # `array` marks DuckDB's ARRAY_DISTANCE, which reads fixed-size arrays (LIST_DISTANCE reads lists)
++    arg_types = {"this": True, "expression": True, "array": False}
+ 
+ 
+ class JarowinklerSimilarity(Expression, Func):
+diff --git a/sqlglot/generators/duckdb.py b/sqlglot/generators/duckdb.py
+index 8058321..6ab1eec 100644
+--- a/sqlglot/generators/duckdb.py
++++ b/sqlglot/generators/duckdb.py
+@@ -1751,7 +1751,6 @@ class DuckDBGenerator(generator.Generator):
+         exp.EqualNull: lambda self, e: self.sql(
+             exp.NullSafeEQ(this=e.this, expression=e.expression)
+         ),
+-        exp.EuclideanDistance: rename_func("LIST_DISTANCE"),
+         exp.GenerateDateArray: _generate_datetime_array_sql,
+         exp.GenerateSeries: generate_series_sql("GENERATE_SERIES", "RANGE"),
+         exp.GenerateTimestampArray: _generate_datetime_array_sql,
+@@ -2415,6 +2414,16 @@ class DuckDBGenerator(generator.Generator):
+     _TRYCAST_DATE_SLASH_FMT = "%m/%d/%Y"
+     _TRYCAST_DATE_MON_FMT = "%d-%b-%Y"
+ 
++    def euclideandistance_sql(self, expression: exp.EuclideanDistance) -> str:
++        name = "ARRAY_DISTANCE" if expression.args.get("array") else "LIST_DISTANCE"
++        return self.func(name, expression.this, expression.expression)
++
++    def cosinesimilarity_sql(self, expression: exp.CosineSimilarity) -> str:
++        name = (
++            "ARRAY_COSINE_SIMILARITY" if expression.args.get("array") else "LIST_COSINE_SIMILARITY"
++        )
++        return self.func(name, expression.this, expression.expression)
++
+     def datatype_sql(self, expression: exp.DataType) -> str:
+         if expression.is_type(exp.DType.ARRAY):
+             return f"{self.expressions(expression, flat=True)}[{self.expressions(expression, key='values', flat=True)}]"
+diff --git a/sqlglot/generators/singlestore.py b/sqlglot/generators/singlestore.py
+index 2159377..9508ea4 100644
+--- a/sqlglot/generators/singlestore.py
++++ b/sqlglot/generators/singlestore.py
+@@ -26,6 +26,10 @@ def _unicode_substitute(m: re.Match[str]) -> str:
+     return chr(int(m.group(1), 16))
+ 
+ 
++def _vector_norm(node: exp.Expr) -> exp.Sqrt:
++    return exp.Sqrt(this=exp.DotProduct(this=node.copy(), expression=node.copy()))
++
++
+ class SingleStoreGenerator(MySQLGenerator):
+     SUPPORTS_UESCAPE = False
+     SUPPORTS_ALTER_COLUMN_NULLABILITY = False
+@@ -1437,6 +1441,25 @@ class SingleStoreGenerator(MySQLGenerator):
+ 
+         return super().extract_sql(expression)
+ 
++    def euclideandistance_sql(self, expression: exp.EuclideanDistance) -> str:
++        return self.func("EUCLIDEAN_DISTANCE", expression.this, expression.expression)
++
++    def cosinesimilarity_sql(self, expression: exp.CosineSimilarity) -> str:
++        # SingleStore has DOT_PRODUCT but no cosine function: dot(a, b) / (|a| * |b|), NULL for a zero vector
++        this, other = expression.this, expression.expression
++        similarity: exp.Expr = exp.Div(
++            this=exp.DotProduct(this=this.copy(), expression=other.copy()),
++            expression=exp.Nullif(
++                this=exp.Mul(this=_vector_norm(this), expression=_vector_norm(other)),
++                expression=exp.Literal.number(0),
++            ),
++            typed=False,
++            safe=False,
++        )
++        if isinstance(expression.parent, (exp.Binary, exp.Unary)):
++            similarity = exp.paren(similarity, copy=False)
++        return self.sql(similarity)
++
+     def isascii_sql(self, expression: exp.IsAscii) -> str:
+         return self.sql(
+             exp.paren(expression.this.rlike(exp.Literal.string("^[\x00-\x7f]*$")), copy=False)
+diff --git a/sqlglot/parsers/duckdb.py b/sqlglot/parsers/duckdb.py
+index 915226a..34b68fd 100644
+--- a/sqlglot/parsers/duckdb.py
++++ b/sqlglot/parsers/duckdb.py
+@@ -89,6 +89,15 @@ def _build_generate_series(end_exclusive: bool = False) -> t.Callable[[list], ex
+     return _builder
+ 
+ 
++def _build_array_vector_function(
++    expression_type: type[exp.Expr],
++) -> t.Callable[[list], exp.Expr]:
++    def _build(args: list) -> exp.Expr:
++        return expression_type(this=seq_get(args, 0), expression=seq_get(args, 1), array=True)
++
++    return _build
++
++
+ def _build_make_timestamp(args: list) -> exp.Expr:
+     if len(args) == 1:
+         return exp.UnixToTime(this=seq_get(args, 0), scale=exp.UnixToTime.MICROS)
+@@ -180,6 +189,8 @@ class DuckDBParser(parser.Parser):
+             lambda args: exp.ArrayDistinct(this=seq_get(args, 0), check_null=False),
+         ),
+         "ANY_VALUE": lambda args: exp.IgnoreNulls(this=exp.AnyValue.from_arg_list(args)),
++        "ARRAY_COSINE_SIMILARITY": _build_array_vector_function(exp.CosineSimilarity),
++        "ARRAY_DISTANCE": _build_array_vector_function(exp.EuclideanDistance),
+         "ARRAY_PREPEND": _build_array_prepend,
+         "ARRAY_REVERSE_SORT": _build_list_sort("ARRAY_REVERSE_SORT", desc=True),
+         "ARRAY_SORT": _build_list_sort("ARRAY_SORT"),

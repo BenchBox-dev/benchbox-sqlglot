@@ -2,7 +2,7 @@
   "schema": 1,
   "distribution": "benchbox-sqlglot",
   "import_package": "benchbox._vendor.sqlglot",
-  "version": "30.35.0.2",
+  "version": "30.35.0.3",
   "upstream": {
     "repository": "https://github.com/tobymao/sqlglot",
     "tag": "v30.35.0",
@@ -277,7 +277,7 @@
         "tests.dialects.test_questdb",
         "tests.test_platform_dialects_engines"
       ],
-      "reason": "Explicit Netezza, Greenplum, Vertica, DataFusion and QuestDB dialects, each a thin subclass of postgres (BenchBox substituted postgres for them), with QuestDB's generator (comma joins, DATEADD, SUBSTRING and CTE column lists written in forms QuestDB runs) in its own module; execution tests run DataFusion dialect output and the date arithmetic rewrite on real engines; the Netezza dialect reads the SQLite date idioms (see netezza-sqlite-idioms)."
+      "reason": "Explicit Netezza, Greenplum, Vertica, DataFusion and QuestDB dialects, each a thin subclass of postgres (BenchBox substituted postgres for them), with QuestDB's generator (comma joins, DATEADD, SUBSTRING, CTE column lists and a bare CURRENT_TIMESTAMP written in forms QuestDB runs: now()) in its own module; execution tests run DataFusion dialect output and the date arithmetic rewrite on real engines; the Netezza dialect reads the SQLite date idioms (see netezza-sqlite-idioms)."
     },
     {
       "id": "platform-dialects",
@@ -1126,6 +1126,106 @@
       ],
       "reason": "The SQLite generator lowers PIVOT and UNPIVOT and expands ORDER BY ALL before writing SQL, and raises UnsupportedError for a pivot it cannot lower instead of writing the query without it (Read Primitives pivot_basic and unpivot_basic returned the unpivoted rows and orderby_all_desc lost its ordering).",
       "patch": "downstream/patches/sqlite-pivot-lowering.patch"
+    },
+    {
+      "id": "extract-parts",
+      "source": "db301fb423972fbc9ee2ad9f1057a9a656d83e75",
+      "status": "original",
+      "depends": [
+        "real-engine-ci",
+        "benchbox-rewrites"
+      ],
+      "paths": [
+        "sqlglot/benchbox/extract_parts.py",
+        "tests/test_benchbox_extract_parts.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_extract_parts"
+      ],
+      "reason": "is_day_of_week and epoch_difference find EXTRACT(DOW FROM x) and EXTRACT(EPOCH FROM (a - b)) so each generator can write them in its own functions; the tests pin every dialect's text and execute the output on SQLite and PySpark against DuckDB (the NYC Taxi source) and hand-computed values."
+    },
+    {
+      "id": "extract-day-epoch-generators",
+      "source": "db301fb423972fbc9ee2ad9f1057a9a656d83e75",
+      "status": "carried",
+      "upstream_state": "not_offered",
+      "upstream_reason": "Wires the fork's sqlglot.benchbox.extract_parts helper into five generators for BenchBox's NYC Taxi queries; upstream would first need that module.",
+      "depends": [
+        "extract-parts",
+        "singlestore-json-integer-index",
+        "snowflake-regexp-replace-groups",
+        "empty-group-by-generator",
+        "sqlite-pivot-lowering"
+      ],
+      "paths": [
+        "sqlglot/generators/bigquery.py",
+        "sqlglot/generators/singlestore.py",
+        "sqlglot/generators/snowflake.py",
+        "sqlglot/generators/spark.py",
+        "sqlglot/generators/sqlite.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_extract_parts"
+      ],
+      "reason": "EXTRACT(DOW FROM x) is (EXTRACT(DAYOFWEEK FROM x) - 1) on BigQuery, (DAYOFWEEK(x) - 1) on Spark, Databricks and SingleStore and CAST(STRFTIME('%w', x) AS INTEGER) on SQLite; EXTRACT(EPOCH FROM (a - b)) is a difference of UNIX_SECONDS(TIMESTAMP(.)) on BigQuery, of UNIX_TIMESTAMP(.) on Spark and Databricks, of CAST(STRFTIME('%s', .) AS INTEGER) on SQLite, (DATEDIFF(second, b, a)) on Snowflake and TIMESTAMPDIFF(SECOND, b, a) on SingleStore, where the MySQL form UNIX_TIMESTAMP((a - b)) subtracted two datetimes as numbers. These engines had left the field in the output (BigQuery, Spark, Databricks, SQLite) or computed a wrong number (SingleStore, Snowflake's DATE_PART of a difference). Output matches the regexes BenchBox's NYC Taxi benchmark applied, except on SingleStore where the epoch difference is now correct.",
+      "patch": "downstream/patches/extract-day-epoch-generators.patch"
+    },
+    {
+      "id": "series-select-lowering",
+      "source": "f95e1e32ecd17753bc9c5a3dccb56a152929896a",
+      "status": "original",
+      "depends": [
+        "real-engine-ci",
+        "benchbox-rewrites",
+        "platform-dialect-modules"
+      ],
+      "paths": [
+        "sqlglot/benchbox/series.py",
+        "tests/test_benchbox_series.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_series"
+      ],
+      "reason": "lower_series_selects(expression, dialect) writes SELECT unnest(generate_series(lo, hi)) AS n as the form each engine runs (a recursive CTE on SQLite, numbers() on Doris, a digit cross join on SingleStore, table functions on Snowflake, BigQuery, QuestDB and StarRocks, generate_series() without unnest on PostgreSQL); SQLite, Doris, StarRocks and SingleStore otherwise got EXPLODE(GENERATE_SERIES(...)). Alias and bounds come from the query. Execution tests compare the rows with DuckDB on SQLite, PostgreSQL, Doris, StarRocks and QuestDB, and run the SingleStore cross join on DuckDB; the same file asserts that BEGIN, CREATE TEMPORARY TABLE and typed date literals need no rewrite."
+    },
+    {
+      "id": "vector-similarity-tests",
+      "source": "db301fb423972fbc9ee2ad9f1057a9a656d83e75",
+      "status": "original",
+      "depends": [
+        "real-engine-ci",
+        "benchbox-rewrites"
+      ],
+      "paths": [
+        "tests/test_benchbox_vector_functions.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_vector_functions"
+      ],
+      "reason": "ARRAY_DISTANCE and ARRAY_COSINE_SIMILARITY from DuckDB read as nodes and write for SingleStore as EUCLIDEAN_DISTANCE and the DOT_PRODUCT cosine formula; DuckDB executes the formula (ARRAY_INNER_PRODUCT for DOT_PRODUCT) against the native function, including the zero-vector NULL."
+    },
+    {
+      "id": "vector-similarity-functions",
+      "source": "db301fb423972fbc9ee2ad9f1057a9a656d83e75",
+      "status": "carried",
+      "upstream_state": "not_offered",
+      "upstream_reason": "Adds a CosineSimilarity node and an array flag that records DuckDB's ARRAY_ spelling for BenchBox's SingleStore vector queries; an upstream-submission candidate once the SingleStore formula is agreed.",
+      "depends": [
+        "vector-similarity-tests",
+        "extract-day-epoch-generators",
+        "duckdb-order-by-all-keyword"
+      ],
+      "paths": [
+        "sqlglot/expressions/math.py",
+        "sqlglot/generators/duckdb.py",
+        "sqlglot/generators/singlestore.py",
+        "sqlglot/parsers/duckdb.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_vector_functions"
+      ],
+      "reason": "The DuckDB parser read ARRAY_DISTANCE and ARRAY_COSINE_SIMILARITY as anonymous functions, so no other dialect could write them. They are now EuclideanDistance and the new CosineSimilarity, each with array=True so DuckDB writes the ARRAY_ spelling back (LIST_DISTANCE stays LIST_DISTANCE). The SingleStore generator writes EUCLIDEAN_DISTANCE(a, b) and DOT_PRODUCT(a, b) / NULLIF(SQRT(DOT_PRODUCT(a, a)) * SQRT(DOT_PRODUCT(b, b)), 0), parenthesized inside a larger expression. Other targets write COSINE_SIMILARITY(a, b) where they wrote ARRAY_COSINE_SIMILARITY(a, b).",
+      "patch": "downstream/patches/vector-similarity-functions.patch"
     }
   ]
 }
