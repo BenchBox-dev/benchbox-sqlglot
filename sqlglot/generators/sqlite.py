@@ -285,6 +285,17 @@ class SQLiteGenerator(generator.Generator):
         self.unsupported("SQLite AUTOINCREMENT requires an INTEGER PRIMARY KEY")
         return ""
 
+    def extract_sql(self, expression: exp.Extract) -> str:
+        # SQLite has no EXTRACT; YEAR/MONTH/DAY of a DATE map to STRFTIME.
+        # date_part=True (PostgreSQL DATE_PART) returns a double, so it is left as is.
+        fmt = {"YEAR": "%Y", "MONTH": "%m", "DAY": "%d"}.get(expression.name.upper())
+        value = expression.expression
+        if fmt and value.is_type(exp.DType.DATE) and not expression.args.get("date_part"):
+            return self.sql(
+                exp.cast(exp.TimeToStr(this=value, format=exp.Literal.string(fmt)), exp.DType.INT)
+            )
+        return super().extract_sql(expression)
+
     def insert_sql(self, expression: exp.Insert) -> str:
         if expression.args.get("ignore"):
             expression.set("ignore", False)

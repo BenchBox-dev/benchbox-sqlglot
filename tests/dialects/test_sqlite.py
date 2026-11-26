@@ -859,6 +859,43 @@ class TestSQLite(Validator):
             },
         )
 
+    def test_date_extraction(self):
+        for part, fmt in (("YEAR", "%Y"), ("MONTH", "%m"), ("DAY", "%d")):
+            self.validate_all(
+                f"SELECT CAST(STRFTIME('{fmt}', DATE('2024-03-05')) AS INTEGER)",
+                read={
+                    "postgres": f"SELECT EXTRACT({part} FROM DATE '2024-03-05')",
+                    "duckdb": f"SELECT EXTRACT({part} FROM DATE '2024-03-05')",
+                },
+            )
+        self.validate_all(
+            "SELECT CAST(STRFTIME('%Y', DATE(d)) AS INTEGER) FROM t",
+            read={"postgres": "SELECT EXTRACT(YEAR FROM CAST(d AS DATE)) FROM t"},
+        )
+
+        # Shapes that are not a DATE input or are not integer-valued are left unchanged
+        self.validate_all(
+            "SELECT EXTRACT(YEAR FROM d)",
+            read={"postgres": "SELECT EXTRACT(YEAR FROM d)"},
+        )
+        self.validate_all(
+            "SELECT EXTRACT(YEAR FROM DATE('2024-03-05'))",
+            read={"postgres": "SELECT DATE_PART('year', DATE '2024-03-05')"},
+        )
+
+    def test_date_extraction_execution(self):
+        with closing(sqlite3.connect(":memory:")) as connection:
+            for value in ("2024-03-05", "2000-02-29", "1999-12-31", "2021-01-09"):
+                year, month, day = map(int, value.split("-"))
+                sql = parse_one(
+                    f"SELECT EXTRACT(YEAR FROM CAST('{value}' AS DATE)),"
+                    f" EXTRACT(MONTH FROM CAST('{value}' AS DATE)),"
+                    f" EXTRACT(DAY FROM CAST('{value}' AS DATE))",
+                    read="postgres",
+                ).sql("sqlite")
+                with self.subTest(value=value):
+                    self.assertEqual(connection.execute(sql).fetchone(), (year, month, day))
+
     def test_sqlite(self):
         # Range operators (IN/LIKE) are left-associative and can be chained.
         self.validate_identity("SELECT 1 IN (0) IN (1)")
