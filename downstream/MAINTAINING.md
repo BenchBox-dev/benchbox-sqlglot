@@ -170,6 +170,21 @@ a new delivery attempt (or dispatch `source_sha`). The new record carries the sa
 version and hash with a new run attempt; an old receipt is never rebound. A different
 hash is the conflict above.
 
+**Stranded version.** A rerun only helps when the source commit already has a `push`
+run of each required workflow. If the merge that introduced a version never got push
+runs (for example, a GitHub incident during the merge), that version can never be
+delivered: no rerun or dispatch creates a `push` run, and a dispatch with that
+`source_sha` fails with `has no push/main run at <sha> yet`. To confirm, list the runs
+at the merge commit with `gh run list -R BenchBox-dev/benchbox-sqlglot -c <sha>`; a
+stranded commit shows no `push` runs of `BenchBox distribution`, `BenchBox real
+engines` or `Run tests and linter checks`. To recover, merge a pull request that
+changes only `version` in `downstream/patches.json` to the next fork version. Its
+merge commit gets normal push runs and delivers the same source under the new
+version. The stranded version stays in `main`'s history and is never delivered;
+consumers skip from the previous delivered version to the new one. On 2026-11-25,
+merge commit `e015509a` (#155, 30.35.0.2) was stranded this way and #156 (30.35.0.3,
+merge `a27947de`) recovered it.
+
 ## Real-engine tests and gap list
 
 Translated SQL is proven by executing it on a real engine wherever one can be
