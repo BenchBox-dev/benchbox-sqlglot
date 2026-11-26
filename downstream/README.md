@@ -149,6 +149,13 @@ takes an expression and options (every name or number it matches is an argument)
   A `CASE`/`IF` that returns such a quotient beside a `CAST(0 AS DECIMAL(p, s))` zero (written by `decimal_zero_literals`)
   gets `CAST(0 AS DOUBLE)` for the zero, because ClickHouse has no common type for `Float64` and `Decimal` without the
   Variant type (`use_variant_as_common_type = 1`); `decimal_zero_literals` leaves such a zero as `0.0`. TPC-DS Q11.
+- `exact_decimal_quotients(expression, operand_scale=6)` makes `CAST(x / y AS DECIMAL(p, s))` exact. DuckDB divides
+  `DECIMAL` by `DECIMAL` in `DOUBLE` at any width, so `CAST(1.71 / 6.00 AS DECIMAL(10, 2))` is `0.28`, not `0.29`. The
+  rewrite divides `HUGEINT` values scaled by `10^operand_scale` (`(2 * ABS(X) * 10^s + ABS(Y)) // (2 * ABS(Y))`, sign
+  restored) and returns the quotient rounded half away from zero at scale `s`. Only a cast to `DECIMAL` with an explicit
+  precision and scale whose operand is a `/` is rewritten; bare divisions and other casts are untouched, and applying the
+  rewrite twice changes nothing. NULL operands and `NULLIF(y, 0)` give NULL; a literally zero divisor raises DuckDB's
+  integer division error, as the unrewritten cast of `inf` does.
 - `use_nulls_for_rollups(expression)` adds `SETTINGS group_by_use_nulls = 1` to a ClickHouse query with `ROLLUP`, `CUBE` or
   `GROUPING SETS`. Without it ClickHouse writes `''` or `0` in a rolled-up key whose column is not `Nullable` (a literal from a
   `UNION ALL` branch, TPC-DS Q5, Q14, Q77 and Q80), where SQL has NULL. Other queries are unchanged.

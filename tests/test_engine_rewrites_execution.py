@@ -6,7 +6,9 @@ locally each class skips when its engine is not available. Data is built inline 
 and the chDB connection (one statement per call) needs no tables.
 """
 
+import random
 import unittest
+from decimal import ROUND_HALF_UP, Decimal, localcontext
 
 import sqlglot
 from sqlglot.benchbox.engine_rewrites import (
@@ -14,6 +16,7 @@ from sqlglot.benchbox.engine_rewrites import (
     add_query_settings,
     correlated_exists_to_in,
     decimal_zero_literals,
+    exact_decimal_quotients,
     lowercase_identifiers,
     qualify_order_by_columns,
 )
@@ -323,6 +326,127 @@ class TestDerivedTableAliasesOnDoris(DerivedTableAliases, MySqlFamilyGeneration,
 class TestDerivedTableAliasesOnDuckDB(DerivedTableAliases, unittest.TestCase):
     ENGINE = "duckdb"
     DIALECT = "duckdb"
+
+
+def decimal_rows(pairs, x_type="DECIMAL(8, 2)", y_type="DECIMAL(10, 2)"):
+    def cell(value, data_type):
+        return "NULL" if value is None else f"CAST('{value}' AS {data_type})"
+
+    values = ", ".join(
+        f"({i}, {cell(x, x_type)}, {cell(y, y_type)})" for i, (x, y) in enumerate(pairs)
+    )
+    return f"(VALUES {values}) AS d(id, x, y)"
+
+
+def exact_quotient(x, y, places, times=1):
+    """``x * times / y`` rounded half away from zero, or None, with no binary floating point."""
+    if x is None or y is None or Decimal(y) == 0:
+        return None
+    with localcontext() as ctx:
+        ctx.prec = 80
+        quotient = Decimal(x) * times / Decimal(y)
+        return quotient.quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
+
+
+@requires_engine("duckdb")
+class TestExactDecimalQuotientsOnDuckDB(unittest.TestCase):
+    TIES = (
+        ("1.71", "6.00"),
+        ("0.57", "2.00"),
+        ("-1.71", "6.00"),
+        ("1.71", "-6.00"),
+        ("-1.71", "-6.00"),
+        ("-0.57", "2.00"),
+        ("0.57", "-2.00"),
+        ("0.01", "8.00"),
+        ("0.03", "8.00"),
+        ("-0.03", "8.00"),
+        ("2.50", "100.00"),
+        ("0.00", "3.00"),
+        ("5.00", "3.00"),
+        ("-5.00", "3.00"),
+    )
+
+    def run_pairs(self, pairs, template, **types):
+        sql = f"SELECT id, {template} FROM {decimal_rows(pairs, **types)} ORDER BY id"
+        rewritten = exact_decimal_quotients(sqlglot.parse_one(sql, read="duckdb")).sql("duckdb")
+        return [row[1] for row in engines.execute("duckdb", rewritten)]
+
+    def test_engine_divides_decimals_in_double(self):
+        rows = engines.execute(
+            "duckdb",
+            "SELECT typeof(CAST(1.71 AS DECIMAL(10, 2)) / CAST(6 AS DECIMAL(10, 2))), "
+            "CAST(1.71 / 6.00 AS DECIMAL(10, 2))",
+        )
+        self.assertEqual(rows, [("DOUBLE", Decimal("0.28"))])
+
+    def test_scaled_integer_product_stays_exact(self):
+        rows = engines.execute(
+            "duckdb",
+            "SELECT typeof(CAST(12345678901234567 AS DECIMAL(38, 0)) * CAST(0.01 AS DECIMAL(2, 2))), "
+            "CAST(12345678901234567 AS DECIMAL(38, 0)) * CAST(0.01 AS DECIMAL(2, 2))",
+        )
+        self.assertEqual(rows, [("DECIMAL(38,2)", Decimal("123456789012345.67"))])
+
+    def test_ties_round_half_away_from_zero(self):
+        got = self.run_pairs(self.TIES, "CAST(x / y AS DECIMAL(10, 2))")
+        self.assertEqual(got, [exact_quotient(x, y, 2) for x, y in self.TIES])
+        self.assertEqual(
+            got[:4], [Decimal("0.29"), Decimal("0.29"), Decimal("-0.29"), Decimal("-0.29")]
+        )
+
+    def test_null_operand_and_nullif_zero_divisor_give_null(self):
+        pairs = [("1.00", "0.00"), (None, "2.00"), ("1.00", None), (None, None), ("1.00", "4.00")]
+        got = self.run_pairs(pairs, "CAST(x / NULLIF(y, 0) AS DECIMAL(10, 2))")
+        self.assertEqual(got, [None, None, None, None, Decimal("0.25")])
+
+    def test_literal_zero_divisor_is_an_error_like_the_unrewritten_cast(self):
+        sql = "SELECT CAST(CAST(1.50 AS DECIMAL(8, 2)) / 0 AS DECIMAL(10, 2))"
+        import duckdb
+
+        with self.assertRaises(duckdb.Error):
+            engines.execute("duckdb", sql)
+        rewritten = exact_decimal_quotients(sqlglot.parse_one(sql, read="duckdb")).sql("duckdb")
+        with self.assertRaises(duckdb.Error):
+            engines.execute("duckdb", rewritten)
+
+    def random_pairs(self, count=10_000, seed=20240229):
+        rng = random.Random(seed)
+        pairs = []
+        for _ in range(count):
+            x = rng.randint(-999_999, 999_999)
+            y = rng.choice([-1, 1]) * rng.randint(1, 99_999_999)
+            pairs.append((f"{Decimal(x).scaleb(-2):.2f}", f"{Decimal(y).scaleb(-2):.2f}"))
+        # Ties are rare in random data: add a block of pairs that are exact ties by construction.
+        for _ in range(count // 10):
+            y = rng.choice([2, 4, 6, 8, 20, 50, 200]) * rng.choice([-1, 1])
+            x = rng.randint(-99_999, 99_999)
+            pairs.append((f"{Decimal(x).scaleb(-2):.2f}", f"{Decimal(y):.2f}"))
+        return pairs
+
+    def test_random_pairs_match_exact_decimal_division(self):
+        pairs = self.random_pairs()
+        for target, places, limit in (
+            ("DECIMAL(10, 2)", 2, Decimal("99999999.99")),
+            ("DECIMAL(5, 2)", 2, Decimal("999.99")),
+            ("DECIMAL(8, 0)", 0, Decimal(9999999)),
+            ("DECIMAL(10, 4)", 4, Decimal("999999.9999")),
+        ):
+            with self.subTest(target=target):
+                # Keep only the pairs whose quotient fits the target.
+                inside = [(x, y) for x, y in pairs if abs(exact_quotient(x, y, places)) <= limit]
+                self.assertGreater(len(inside), 1_000)
+                got = self.run_pairs(inside, f"CAST(x / y AS {target})")
+                self.assertEqual(got, [exact_quotient(x, y, places) for x, y in inside])
+
+    def test_dividend_times_one_hundred_over_close(self):
+        pairs = self.random_pairs(count=2_000, seed=7)
+        inside = [
+            (x, y) for x, y in pairs if abs(exact_quotient(x, y, 2, 100)) <= Decimal("999999.99")
+        ]
+        self.assertGreater(len(inside), 500)
+        got = self.run_pairs(inside, "CAST(x * 100 / y AS DECIMAL(10, 2))")
+        self.assertEqual(got, [exact_quotient(x, y, 2, 100) for x, y in inside])
 
 
 if __name__ == "__main__":

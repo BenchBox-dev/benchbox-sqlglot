@@ -603,6 +603,108 @@ def decimal_division_to_double(expression: E, copy: bool = True) -> E:
     return expression
 
 
+def _decimal_scale(data_type: exp.DataType) -> int | None:
+    params = data_type.expressions
+    if data_type.this != exp.DType.DECIMAL or len(params) != 2:
+        return None
+    values = [p.this for p in params if isinstance(p, exp.DataTypeParam)]
+    if len(values) != 2 or not all(isinstance(v, exp.Literal) and v.is_int for v in values):
+        return None
+    return int(values[1].name)
+
+
+def _scaled_integer(operand: exp.Expr, operand_scale: int) -> exp.Expr:
+    """``CAST(operand * 10^operand_scale AS HUGEINT)``."""
+    if not isinstance(operand, (exp.Literal, exp.Column, exp.Paren, exp.Func)):
+        operand = exp.paren(operand, copy=False)
+    scaled = exp.Mul(this=operand, expression=exp.Literal.number(10**operand_scale))
+    return exp.Cast(this=scaled, to=exp.DataType.build(exp.DType.INT128))
+
+
+def exact_decimal_quotients(expression: E, operand_scale: int = 6, copy: bool = True) -> E:
+    """Make ``CAST(x / y AS DECIMAL(p, s))`` exact on engines that divide decimals in ``DOUBLE``.
+
+    DuckDB computes ``DECIMAL / DECIMAL`` as ``DOUBLE`` at any width, so
+    ``CAST(1.71 / 6.00 AS DECIMAL(10, 2))`` is ``0.28`` (the double is ``0.28499999...``), not
+    ``0.29``, which is the exact quotient rounded half away from zero. The rewrite divides scaled
+    integers instead. With ``X = CAST(x * 10^operand_scale AS HUGEINT)`` and ``Y`` likewise, the
+    quotient rounded half away from zero at scale ``s`` is
+    ``q = (2 * ABS(X) * 10^s + ABS(Y)) // (2 * ABS(Y))`` with the sign of ``X / Y`` restored
+    (``-1`` when exactly one of ``X`` and ``Y`` is negative), and the result is
+    ``CAST(CAST(sign * q AS DECIMAL(38, 0)) * CAST(10^-s AS DECIMAL(s, s)) AS DECIMAL(p, s))``,
+    which stays exact (``DECIMAL(38, 0) * DECIMAL(s, s)`` is ``DECIMAL(38, s)``). A scale of
+    ``0`` casts ``sign * q`` directly.
+
+    Only a ``CAST`` to ``DECIMAL`` with an explicit precision and scale whose operand (through
+    parentheses) is a ``/`` is rewritten. A bare ``/`` and a cast to another type are left alone,
+    and the rewritten cast no longer holds a ``/``, so applying the rewrite twice changes nothing.
+
+    A NULL operand gives NULL, and so does ``NULLIF(y, 0)`` with ``y = 0``. A divisor that is
+    literally zero, or smaller than ``10^-operand_scale`` so that ``Y`` is ``0``, raises the
+    engine's integer division by zero error (the unrewritten cast of ``x / 0`` also fails, on
+    ``inf``). Operands are exact to ``operand_scale`` decimals and, scaled, must fit ``HUGEINT``.
+
+    Args:
+        expression: the expression to rewrite.
+        operand_scale: decimals of each operand that take part in the division.
+        copy: rewrite a copy instead of mutating ``expression``.
+
+    Returns:
+        The rewritten expression.
+    """
+    if copy:
+        expression = expression.copy()
+    casts = [
+        node
+        for node in expression.find_all(exp.Cast)
+        if _decimal_scale(node.to) is not None and isinstance(node.this.unnest(), exp.Div)
+    ]
+    # Children first, so a division inside an operand is rewritten before its parent copies it.
+    for node in reversed(casts):
+        scale = t.cast(int, _decimal_scale(node.to))
+        quotient = node.this.unnest()
+        dividend = _scaled_integer(quotient.this, operand_scale)
+        divisor = _scaled_integer(quotient.expression, operand_scale)
+
+        def zero_below(operand: exp.Expr) -> exp.Expr:
+            return exp.paren(exp.LT(this=operand.copy(), expression=exp.Literal.number(0)))
+
+        sign = exp.Case(
+            ifs=[
+                exp.If(
+                    this=exp.NEQ(this=zero_below(dividend), expression=zero_below(divisor)),
+                    true=exp.Neg(this=exp.Literal.number(1)),
+                )
+            ],
+            default=exp.Literal.number(1),
+        )
+        numerator = exp.Add(
+            this=exp.Mul(
+                this=exp.Mul(this=exp.Literal.number(2), expression=exp.Abs(this=dividend.copy())),
+                expression=exp.Literal.number(10**scale),
+            ),
+            expression=exp.Abs(this=divisor.copy()),
+        )
+        denominator = exp.paren(
+            exp.Mul(this=exp.Literal.number(2), expression=exp.Abs(this=divisor.copy()))
+        )
+        signed = exp.Mul(
+            this=exp.paren(sign),
+            expression=exp.paren(exp.IntDiv(this=exp.paren(numerator), expression=denominator)),
+        )
+        result: exp.Expr = exp.Cast(
+            this=signed, to=exp.DataType.build("DECIMAL(38, 0)", dialect="duckdb")
+        )
+        if scale:
+            unit = exp.Cast(
+                this=exp.Literal.number("0." + "0" * (scale - 1) + "1"),
+                to=exp.DataType.build(f"DECIMAL({scale}, {scale})", dialect="duckdb"),
+            )
+            result = exp.Mul(this=result, expression=unit)
+        node.set("this", result)
+    return expression
+
+
 def use_nulls_for_rollups(expression: E, copy: bool = True) -> E:
     """Add ``SETTINGS group_by_use_nulls = 1`` to a ClickHouse query that has ``ROLLUP``, ``CUBE`` or ``GROUPING SETS``.
 
