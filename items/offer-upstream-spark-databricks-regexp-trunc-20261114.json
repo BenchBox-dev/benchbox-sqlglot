@@ -4,7 +4,7 @@
     "An upstream pull request for the reduced spark-databricks-regexp-trunc change is opened and linked; patches.json moves spark-databricks-regexp-trunc to upstream_state offered with that tobymao/sqlglot URL and a reason saying where it stands.",
     "The upstream PR's tests pass on the real engine locally or in upstream CI, with the evidence recorded in context."
   ],
-  "context": "Decision gate (owner): approve this offer before any upstream contact.\n\nVerification rubric: (1) the reduced change applies to current upstream main; (2) its dialect tests pass on the real engine; (3) the fork's downstream contract tests pass after the patches.json edit.\n\nGuardrails: no pull request, issue or comment on tobymao/sqlglot until the owner approves this specific offer in this item's context; the offered change must be the fork patch reduced to upstream-only behaviour; the patch stays carried in patches.json until upstream merges and a refresh retires it with equivalence evidence.\n\nUpstream rules (tobymao/sqlglot AGENTS.md): Conventional Commits title ending with the agent model ([CLAUDE], [CODEX]); minimal scope; tests in tests/dialects that run on the real engine; no fork-only behaviour or benchbox package references.\n\n2026-11-26: owner decision (choice dialog): blocked with the Databricks and Snowflake offers. It depends on offer-upstream-databricks-primary-key-ordering-20261114, which waits on Databricks warehouse access. Do not split out the Spark part. The patch stays carried.",
+  "context": "Decision gate (owner): approve this offer before any upstream contact.\n\nVerification rubric: (1) the reduced change applies to current upstream main; (2) its dialect tests pass on the real engine; (3) the fork's downstream contract tests pass after the patches.json edit.\n\nGuardrails: no pull request, issue or comment on tobymao/sqlglot until the owner approves this specific offer in this item's context; the offered change must be the fork patch reduced to upstream-only behaviour; the patch stays carried in patches.json until upstream merges and a refresh retires it with equivalence evidence.\n\nUpstream rules (tobymao/sqlglot AGENTS.md): Conventional Commits title ending with the agent model ([CLAUDE], [CODEX]); minimal scope; tests in tests/dialects that run on the real engine; no fork-only behaviour or benchbox package references.\n\n2026-11-26: owner decision (choice dialog): blocked with the Databricks and Snowflake offers. It depends on offer-upstream-databricks-primary-key-ordering-20261114, which waits on Databricks warehouse access. Do not split out the Spark part. The patch stays carried.\n\n2026-11-26 owner decision (applies before any offer): reproduce the problem the way upstream expects sqlglot to be called, with parse, then qualify and annotate_types using a schema that types every column involved, then generate. Offer only what still fails on that path, say in the issue that the repro annotates types, and show it on real engines. Upstream declined tobymao/sqlglot#9384 because the repro skipped annotate_types. The rule is in downstream/MAINTAINING.md (Manifest entries) via BenchBox-dev/benchbox-sqlglot#162.",
   "description": "Spark and Databricks writer corrections (replacement group references, sub-day truncation); depends on empty-group-by-generator and databricks-primary-key-ordering, so it is offered after both. Approved as an offer candidate in the triage of not-offered-patches-lack-upstream-follow-up-20261112 (owner decision 2026-11-14). Each carried patch upstream merges is one less that can stop a refresh.",
   "sessions": [
     {
@@ -21,6 +21,14 @@
       "client": "omp-coding-agent",
       "op": "update",
       "op_id": "3250138a92eb208374e24efbc80ffc8c",
+      "session_id": "89a3c703264a431490f08b5cc9183389"
+    },
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:b044c55c5b742c4a0aecc506",
+      "at": "2026-11-26T23:50:37Z",
+      "client": "omp-coding-agent",
+      "op": "update",
+      "op_id": "416c3afa15f7d6ada2c7c8bdba9027e7",
       "session_id": "89a3c703264a431490f08b5cc9183389"
     }
   ]
