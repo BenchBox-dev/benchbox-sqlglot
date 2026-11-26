@@ -2,7 +2,7 @@ import sqlite3
 import unittest
 from contextlib import closing
 
-from sqlglot import ErrorLevel, ParseError, UnsupportedError, exp, parse_one
+from sqlglot import ErrorLevel, ParseError, UnsupportedError, exp, parse_one, transpile
 from sqlglot.generator import logger as generator_logger
 from sqlglot.helper import logger as helper_logger
 from sqlglot.optimizer.annotate_types import annotate_types
@@ -550,6 +550,27 @@ class TestSQLite(Validator):
                 self.assertEqual(
                     query.sql("sqlite", unsupported_level=ErrorLevel.RAISE),
                     f"SELECT {func}(t.ts, '1 DAY') FROM t",
+                )
+
+    def test_interval_arithmetic_current_date(self):
+        for read, sql, expected in (
+            (
+                "mysql",
+                "SELECT CURRENT_DATE - INTERVAL 90 DAY",
+                "SELECT DATE(CURRENT_DATE, '-90 DAY')",
+            ),
+            (
+                "postgres",
+                "SELECT * FROM t WHERE d >= CURRENT_DATE - INTERVAL '3' MONTH",
+                "SELECT * FROM t WHERE d >= DATE(CURRENT_DATE, '-3 MONTH', 'floor')",
+            ),
+        ):
+            with self.subTest(sql=sql):
+                self.assertEqual(
+                    transpile(sql, read=read, write="sqlite", unsupported_level=ErrorLevel.RAISE)[
+                        0
+                    ],
+                    expected,
                 )
 
     def test_interval_arithmetic_text_column(self):

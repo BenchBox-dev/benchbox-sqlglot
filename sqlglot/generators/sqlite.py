@@ -366,7 +366,10 @@ class SQLiteGenerator(generator.Generator):
                 self.unsupported("Clamping month-end interval arithmetic requires SQLite 3.46+")
 
         # DATE + INTERVAL can return DATE or TIMESTAMP depending on the source dialect.
-        if expression.is_type(exp.DType.DATE, exp.DType.DATE32):
+        # CURRENT_DATE is a DATE even when the tree was not type-annotated.
+        if expression.is_type(exp.DType.DATE, exp.DType.DATE32) or isinstance(
+            base, exp.CurrentDate
+        ):
             func = "DATE"
         elif expression.is_type(exp.DType.TIME, exp.DType.TIMETZ):
             func = "TIME"
