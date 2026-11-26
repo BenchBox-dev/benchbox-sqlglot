@@ -30,15 +30,10 @@
       "title": "Converge the fork SQLite interval and HAVING patches with upstream #9240 and #9286"
     },
     "delivery-recovery-without-push-runs-20261126": {
-      "claim": {
-        "expires_at": "2026-11-27T15:03:00Z",
-        "generation": "bda8ff917f8e44fc9f9af02b17d59cd1",
-        "renewals": 0,
-        "worker": "mcp:omp-coding-agent:joe@joe-mac-mini.local:b044c55c5b742c4a0aecc506"
-      },
+      "claim": null,
       "needs": [],
       "priority": "low",
-      "status": "active",
+      "status": "done",
       "title": "null"
     },
     "drift-probe-stops-at-first-failing-patch-20261117": {
