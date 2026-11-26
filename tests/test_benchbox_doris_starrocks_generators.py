@@ -143,6 +143,26 @@ class TestEmptyGroupBy(unittest.TestCase):
         )
 
 
+class TestArraySize(unittest.TestCase):
+    def test_doris_writes_array_size(self):
+        for read in ("postgres", "netezza", "doris"):
+            with self.subTest(read=read):
+                self.assertEqual(
+                    sqlglot.transpile(
+                        "SELECT ARRAY_LENGTH(parts) FROM t", read=read, write="doris"
+                    )[0],
+                    "SELECT ARRAY_SIZE(parts) FROM t",
+                )
+
+    def test_starrocks_keeps_array_length(self):
+        self.assertEqual(
+            sqlglot.transpile(
+                "SELECT CARDINALITY(parts) FROM t", read="postgres", write="starrocks"
+            )[0],
+            "SELECT ARRAY_LENGTH(parts) FROM t",
+        )
+
+
 # The rows of this query; the window runs over each group, so the inlined text must give the
 # same answers as the named window on an engine that supports both.
 WINDOW_DATA = (
@@ -200,6 +220,13 @@ class TestStarRocksGenerator(MySqlFamilyWindows, unittest.TestCase):
 @requires_engine("doris")
 class TestDorisGenerator(MySqlFamilyWindows, unittest.TestCase):
     ENGINE = "doris"
+
+    def test_array_size_runs(self):
+        written = sqlglot.transpile(
+            "SELECT CARDINALITY(ARRAY(1, 2, 3)) AS n", read="postgres", write="doris"
+        )[0]
+        self.assertEqual(written, "SELECT ARRAY_SIZE(ARRAY(1, 2, 3)) AS n")
+        self.assertEqual([int(row[0]) for row in engines.execute("doris", written)], [3])
 
 
 if __name__ == "__main__":

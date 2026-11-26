@@ -2,7 +2,7 @@
   "schema": 1,
   "distribution": "benchbox-sqlglot",
   "import_package": "benchbox._vendor.sqlglot",
-  "version": "30.35.0.5",
+  "version": "30.35.0.6",
   "upstream": {
     "repository": "https://github.com/tobymao/sqlglot",
     "tag": "v30.35.0",
@@ -1280,6 +1280,25 @@
       ],
       "reason": "The DuckDB parser read ARRAY_DISTANCE and ARRAY_COSINE_SIMILARITY as anonymous functions, so no other dialect could write them. They are now EuclideanDistance and the new CosineSimilarity, each with array=True so DuckDB writes the ARRAY_ spelling back (LIST_DISTANCE stays LIST_DISTANCE). The SingleStore generator writes EUCLIDEAN_DISTANCE(a, b) and DOT_PRODUCT(a, b) / NULLIF(SQRT(DOT_PRODUCT(a, a)) * SQRT(DOT_PRODUCT(b, b)), 0), parenthesized inside a larger expression. Other targets write COSINE_SIMILARITY(a, b) where they wrote ARRAY_COSINE_SIMILARITY(a, b).",
       "patch": "downstream/patches/vector-similarity-functions.patch"
+    },
+    {
+      "id": "doris-array-size",
+      "source": "a0600f327bae0993a0281d22ef6eac4072fe6862",
+      "status": "carried",
+      "upstream_state": "not_offered",
+      "upstream_reason": "Doris has no ARRAY_LENGTH function (it provides ARRAY_SIZE, SIZE and CARDINALITY), while the base generator writes exp.ArraySize as ARRAY_LENGTH; a one-line ARRAY_SIZE_NAME override like the Hive, Presto and Snowflake generators carry. Not offered yet.",
+      "depends": [
+        "empty-group-by-generator",
+        "doris-starrocks-named-windows"
+      ],
+      "paths": [
+        "sqlglot/generators/doris.py"
+      ],
+      "tests": [
+        "tests.test_benchbox_doris_starrocks_generators"
+      ],
+      "reason": "The Doris generator writes exp.ArraySize as ARRAY_SIZE. Before, a PostgreSQL-dialect CARDINALITY(array) reached Doris as ARRAY_LENGTH(array), which Doris rejects with errCode = 2, detailMessage = Can not found function 'ARRAY_LENGTH' (read_primitives array_length on Doris). StarRocks keeps ARRAY_LENGTH, which it supports.",
+      "patch": "downstream/patches/doris-array-size.patch"
     }
   ]
 }

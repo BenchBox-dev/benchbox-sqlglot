@@ -36,6 +36,7 @@ class DorisGenerator(MySQLGenerator):
     RENAME_TABLE_WITH_DB = False
     UPDATE_STATEMENT_SUPPORTS_FROM = True
     SUPPORTS_EMPTY_GROUP_BY = False
+    ARRAY_SIZE_NAME = "ARRAY_SIZE"
 
     TYPE_MAPPING = {
         **MySQLGenerator.TYPE_MAPPING,
