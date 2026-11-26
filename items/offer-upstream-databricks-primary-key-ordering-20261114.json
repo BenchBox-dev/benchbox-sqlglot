@@ -4,7 +4,7 @@
     "An upstream pull request for the reduced databricks-primary-key-ordering change is opened and linked; patches.json moves databricks-primary-key-ordering to upstream_state offered with that tobymao/sqlglot URL and a reason saying where it stands.",
     "The upstream PR's tests pass on the real engine locally or in upstream CI, with the evidence recorded in context."
   ],
-  "context": "Decision gate (owner): approve this offer before any upstream contact.\n\nVerification rubric: (1) the reduced change applies to current upstream main; (2) its dialect tests pass on the real engine; (3) the fork's downstream contract tests pass after the patches.json edit.\n\nGuardrails: no pull request, issue or comment on tobymao/sqlglot until the owner approves this specific offer in this item's context; the offered change must be the fork patch reduced to upstream-only behaviour; the patch stays carried in patches.json until upstream merges and a refresh retires it with equivalence evidence.\n\nUpstream rules (tobymao/sqlglot AGENTS.md): Conventional Commits title ending with the agent model ([CLAUDE], [CODEX]); minimal scope; tests in tests/dialects that run on the real engine; no fork-only behaviour or benchbox package references.\n\n2026-11-21: prepared but not offered. Branch upstream/databricks-primary-key-ordering (fork commit 2b9fe6e9 on upstream main 089891f2) holds the unchanged patch; tests.dialects.test_databricks passes, full suite has no new failures, no new ruff findings. Repro: T-SQL CREATE TABLE ... PRIMARY KEY (a DESC, b) transpiles to Databricks with DESC kept. Engine evidence so far is only the local Spark 4.3 parser (rejects base output with PARSE_SYNTAX_ERROR at DESC, accepts patched output). Real Databricks could not be reached: the Serverless Starter Warehouse (04851bf1f1d8ff51) fails to start with 'Cannot create the resource, please try again later.' The owner did not approve the offer on 2026-11-21 without real-engine evidence. Unblock: a working Databricks SQL warehouse, then run the base and patched DDL and ask the owner again.",
+  "context": "Decision gate (owner): approve this offer before any upstream contact.\n\nVerification rubric: (1) the reduced change applies to current upstream main; (2) its dialect tests pass on the real engine; (3) the fork's downstream contract tests pass after the patches.json edit.\n\nGuardrails: no pull request, issue or comment on tobymao/sqlglot until the owner approves this specific offer in this item's context; the offered change must be the fork patch reduced to upstream-only behaviour; the patch stays carried in patches.json until upstream merges and a refresh retires it with equivalence evidence.\n\nUpstream rules (tobymao/sqlglot AGENTS.md): Conventional Commits title ending with the agent model ([CLAUDE], [CODEX]); minimal scope; tests in tests/dialects that run on the real engine; no fork-only behaviour or benchbox package references.\n\n2026-11-21: prepared but not offered. Branch upstream/databricks-primary-key-ordering (fork commit 2b9fe6e9 on upstream main 089891f2) holds the unchanged patch; tests.dialects.test_databricks passes, full suite has no new failures, no new ruff findings. Repro: T-SQL CREATE TABLE ... PRIMARY KEY (a DESC, b) transpiles to Databricks with DESC kept. Engine evidence so far is only the local Spark 4.3 parser (rejects base output with PARSE_SYNTAX_ERROR at DESC, accepts patched output). Real Databricks could not be reached: the Serverless Starter Warehouse (04851bf1f1d8ff51) fails to start with 'Cannot create the resource, please try again later.' The owner did not approve the offer on 2026-11-21 without real-engine evidence. Unblock: a working Databricks SQL warehouse, then run the base and patched DDL and ask the owner again.\n\n2026-11-26: owner decision (choice dialog): keep blocked until Databricks warehouse access returns; do not offer without a real-engine run. The patch stays carried.",
   "description": "Self-contained Databricks generator and parser fix with no carried dependency. Approved as an offer candidate in the triage of not-offered-patches-lack-upstream-follow-up-20261112 (owner decision 2026-11-14). Each carried patch upstream merges is one less that can stop a refresh.",
   "sessions": [
     {
@@ -22,6 +22,14 @@
       "op": "update",
       "op_id": "55125d00a31f4e6b8de8200303c919b0",
       "session_id": "8d0e342d1cb046e5ab1a4e36308ac8da"
+    },
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:b044c55c5b742c4a0aecc506",
+      "at": "2026-11-26T14:38:32Z",
+      "client": "omp-coding-agent",
+      "op": "update",
+      "op_id": "1c6720ed5420fc3143cfd97c4e6dfd28",
+      "session_id": "89a3c703264a431490f08b5cc9183389"
     }
   ]
 }
