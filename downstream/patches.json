@@ -80,8 +80,12 @@
       "id": "sqlite-date-extraction",
       "source": "34cd3e9fdb29a4376023f9c6cd32932de07acd3d",
       "status": "carried",
-      "upstream_state": "not_offered",
-      "upstream_reason": "SQLite date extraction lowering with typed inputs; depends on postgres-extract-return-types, so it follows that patch upstream.",
+      "upstream_state": "offered",
+      "upstream": [
+        "https://github.com/tobymao/sqlglot/issues/9385",
+        "https://github.com/tobymao/sqlglot/pull/9386"
+      ],
+      "upstream_reason": "Offered as tobymao/sqlglot#9385 and fixed upstream by #9386 after v30.35.0: SQLite now writes YEAR, MONTH and DAY extraction of a typed DATE as CAST(STRFTIME(...) AS INTEGER), as this patch does. The patch stays carried until a refresh onto a tag that contains #9386 compares the two outputs and retires the parts upstream now covers.",
       "depends": [
         "postgres-extract-return-types"
       ],
@@ -100,16 +104,18 @@
       "id": "sqlite-date-interval-arithmetic",
       "source": "b60935672d3fc52c4982077131d4cb5140a69b72",
       "status": "carried",
-      "upstream_state": "not_offered",
+      "upstream_state": "offered",
       "upstream": [
         "https://github.com/tobymao/sqlglot/issues/9302",
         "https://github.com/tobymao/sqlglot/issues/9303",
         "https://github.com/tobymao/sqlglot/issues/9304",
         "https://github.com/tobymao/sqlglot/pull/9316",
         "https://github.com/tobymao/sqlglot/pull/9317",
-        "https://github.com/tobymao/sqlglot/pull/9318"
+        "https://github.com/tobymao/sqlglot/pull/9318",
+        "https://github.com/tobymao/sqlglot/issues/9384",
+        "https://github.com/tobymao/sqlglot/issues/9391"
       ],
-      "upstream_reason": "Upstream fixed the three cases this entry guarded, tobymao/sqlglot#9302 to #9304, in #9316 to #9318 (v30.34.0). The owner chose on 2026-11-24 to adopt upstream's interval arithmetic in full, so the staged resolution keeps only two things: a DATE plus a day-or-larger interval stays a DATE, a fork policy upstream does not share (it follows the source dialect's result type); and a CURRENT_DATE base is a DATE, which upstream misreports as unknown-type text (CURRENT_DATE - INTERVAL 90 DAY from MySQL raises). The CURRENT_DATE fix is an upstream candidate; not offered yet.",
+      "upstream_reason": "Upstream fixed the three cases this entry guarded, tobymao/sqlglot#9302 to #9304, in #9316 to #9318 (v30.34.0). The owner chose on 2026-11-24 to adopt upstream's interval arithmetic in full, so the staged resolution keeps only two things. First, a CURRENT_DATE base is a DATE: upstream declined this in #9384 because callers should run qualify and annotate_types first, after which upstream types CURRENT_DATE correctly. The fork keeps the rule because BenchBox translates without annotating types. Second, a DATE plus a day-or-larger interval stays a DATE. With types annotated, upstream follows PostgreSQL and DuckDB and writes DATETIME, so a DATE column compared with it drops boundary rows on SQLite; that wrong result is offered as #9391, which suggests promoting the DATE side of the comparison instead.",
       "depends": [],
       "paths": [
         "sqlglot/generators/sqlite.py",
