@@ -148,13 +148,17 @@ class TestArraySize(unittest.TestCase):
         for read in ("postgres", "netezza", "doris"):
             with self.subTest(read=read):
                 self.assertEqual(
-                    sqlglot.transpile("SELECT ARRAY_LENGTH(parts) FROM t", read=read, write="doris")[0],
+                    sqlglot.transpile(
+                        "SELECT ARRAY_LENGTH(parts) FROM t", read=read, write="doris"
+                    )[0],
                     "SELECT ARRAY_SIZE(parts) FROM t",
                 )
 
     def test_starrocks_keeps_array_length(self):
         self.assertEqual(
-            sqlglot.transpile("SELECT CARDINALITY(parts) FROM t", read="postgres", write="starrocks")[0],
+            sqlglot.transpile(
+                "SELECT CARDINALITY(parts) FROM t", read="postgres", write="starrocks"
+            )[0],
             "SELECT ARRAY_LENGTH(parts) FROM t",
         )
 
@@ -218,7 +222,9 @@ class TestDorisGenerator(MySqlFamilyWindows, unittest.TestCase):
     ENGINE = "doris"
 
     def test_array_size_runs(self):
-        written = sqlglot.transpile("SELECT CARDINALITY(ARRAY(1, 2, 3)) AS n", read="postgres", write="doris")[0]
+        written = sqlglot.transpile(
+            "SELECT CARDINALITY(ARRAY(1, 2, 3)) AS n", read="postgres", write="doris"
+        )[0]
         self.assertEqual(written, "SELECT ARRAY_SIZE(ARRAY(1, 2, 3)) AS n")
         self.assertEqual([int(row[0]) for row in engines.execute("doris", written)], [3])
 
