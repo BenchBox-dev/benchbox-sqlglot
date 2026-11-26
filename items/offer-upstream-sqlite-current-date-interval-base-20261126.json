@@ -3,7 +3,7 @@
     "A tobymao/sqlglot issue shows the false positive on upstream main and links a fork commit with the reduced change and real-SQLite tests; the issue number is recorded in context.",
     "The outcome (fixed, declined, or open) is recorded on sqlite-date-interval-arithmetic in downstream/patches.json once known."
   ],
-  "context": "Created 2026-11-26 from the owner decision (choice dialog): track and offer. The rule was kept in the fork when the owner chose to adopt upstream SQLite interval arithmetic in full (2026-11-24, #148).\n\n2026-11-26: filed as https://github.com/tobymao/sqlglot/issues/9384, linking fork commit 9789d3a7 (branch upstream/sqlite-current-date-interval-base, based on upstream main). The fix is 4 lines in SQLiteGenerator._date_delta_sql plus test_interval_arithmetic_current_date. The new test fails on main and passes with the fix; the full suite has no new failures. SQLite 3.53.1 and DuckDB 2.0.1 return the same dates. Waiting for upstream; then record the outcome on sqlite-date-interval-arithmetic in patches.json.",
+  "context": "Created 2026-11-26 from the owner decision (choice dialog): track and offer. The rule was kept in the fork when the owner chose to adopt upstream SQLite interval arithmetic in full (2026-11-24, #148).\n\n2026-11-26: filed as https://github.com/tobymao/sqlglot/issues/9384, linking fork commit 9789d3a7 (branch upstream/sqlite-current-date-interval-base, based on upstream main). The fix is 4 lines in SQLiteGenerator._date_delta_sql plus test_interval_arithmetic_current_date. The new test fails on main and passes with the fix; the full suite has no new failures. SQLite 3.53.1 and DuckDB 2.0.1 return the same dates. Waiting for upstream; then record the outcome on sqlite-date-interval-arithmetic in patches.json.\n\n2026-11-26: upstream closed #9384 as not planned. georgesittas: \"working as expected. You need to run annotate_types first (and possibly qualify before that)\". Checked on upstream main ba065108: after qualify and annotate_types, the MySQL query gives DATE(CURRENT_DATE, ...) with no warning. But with PostgreSQL or DuckDB input, a DATE column compared with DATE minus an interval becomes DATETIME(...) and drops the boundary row on SQLite (1 row where PostgreSQL 16.2 and DuckDB 2.0.1 return 2). With the owner's approval, that was filed as tobymao/sqlglot#9391 (no fork commit linked). The manifest records both in BenchBox-dev/benchbox-sqlglot#162; finish this item when #162 merges.",
   "description": "## Problem\nUpstream sqlglot (main 0c79658d, after v30.35.0) writes correct SQLite SQL for MySQL `SELECT CURRENT_DATE - INTERVAL 90 DAY` (`DATE(CURRENT_DATE, '-90 DAY')`) but also reports \"SQLite DATE() may discard the time in interval arithmetic\". With unsupported_level=RAISE that is an error, so strict callers reject valid queries. PostgreSQL `d >= CURRENT_DATE - INTERVAL '3' MONTH` behaves the same. CURRENT_DATE has no time part, so the warning is a false positive. The fork fixes it in the carried patch sqlite-date-interval-arithmetic (sqlglot/generators/sqlite.py, the exp.CurrentDate base check near line 642).\n\n## Change\nFile a tobymao/sqlglot issue (upstream accepts PRs only from collaborators) that shows the false positive and links a fork commit containing only the upstream-relevant change: treat an exp.CurrentDate base as DATE in SQLite interval arithmetic, with tests in tests/dialects/test_sqlite.py that run on real SQLite.\n\n## Guardrails\n- Owner approved this offer on 2026-11-26 (choice dialog). Post only this offer.\n- Title in Conventional Commits form ending with [CLAUDE]; no fork-only behaviour or benchbox references.\n- The fork patch stays carried until upstream merges a fix and a refresh retires the CURRENT_DATE rule with equivalence evidence.",
   "links": [
     "https://github.com/BenchBox-dev/benchbox-sqlglot/pull/148",
@@ -24,6 +24,14 @@
       "client": "omp-coding-agent",
       "op": "update",
       "op_id": "b639b983cc917180107fe6a80ffd8501",
+      "session_id": "89a3c703264a431490f08b5cc9183389"
+    },
+    {
+      "actor": "mcp:omp-coding-agent:joe@joe-mac-mini.local:b044c55c5b742c4a0aecc506",
+      "at": "2026-11-26T23:50:39Z",
+      "client": "omp-coding-agent",
+      "op": "update",
+      "op_id": "7788a91bd2c00a9ad34b9031554e50db",
       "session_id": "89a3c703264a431490f08b5cc9183389"
     }
   ]
