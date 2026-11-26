@@ -131,12 +131,17 @@
       "title": "Offer the sqlite-date-day-arithmetic carried patch upstream"
     },
     "offer-upstream-sqlite-date-extraction-20261114": {
-      "claim": null,
+      "claim": {
+        "expires_at": "2026-11-27T23:50:29Z",
+        "generation": "fe0e3c57e17845078735a4c2f287300c",
+        "renewals": 0,
+        "worker": "mcp:omp-coding-agent:joe@joe-mac-mini.local:b044c55c5b742c4a0aecc506"
+      },
       "needs": [
         "offer-upstream-postgres-extract-return-types-20261114"
       ],
       "priority": "low",
-      "status": "open",
+      "status": "active",
       "title": "Offer the sqlite-date-extraction carried patch upstream"
     },
     "offer-upstream-sqlite-set-operation-operands-20261119": {
