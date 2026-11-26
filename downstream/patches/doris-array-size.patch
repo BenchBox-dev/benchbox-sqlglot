@@ -1,0 +1,12 @@
+diff --git a/sqlglot/generators/doris.py b/sqlglot/generators/doris.py
+index 66105ee32..55ea7736d 100644
+--- a/sqlglot/generators/doris.py
++++ b/sqlglot/generators/doris.py
+@@ -36,6 +36,7 @@ class DorisGenerator(MySQLGenerator):
+     RENAME_TABLE_WITH_DB = False
+     UPDATE_STATEMENT_SUPPORTS_FROM = True
+     SUPPORTS_EMPTY_GROUP_BY = False
++    ARRAY_SIZE_NAME = "ARRAY_SIZE"
+ 
+     TYPE_MAPPING = {
+         **MySQLGenerator.TYPE_MAPPING,
