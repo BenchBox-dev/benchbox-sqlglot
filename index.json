@@ -113,7 +113,7 @@
         "offer-upstream-databricks-primary-key-ordering-20261114"
       ],
       "priority": "low",
-      "status": "open",
+      "status": "blocked",
       "title": "Offer the spark-databricks-regexp-trunc carried patch upstream"
     },
     "offer-upstream-sqlite-date-day-arithmetic-20261119": {
