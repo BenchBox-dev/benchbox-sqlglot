@@ -639,10 +639,11 @@ def exact_decimal_quotients(expression: E, operand_scale: int = 6, copy: bool = 
     parentheses) is a ``/`` is rewritten. A bare ``/`` and a cast to another type are left alone,
     and the rewritten cast no longer holds a ``/``, so applying the rewrite twice changes nothing.
 
-    A NULL operand gives NULL, and so does ``NULLIF(y, 0)`` with ``y = 0``. A divisor that is
-    literally zero, or smaller than ``10^-operand_scale`` so that ``Y`` is ``0``, raises the
-    engine's integer division by zero error (the unrewritten cast of ``x / 0`` also fails, on
-    ``inf``). Operands are exact to ``operand_scale`` decimals and, scaled, must fit ``HUGEINT``.
+    A NULL operand gives NULL, and so does a zero divisor: a divisor that is literally zero, or
+    smaller than ``10^-operand_scale`` so that ``Y`` is ``0``, divides by ``NULLIF(ABS(Y), 0)``.
+    Engines disagree on integer division by zero (DuckDB 2.0 raises, earlier releases give NULL),
+    so the guard gives every engine NULL. Operands are exact to ``operand_scale`` decimals and,
+    scaled, must fit ``HUGEINT``.
 
     Args:
         expression: the expression to rewrite.
@@ -686,7 +687,12 @@ def exact_decimal_quotients(expression: E, operand_scale: int = 6, copy: bool = 
             expression=exp.Abs(this=divisor.copy()),
         )
         denominator = exp.paren(
-            exp.Mul(this=exp.Literal.number(2), expression=exp.Abs(this=divisor.copy()))
+            exp.Mul(
+                this=exp.Literal.number(2),
+                expression=exp.Nullif(
+                    this=exp.Abs(this=divisor.copy()), expression=exp.Literal.number(0)
+                ),
+            )
         )
         signed = exp.Mul(
             this=exp.paren(sign),

@@ -396,7 +396,7 @@ class TestExactDecimalQuotients(unittest.TestCase):
             "SELECT CAST(CAST((CASE WHEN (CAST(a * 1000000 AS INT128) < 0) <> "
             "(CAST(b * 1000000 AS INT128) < 0) THEN -1 ELSE 1 END) * "
             "((2 * ABS(CAST(a * 1000000 AS INT128)) * 100 + ABS(CAST(b * 1000000 AS INT128))) "
-            "// (2 * ABS(CAST(b * 1000000 AS INT128)))) AS DECIMAL(38, 0)) "
+            "// (2 * NULLIF(ABS(CAST(b * 1000000 AS INT128)), 0))) AS DECIMAL(38, 0)) "
             "* CAST(0.01 AS DECIMAL(2, 2)) AS DECIMAL(10, 2)) FROM t",
         )
 

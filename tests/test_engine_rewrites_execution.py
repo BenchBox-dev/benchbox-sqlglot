@@ -400,15 +400,10 @@ class TestExactDecimalQuotientsOnDuckDB(unittest.TestCase):
         got = self.run_pairs(pairs, "CAST(x / NULLIF(y, 0) AS DECIMAL(10, 2))")
         self.assertEqual(got, [None, None, None, None, Decimal("0.25")])
 
-    def test_literal_zero_divisor_is_an_error_like_the_unrewritten_cast(self):
+    def test_literal_zero_divisor_gives_null(self):
         sql = "SELECT CAST(CAST(1.50 AS DECIMAL(8, 2)) / 0 AS DECIMAL(10, 2))"
-        import duckdb
-
-        with self.assertRaises(duckdb.Error):
-            engines.execute("duckdb", sql)
         rewritten = exact_decimal_quotients(sqlglot.parse_one(sql, read="duckdb")).sql("duckdb")
-        with self.assertRaises(duckdb.Error):
-            engines.execute("duckdb", rewritten)
+        self.assertEqual(engines.execute("duckdb", rewritten), [(None,)])
 
     def random_pairs(self, count=10_000, seed=20240229):
         rng = random.Random(seed)
