@@ -7,6 +7,7 @@ from sqlglot.benchbox.engine_rewrites import (
     add_query_settings,
     correlated_exists_to_in,
     decimal_zero_literals,
+    exact_decimal_quotients,
     lowercase_identifiers,
     qualify_order_by_columns,
 )
@@ -382,6 +383,89 @@ class TestNetezzaDayDurations(unittest.TestCase):
                 except sqlglot.errors.ParseError:
                     continue
                 self.assertEqual(parse_one(sql, read="netezza"), expected)
+
+
+class TestExactDecimalQuotients(unittest.TestCase):
+    @staticmethod
+    def duckdb(sql, *args, **kwargs):
+        return exact_decimal_quotients(parse_one(sql, read="duckdb"), *args, **kwargs).sql("duckdb")
+
+    def test_cast_of_a_quotient_becomes_scaled_integer_division(self):
+        self.assertEqual(
+            self.duckdb("SELECT CAST(a / b AS DECIMAL(10, 2)) FROM t"),
+            "SELECT CAST(CAST((CASE WHEN (CAST(a * 1000000 AS INT128) < 0) <> "
+            "(CAST(b * 1000000 AS INT128) < 0) THEN -1 ELSE 1 END) * "
+            "((2 * ABS(CAST(a * 1000000 AS INT128)) * 100 + ABS(CAST(b * 1000000 AS INT128))) "
+            "// (2 * NULLIF(ABS(CAST(b * 1000000 AS INT128)), 0))) AS DECIMAL(38, 0)) "
+            "* CAST(0.01 AS DECIMAL(2, 2)) AS DECIMAL(10, 2)) FROM t",
+        )
+
+    def test_operand_scale_sets_the_multiplier(self):
+        sql = self.duckdb("SELECT CAST(a / b AS DECIMAL(10, 2)) FROM t", operand_scale=4)
+        self.assertIn("CAST(a * 10000 AS INT128)", sql)
+        self.assertNotIn("1000000", sql)
+
+    def test_scale_zero_has_no_fractional_multiplier(self):
+        sql = self.duckdb("SELECT CAST(a / b AS DECIMAL(5, 0)) FROM t")
+        self.assertTrue(sql.endswith("AS DECIMAL(38, 0)) AS DECIMAL(5, 0)) FROM t"), sql)
+        self.assertIn("* 1 + ABS(", sql)
+        self.assertNotIn("0.01", sql)
+
+    def test_parenthesised_quotient_and_compound_operands(self):
+        sql = self.duckdb("SELECT CAST((a * 100 / NULLIF(c, 0)) AS DECIMAL(8, 2)) FROM t")
+        self.assertNotIn(" / ", sql)
+        self.assertIn("CAST((a * 100) * 1000000 AS INT128)", sql)
+        self.assertIn("CAST(NULLIF(c, 0) * 1000000 AS INT128)", sql)
+
+    def test_rewrite_is_idempotent(self):
+        once = self.duckdb(
+            "SELECT CAST(a / b AS DECIMAL(10, 2)), CAST(a / b AS DECIMAL(5, 0)) FROM t"
+        )
+        self.assertEqual(self.duckdb(once), once)
+
+    def test_division_that_is_not_directly_under_a_decimal_cast_is_untouched(self):
+        for sql in (
+            "SELECT a / b FROM t",
+            "SELECT CAST(a / b AS DOUBLE) FROM t",
+            "SELECT CAST(a / b AS INTEGER) FROM t",
+            "SELECT CAST(a AS DECIMAL(10, 2)) FROM t",
+            "SELECT CAST(a / b + 1 AS DECIMAL(10, 2)) FROM t",
+            "SELECT CAST(ROUND(a / b, 2) AS DECIMAL(10, 2)) FROM t",
+        ):
+            with self.subTest(sql=sql):
+                self.assertEqual(self.duckdb(sql), parse_one(sql, read="duckdb").sql("duckdb"))
+
+    def test_decimal_without_precision_and_scale_is_untouched(self):
+        tree = parse_one("SELECT CAST(a / b AS DECIMAL) FROM t")
+        self.assertEqual(
+            exact_decimal_quotients(tree).sql(), "SELECT CAST(a / b AS DECIMAL) FROM t"
+        )
+
+    def test_rewrites_only_the_casts_inside_a_larger_query(self):
+        sql = self.duckdb(
+            "SELECT x / y AS bare, CAST(SUM(a) / SUM(b) AS DECIMAL(10, 2)) AS yield "
+            "FROM t WHERE c / d > 1 GROUP BY x HAVING CAST(p / q AS DECIMAL(5, 2)) > 0"
+        )
+        self.assertIn("SELECT x / y AS bare", sql)
+        self.assertIn("WHERE c / d > 1", sql)
+        self.assertIn("CAST(SUM(a) * 1000000 AS INT128)", sql)
+        self.assertIn("CAST(p * 1000000 AS INT128)", sql)
+        self.assertEqual(sql.count("//"), 2)
+
+    def test_nested_quotient_cast_is_rewritten_inside_its_parent(self):
+        sql = self.duckdb("SELECT CAST(CAST(a / b AS DECIMAL(10, 2)) / c AS DECIMAL(10, 2)) FROM t")
+        self.assertNotIn(" / ", sql)
+        # The outer division, plus the inner one in each of the two places the dividend appears.
+        self.assertEqual(sql.count("//"), 3)
+        self.assertEqual(self.duckdb(sql), sql)
+
+    def test_copy_flag(self):
+        tree = parse_one("SELECT CAST(a / b AS DECIMAL(10, 2)) FROM t", read="duckdb")
+        original = tree.sql("duckdb")
+        exact_decimal_quotients(tree)
+        self.assertEqual(tree.sql("duckdb"), original)
+        exact_decimal_quotients(tree, copy=False)
+        self.assertIn("//", tree.sql("duckdb"))
 
 
 if __name__ == "__main__":

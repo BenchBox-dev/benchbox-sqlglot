@@ -2,7 +2,7 @@
   "schema": 1,
   "distribution": "benchbox-sqlglot",
   "import_package": "benchbox._vendor.sqlglot",
-  "version": "30.35.0.6",
+  "version": "30.35.0.7",
   "upstream": {
     "repository": "https://github.com/tobymao/sqlglot",
     "tag": "v30.35.0",
@@ -499,7 +499,7 @@
       "tests": [
         "tests.test_benchbox_engine_rewrites"
       ],
-      "reason": "Expression rewrites for engines that reject SQL their peers accept, with every gate passed as an argument: lowercase_identifiers and decimal_zero_literals and add_query_settings for ClickHouse (division reuses safe_division), correlated_exists_to_in (fails closed on an unexpected count), add_derived_table_aliases for StarRocks and Doris, and qualify_order_by_columns for ambiguous ORDER BY columns. The Netezza `+/- N days` reading lives in netezza-sqlite-idioms' parser and is tested here."
+      "reason": "Expression rewrites for engines that reject SQL their peers accept, with every gate passed as an argument: lowercase_identifiers and decimal_zero_literals and add_query_settings for ClickHouse (division reuses safe_division), correlated_exists_to_in (fails closed on an unexpected count), add_derived_table_aliases for StarRocks and Doris, qualify_order_by_columns for ambiguous ORDER BY columns, and exact_decimal_quotients for DuckDB, which divides DECIMAL by DECIMAL in DOUBLE so CAST(x / y AS DECIMAL(p, s)) rounds ties the wrong way (it divides scaled HUGEINT values instead). The Netezza `+/- N days` reading lives in netezza-sqlite-idioms' parser and is tested here."
     },
     {
       "id": "engine-rewrites-execution",
@@ -515,7 +515,7 @@
       "tests": [
         "tests.test_engine_rewrites_execution"
       ],
-      "reason": "Execute the engine rewrites: ClickHouse rewrites on chDB, EXISTS versus IN row equality and qualified ORDER BY on DuckDB, derived table aliases, reserved alias words, ANSI SUBSTRING and quoted identifiers on StarRocks and Doris, and Netezza day durations on DuckDB, chDB, StarRocks and Doris."
+      "reason": "Execute the engine rewrites: ClickHouse rewrites on chDB, EXISTS versus IN row equality and qualified ORDER BY on DuckDB, exact decimal quotients on DuckDB against Python Decimal division (ties, signs, NULL operands, NULLIF zero divisors, seeded random pairs), derived table aliases, reserved alias words, ANSI SUBSTRING and quoted identifiers on StarRocks and Doris, and Netezza day durations on DuckDB, chDB, StarRocks and Doris."
     },
     {
       "id": "empty-group-by-generator",
