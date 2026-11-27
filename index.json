@@ -117,15 +117,10 @@
       "title": "Offer the spark-databricks-regexp-trunc carried patch upstream"
     },
     "offer-upstream-sqlite-current-date-interval-base-20261126": {
-      "claim": {
-        "expires_at": "2026-11-28T00:04:31Z",
-        "generation": "dfff27c232bb4d7798021b4b438f2875",
-        "renewals": 0,
-        "worker": "mcp:omp-coding-agent:joe@joe-mac-mini.local:b044c55c5b742c4a0aecc506"
-      },
+      "claim": null,
       "needs": [],
       "priority": "low",
-      "status": "active",
+      "status": "done",
       "title": "Offer upstream: SQLite interval arithmetic should treat a CURRENT_DATE base as DATE, not warn that time may be lost"
     },
     "offer-upstream-sqlite-date-day-arithmetic-20261119": {
