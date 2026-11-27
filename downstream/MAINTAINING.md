@@ -239,6 +239,15 @@ non-empty `upstream_reason`. Upstream links must be `tobymao/sqlglot` pull
 request or issue URLs. A retired patch becomes `upstreamed` and loses these
 fields; `upstreamed` and `excluded` entries keep their `upstream` links.
 
+Before offering a patch upstream, reproduce the problem the way upstream expects
+sqlglot to be called: parse, run `qualify` and `annotate_types` with a schema that
+types every column involved, then generate. Upstream treats a type-dependent
+problem that disappears after annotation as working as expected (tobymao/sqlglot#9384).
+Offer only what still fails on that path, say in the issue that the repro annotates
+types, and show it on real engines. BenchBox translates without annotating types,
+so a fix that the fork needs only because types are missing stays carried and is
+not offered.
+
 ## The `sqlglot.benchbox` package
 
 `sqlglot/benchbox/` holds engine-neutral expression rewrites that BenchBox calls
